@@ -1,0 +1,29 @@
+{
+  "_comment": "The list of valid emotional states, and the placeholder color for each (used only when no real avatar file exists at nori/static/avatars/<name>.<ext> -- see that folder's README). Adding a state means adding an entry here (name + color, both required) plus an avatar file; no code change either way, BUT a brand-new state name needs a server restart to take effect (this file is only read once, at startup -- STATES/the tool's enum are fixed after that). Dropping in an avatar file for a state ALREADY in this list needs no restart. 'neutral' must stay in this list -- it's the decay target and the default for a user with no state set yet.",
+  "states": [
+    {"name": "panic",       "color": "#c0392b"},
+    {"name": "neutral",     "color": "#95a5a6"},
+    {"name": "happy",       "color": "#f1c40f"},
+    {"name": "amused",      "color": "#e67e22"},
+    {"name": "sarcastic",   "color": "#8e44ad"},
+    {"name": "curious",     "color": "#3498db"},
+    {"name": "thinking",    "color": "#2c3e50"},
+    {"name": "concerned",   "color": "#d35400"},
+    {"name": "surprised",   "color": "#f39c12"},
+    {"name": "confused",    "color": "#9b59b6"},
+    {"name": "skeptical",   "color": "#7f8c8d"},
+    {"name": "annoyed",     "color": "#e74c3c"},
+    {"name": "determined",  "color": "#16a085"},
+    {"name": "serious",     "color": "#34495e"},
+    {"name": "relieved",    "color": "#27ae60"},
+    {"name": "proud",       "color": "#2980b9"},
+    {"name": "embarrassed", "color": "#ff7979"},
+    {"name": "sleepy",      "color": "#b2bec3"},
+    {"name": "excited",     "color": "#fd79a8"},
+    {"name": "deadpan",     "color": "#636e72"},
+    {"name": "angry",       "color": "#d63031"},
+    {"name": "flirty",      "color": "#e84393"},
+    {"name": "drinking",    "color": "#00b894"},
+    {"name": "thirsty",     "color": "#fab1a0"}
+  ]
+}

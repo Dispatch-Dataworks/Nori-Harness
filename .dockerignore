@@ -1,0 +1,54 @@
+# Never let any of this ride into an image layer (2026-09-25) -- an image
+# carrying real data or credentials is the one publication mistake that
+# survives being deleted. Kept in the same shape as .gitignore's own
+# "never committed" list, for the identical reason: this is local, or it's
+# a secret, or both.
+
+# The real environment file -- README's own documented first-run sequence
+# writes this in the SAME directory right before `docker compose up -d`,
+# so it sits in the build context by the time the build runs.
+.env
+*.env
+!.env.example
+
+# Version control -- the full repo history, not needed at runtime and not
+# small.
+.git/
+.gitignore
+
+# Real, live data -- see .gitignore's own comment; identical reasoning,
+# this is what a local, non-Docker run (or a prior Docker run's bind-mount
+# testing) would leave sitting in the working tree.
+data/
+prompts/persona.md
+prompts/persona.baseline.md
+prompts/tool-usage.baseline.md
+prompts/*.baseline.meta
+prompts/persona-history/
+prompts/tool-usage-history/
+prompts/CORRUPTION_BACKUP_*/
+static/avatars/source/
+static/avatars/thumbs/
+static/voice/*.wav
+static/voice/*.mp3
+
+# Local, per-install runtime files -- never meaningful inside a container,
+# which gets its own fresh ones.
+.nori.pid
+.nori.log
+.nori.err
+.watchdog.log
+.watchdog.pid
+.watchdog.heartbeat
+.watchdog.out
+.watchdog.out.err
+.nori.boot.err
+.supervision.jsonl
+.ctl.lock
+
+# Editor/tooling cruft, never part of the running app.
+__pycache__/
+*.pyc
+.pytest_cache/
+.vscode/
+.idea/

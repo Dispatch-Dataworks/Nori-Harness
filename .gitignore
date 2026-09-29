@@ -1,0 +1,30 @@
+# Real, live data -- never committed. See docs/setup.md and IMPORT.md.
+data/
+prompts/persona.md
+prompts/persona.baseline.md
+prompts/tool-usage.baseline.md
+prompts/*.baseline.meta
+prompts/persona-history/
+prompts/tool-usage-history/
+prompts/CORRUPTION_BACKUP_*/
+static/avatars/source/
+static/avatars/thumbs/
+static/voice/*.wav
+static/voice/*.mp3
+
+# Local, per-install runtime files
+.nori.pid
+.nori.log
+.nori.err
+.watchdog.log
+.watchdog.pid
+.watchdog.heartbeat
+.watchdog.out
+.watchdog.out.err
+.nori.boot.err
+.supervision.jsonl
+.ctl.lock
+
+.env
+__pycache__/
+*.pyc

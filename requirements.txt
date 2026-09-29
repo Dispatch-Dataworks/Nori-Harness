@@ -1,0 +1,12 @@
+# Nori is stdlib-only except for these. See docs/setup.md#python-dependencies.
+
+# secrets-at-rest (Fernet) -- required, app won't start without it
+cryptography>=41.0
+
+# real IANA timezone data -- required on Windows and any other platform
+# without a built-in tz database
+tzdata>=2024.1
+
+# optional: photo-grid thumbnails only. Without it, /photos serves
+# full-size originals instead, silently, no missing-feature error.
+Pillow>=10.0

@@ -1,0 +1,26 @@
+NOTICE — licensing scope in this repository
+
+This repository holds one thing: Nori, "the harness," a household-
+assistant persona built to be read as well as used.
+
+Licensed under the GNU Affero General Public License, version 3 or
+any later version (AGPL-3.0-or-later). See the LICENSE file at the
+root of this repository for the complete, unmodified license text.
+
+Copyright (C) 2026 Dispatch Dataworks LLC. Lead Researcher: Benjamin
+Townsend.
+
+Every source file carries a short header pointing back to LICENSE —
+see docs/contributing.md for what that means for a contribution and
+for AGPL's own network-use (§13) obligation.
+
+Nori implements PACI (Peer Agent Communication Interface), a protocol
+for real-time conversation between peer AI agent processes. PACI is
+specified in its own separate repository, licensed under Creative
+Commons Attribution 4.0 International (CC BY 4.0) — a different
+license, covering a different thing, from a separate project. It
+previously lived in this repository as PACI-SPEC.md; it does not
+any more, and nothing in this repository is licensed under CC BY 4.0.
+
+Questions about licensing terms for anything in this repository should
+be directed to Dispatch Dataworks LLC.

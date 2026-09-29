@@ -1,0 +1,28 @@
+services:
+  nori:
+    build: .
+    ports:
+      # Loopback-only on the HOST side, deliberately (2026-09-25): the first
+      # account created on a fresh instance becomes admin automatically, with
+      # nothing else gating that -- publishing to every host interface by
+      # default would mean whoever reaches this port first, on whatever
+      # network can reach it, owns the instance. This is independent of the
+      # container's own NORI_BIND_HOST=0.0.0.0 (Dockerfile) -- that's what
+      # lets Docker's own port-forwarding reach the process at all; THIS is
+      # what decides who on the network can reach that forwarded port.
+      # See README.md's "Exposing this to the internet" section for the
+      # deliberate, after-admin-exists sequence for opening this up.
+      - "127.0.0.1:8877:8877"
+    env_file:
+      - .env   # copy .env.example to .env and fill in your own values
+    volumes:
+      - nori-data:/app/data          # nori.db, workfiles, secret.key, backups
+      - nori-prompts:/app/prompts    # persona.md, tool-usage.md, edit history
+      - nori-static:/app/static      # avatar/voice uploads (shipped defaults
+                                      # copy into this volume on first run)
+    restart: unless-stopped
+
+volumes:
+  nori-data:
+  nori-prompts:
+  nori-static:
