@@ -236,11 +236,12 @@ _SPEC: dict[str, tuple] = {
     # needed for a toggle to take effect.
     "web_search_enabled": (True, bool, "workspace", False, "let her search the live web"),
     "web_fetch_enabled": (True, bool, "workspace", False, "let her fetch the content of a URL"),
-    # Empty string = not yet explicitly chosen -- chat.py falls back to
-    # NORI_MODEL/NORI_REASONING_EFFORT (2026-09-12, see models.py and
-    # chat.run()'s own resolution). Workspace-scoped: one model for the
-    # whole household, same as the env var it replaces.
-    "default_model_slug": ("", str, "workspace", False, "default model"),
+    # default_model_slug removed 2026-09-30 -- superseded by model_chain
+    # (see models.py/providers.py): primary+fallback are now a real
+    # ordered table, not a single scalar setting, and there's deliberately
+    # no default value anymore. providers.migrate_from_env() reads any
+    # pre-existing value straight from the settings table (not via this
+    # spec, which no longer has an entry for it) as a one-time upgrade step.
     # Voice layer (2026-09-12; reworked into a real voice-conversation
     # mode 2026-09-13 -- see server.py's voice-modal block). tts_voice is
     # a gpt-4o-mini-tts preset name (see voice.py's VOICES) -- a setting,

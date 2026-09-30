@@ -110,7 +110,7 @@ class NoriToolVisibilityTests(unittest.TestCase):
                 dispatch = Mock(return_value={"ok": True})
                 add_message = Mock()
                 env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
-                    json=json, re=re, MAX_TOOL_ROUNDS=3, call=call,
+                    json=json, re=re, MAX_TOOL_ROUNDS=3, call_via_chain=call,
                     # run() resolves the workspace's own model/reasoning
                     # override via _resolve_model() and falls back to
                     # DEFAULT_MODEL -- neither is pulled in by extracting
@@ -176,7 +176,7 @@ class NoriToolVisibilityTests(unittest.TestCase):
         dispatch = Mock(return_value={"error": "cooldown active for another 3 minute(s)"})
         add_message = Mock()
         env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
-            json=json, re=re, MAX_TOOL_ROUNDS=3, call=call,
+            json=json, re=re, MAX_TOOL_ROUNDS=3, call_via_chain=call,
             _resolve_model=lambda workspace_id: (None, None),
             DEFAULT_MODEL="x-ai/grok-4.3",
             context=SimpleNamespace(build_messages=lambda *a, **kw: messages),
@@ -204,7 +204,7 @@ class RoundLimitTests(unittest.TestCase):
 
     def _env(self, call, max_rounds):
         return definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
-            json=json, re=re, MAX_TOOL_ROUNDS=max_rounds, call=call,
+            json=json, re=re, MAX_TOOL_ROUNDS=max_rounds, call_via_chain=call,
             _resolve_model=lambda workspace_id: (None, None),
             DEFAULT_MODEL="x-ai/grok-4.3",
             context=SimpleNamespace(build_messages=lambda *a, **kw: []),

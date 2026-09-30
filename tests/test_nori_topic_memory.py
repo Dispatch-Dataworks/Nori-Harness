@@ -223,7 +223,7 @@ class ChatLoopWiresThePreactionHook(unittest.TestCase):
                 "name": "test_consequential_tool", "arguments": "{}"}}], "usage": {}},
             {"content": "done", "tool_calls": [], "usage": {}},
         ]
-        with patch.object(chat, "call", side_effect=rounds), \
+        with patch.object(chat, "call_via_chain", side_effect=rounds), \
              patch.object(memory, "preaction_check", return_value=None) as spy:
             result = chat.run(_SESSION, _user["id"], _user["display_name"], max_rounds=4)
         self.assertEqual(result["text"], "done")
@@ -237,7 +237,7 @@ class ChatLoopWiresThePreactionHook(unittest.TestCase):
                 "name": "test_ordinary_tool", "arguments": "{}"}}], "usage": {}},
             {"content": "done", "tool_calls": [], "usage": {}},
         ]
-        with patch.object(chat, "call", side_effect=rounds), \
+        with patch.object(chat, "call_via_chain", side_effect=rounds), \
              patch.object(memory, "preaction_check", return_value=None) as spy:
             chat.run(_SESSION, _user["id"], _user["display_name"], max_rounds=4)
         spy.assert_not_called()

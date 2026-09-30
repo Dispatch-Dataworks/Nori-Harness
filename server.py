@@ -159,6 +159,7 @@ import self_knowledge
 import tuning_admin
 import settings_tool
 import oauth
+import providers
 import recurrence
 import scheduler
 import schedules
@@ -480,6 +481,9 @@ tr:last-child td{border-bottom:0}
   align-items:center;justify-content:center;font-size:1.05rem;flex-shrink:0}
 .list-meta{flex:1;min-width:0;display:flex;flex-direction:column}
 .list-meta b{font-size:.9rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* memory facts run long (full sentences, sometimes multiple) -- let those
+   wrap instead of clipping to one line like the shorter list titles do */
+.list-meta b.wrap{white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
 .list-meta small{font-size:.74rem;color:var(--text-mute)}
 .list-actions{display:flex;gap:.2rem;flex-shrink:0}
 .list-actions form{display:inline}
@@ -2811,13 +2815,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.subagents_limits_post(sess, path.split("/")[3], form)
         if path == "/admin/models":
             return self.models_create_post(sess, form)
-        if path == "/admin/models/default":
-            return self.models_default_post(sess, form)
+        if path == "/admin/models/chain":
+            return self.models_chain_post(sess, form)
         if path.startswith("/admin/models/"):
             parts = path.split("/")
-            if len(parts) == 5 and parts[4] in ("toggle", "effort"):
-                return (self.models_toggle_post if parts[4] == "toggle" else self.models_effort_post)(
-                    sess, parts[3], form)
+            if len(parts) == 5 and parts[4] in ("toggle", "effort", "delete"):
+                handler = {"toggle": self.models_toggle_post, "effort": self.models_effort_post,
+                          "delete": self.models_delete_post}[parts[4]]
+                return handler(sess, parts[3], form)
+        if path == "/admin/providers":
+            return self.providers_create_post(sess, form)
+        if path.startswith("/admin/providers/"):
+            parts = path.split("/")
+            if len(parts) == 5 and parts[4] == "delete":
+                return self.providers_delete_post(sess, parts[3], form)
+            if len(parts) == 6 and parts[4] == "oauth" and parts[5] in ("complete", "check"):
+                handler = (self.providers_oauth_complete_post if parts[5] == "complete"
+                          else self.providers_oauth_check_post)
+                return handler(sess, parts[3], form)
         if path == "/admin/webtools/rules":
             return self.webtools_rule_add_post(sess, form)
         if path.startswith("/admin/webtools/rules/"):
@@ -3785,15 +3800,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
         csrf = esc(sess["csrf"])
+        model_by_id = {m["id"]: m for m in models.list_all()}
         def _row(a: dict) -> str:
             tools_desc = ("no tools" if a["tool_call_limit"] == 0 else
                          f"up to {a['tool_call_limit']} tool call(s), "
                          f"{a['tool_byte_limit']:,} bytes/job")
+            m = model_by_id.get(a["model_id"])
+            model_desc = m["alias"] if m else "(no model configured)"
             return (
                 f"<div class=list-row><div class=list-icon>🤖</div>"
-                f"<div class=list-meta><b>{esc(a['label'])}</b><small>{esc(a['model'])} · "
+                f"<div class=list-meta><b>{esc(a['label'])}</b><small>{esc(model_desc)} · "
                 f"{'enabled' if a['enabled'] else 'disabled'} · "
-                f"{'default key' if sub_agents.uses_default_key(a) else 'own key'} · "
                 f"{esc(tools_desc)}</small>"
                 f"<form method=post action='/admin/subagents/{a['id']}/limits' "
                 f"style='margin-top:.4rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap'>"
@@ -3851,7 +3868,7 @@ class Handler(BaseHTTPRequestHandler):
         ) if interrupted else ""
 
         model_opts = "".join(
-            f"<option value='{esc(m['slug'])}'>{esc(m['label'])}</option>" for m in models.list_enabled())
+            f"<option value='{m['id']}'>{esc(m['alias'])}</option>" for m in models.list_enabled())
         call_limit_tip = info_tip(
             "0 means no tools at all -- a plain completion, same as every sub-agent before this "
             "existed. Above 0, it can read (not write) your own working folder via list_files/"
@@ -3860,31 +3877,29 @@ class Handler(BaseHTTPRequestHandler):
             "Cumulative cap across every tool result in one job -- only matters when tool calls are "
             "allowed above. 100 calls each returning a large file costs very differently than 100 "
             "small ones, so this is capped independently of the call count.")
-        main = (
-            f"{e}"
-            f"{running_section}"
-            f"{interrupted_section}"
-            "<p class=muted>she picks a label from this list to hand work off to -- "
-            "never an endpoint or key of her own choosing. Models come from "
-            "<a href='/settings?tab=models'>Model Config</a>.</p>"
-            "<div class=section>"
+        add_form = (
             "<form method=post action='/admin/subagents'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<div class=field><input type=text name=label placeholder='label, e.g. summarizer' required></div>"
-            f"<div class=field><label>model</label><select name=model required>{model_opts}"
+            f"<div class=field><label>model</label><select name=model_id required>{model_opts}"
             "</select></div>"
-            "<div class=field><input type=text name=base_url "
-            "value='https://openrouter.ai/api/v1/chat/completions' required></div>"
-            "<div class=field><label>api key</label>"
-            "<input type=password name=api_key placeholder='leave blank to use your own OPENROUTER_API_KEY' "
-            "autocomplete=off>"
-            "<p class=muted style='margin:.2rem 0 0'>blank uses your own default OpenRouter key.</p></div>"
             f"<div class=field><label>tool calls per job {call_limit_tip}</label>"
             f"<input type=number name=tool_call_limit min=0 max={sub_agents.TOOL_CALL_LIMIT_MAX} value=0></div>"
             f"<div class=field><label>bytes read per job {byte_limit_tip}</label>"
             f"<input type=number name=tool_byte_limit min={sub_agents.TOOL_BYTE_LIMIT_MIN} "
             f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={sub_agents.TOOL_BYTE_LIMIT_DEFAULT}></div>"
-            "<button class='btn btn-primary btn-block'>add</button></form></div>"
+            "<button class='btn btn-primary btn-block'>add</button></form>"
+        ) if model_opts else (
+            "<p class=muted>no enabled models yet -- add one in "
+            "<a href='/settings?tab=models'>Model Config</a> first.</p>")
+        main = (
+            f"{e}"
+            f"{running_section}"
+            f"{interrupted_section}"
+            "<p class=muted>she picks a label from this list to hand work off to -- "
+            "never an endpoint or model of her own choosing. Models come from "
+            "<a href='/settings?tab=models'>Model Config</a>.</p>"
+            f"<div class=section>{add_form}</div>"
             f"<div class=section><h2>roster</h2>{rows}</div>"
         )
         self._settings_response(sess, "subagents", main)
@@ -3895,11 +3910,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             call_limit = int(form.get("tool_call_limit") or 0)
             byte_limit = int(form.get("tool_byte_limit") or sub_agents.TOOL_BYTE_LIMIT_DEFAULT)
+            model_id = int(form.get("model_id") or 0)
         except ValueError:
-            return self.subagents_admin_form(sess, "tool limits must be whole numbers")
+            return self.subagents_admin_form(sess, "tool limits and model must be valid")
         ok, result = sub_agents.create(
-            sess["user_id"], form.get("label") or "", form.get("model") or "",
-            form.get("base_url") or "", form.get("api_key") or "", call_limit, byte_limit)
+            sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit)
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -3933,33 +3948,116 @@ class Handler(BaseHTTPRequestHandler):
             return self.subagents_admin_form(sess, err)
         return self.subagents_admin_form(sess)
 
-    # -- admin: model roster. The three operator-tested options are seeded
-    # rows (models.seed_defaults(), called at startup), not hardcoded, so
-    # adding one here never needs a second mechanism -- see models.py's
-    # own docstring. Controls both Nori's own default model (this page)
-    # and what shows up in the sub-agent form's model dropdown.
+    # -- admin: Providers + model roster + primary/fallback chain. Controls
+    # both Nori's own primary/fallback models (this page) and what shows up
+    # in the sub-agent form's model dropdown.
     def models_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        """Providers + Models + primary/fallback chain (2026-09-30, see
+        providers.py/models.py) -- reworked from the old OpenRouter-only
+        roster+single-default form. Three sections: configured Providers
+        (connect/disconnect), the Model roster (alias+provider+model
+        name), and the primary/fallback chain picked from enabled Models.
+        There is deliberately no default provider or model -- an instance
+        with nothing configured here shows that honestly instead of
+        silently assuming OpenRouter."""
         if sess["role"] != "admin":
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
         i = f"<p class=info>{esc(info)}</p>" if info else ""
         csrf = esc(sess["csrf"])
         wsid = sess["workspace_id"]
-        current_slug = config.get("workspace", wsid, "default_model_slug")
-        all_models = models.list_all()
-        default_opts = "".join(
-            f"<option value='{esc(m['slug'])}'{' selected' if m['slug'] == current_slug else ''}>"
-            f"{esc(m['label'])}{'' if m['enabled'] else ' (disabled)'}</option>"
-            for m in all_models)
-        if not current_slug:
-            default_opts = "<option value='' selected>(not set -- using NORI_MODEL env var)</option>" + default_opts
-        rows = []
-        for m in all_models:
-            badge = "<span class='chip active'>tested</span>" if m["seeded"] else "<span class=chip>your addition -- untested</span>"
-            rows.append(
+
+        # -- Providers --
+        def _copyfield(value: str, open_url: str | None = None) -> str:
+            """A readonly, click-to-select, one-click-copy field -- fixes
+            the old plain-text flash message, which just wrapped a long
+            URL/code across several lines with no way to grab it cleanly
+            (2026-09-30, real complaint). No dependency on CHAT_JS (not
+            loaded on settings pages) -- document.execCommand('copy') is
+            the same fallback this app's own copyMessageText() already
+            uses, just inlined here since this is the only place on a
+            settings page that needs it."""
+            v = esc(value)
+            open_link = (f"<a class=btn href='{v}' target=_blank rel=noopener>open</a>" if open_url else "")
+            return (
+                "<div style='display:flex;gap:.4rem;align-items:center;margin-top:.4rem'>"
+                f"<input type=text readonly value='{v}' onclick='this.select()' "
+                "style='flex:1;font-family:monospace;font-size:.8rem;min-width:0'>"
+                "<button type=button class=btn onclick=\"this.previousElementSibling.select();"
+                "document.execCommand('copy');this.textContent='copied';"
+                "setTimeout(()=>this.textContent='copy',1200)\">copy</button>"
+                f"{open_link}</div>")
+
+        all_providers = providers.list_all(wsid)
+        provider_rows = []
+        for p in all_providers:
+            status_chip = {"connected": "<span class='chip active'>connected</span>",
+                          "needs_reauth": "<span class='chip warn'>needs reconnecting</span>",
+                          "unconfigured": "<span class=chip>connecting…</span>",
+                          "error": "<span class='chip warn'>error</span>"}.get(
+                p["status"], f"<span class=chip>{esc(p['status'])}</span>")
+            connect_ui = ""
+            if p["status"] in ("unconfigured", "needs_reauth") and p["type"] in (
+                    "anthropic_oauth", "openai_oauth"):
+                pending = providers.pending_display(p)
+                link_ui = (_copyfield(pending["authorize_url"], open_url=pending["authorize_url"])
+                          if pending else "")
+                connect_ui = (
+                    f"{link_ui}"
+                    f"<form method=post action='/admin/providers/{p['id']}/oauth/complete' "
+                    "style='display:flex;gap:.4rem;margin-top:.4rem'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>"
+                    "<input type=text name=pasted placeholder='paste the code (or the failed "
+                    "redirect URL) here' style='flex:1'>"
+                    "<button class=btn>finish connecting</button></form>")
+            elif p["status"] in ("unconfigured", "needs_reauth") and p["type"] == "github_copilot":
+                pending = providers.pending_display(p)
+                code_ui = (_copyfield(pending["user_code"], open_url=pending["verification_uri"])
+                          if pending else "")
+                connect_ui = (
+                    f"{code_ui}"
+                    f"<form method=post action='/admin/providers/{p['id']}/oauth/check' style='margin-top:.4rem'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>"
+                    "<button class=btn>check if authorized yet</button></form>")
+            provider_rows.append(
                 "<div class=list-row><div class=list-meta>"
-                f"<b>{esc(m['label'])}</b> {badge}"
-                f"<small>{esc(m['slug'])} · {'enabled' if m['enabled'] else 'disabled'}</small>"
+                f"<b>{esc(p['label'])}</b> {status_chip}"
+                f"<small>{esc(providers.TYPES.get(p['type'], {}).get('label', p['type']))}</small>"
+                f"{connect_ui}</div>"
+                f"<div class=list-actions><form method=post action='/admin/providers/{p['id']}/delete'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class='btn btn-danger'>remove</button></form></div></div>")
+        type_opts = "".join(f"<option value='{k}'>{esc(v['label'])}</option>" for k, v in providers.TYPES.items())
+        main_provider = (
+            f"<div class=section><h2>Providers</h2>"
+            "<p class=muted>a configured connection to an LLM backend -- an API key (OpenRouter, or "
+            "straight to Anthropic/OpenAI with your own key), or an OAuth-connected subscription. "
+            "Nothing is assumed by default.</p>"
+            "<form method=post action='/admin/providers' style='display:flex;gap:.5rem;flex-wrap:wrap;"
+            "align-items:flex-end;margin-bottom:.8rem'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<div class=field style='margin:0'><label>type</label><select name=type>{type_opts}</select></div>"
+            "<div class=field style='margin:0;flex:1'><label>label</label>"
+            "<input type=text name=label placeholder='e.g. OpenRouter'></div>"
+            "<div class=field style='margin:0;flex:1'><label>API key (API-key types only)</label>"
+            "<input type=password name=api_key autocomplete=off></div>"
+            "<button class='btn btn-primary'>add / connect</button></form>"
+            f"{''.join(provider_rows) or '<p class=muted>none configured yet.</p>'}</div>"
+        )
+
+        # -- Models --
+        enabled_providers = [p for p in all_providers if p["enabled"] and p["status"] == "connected"]
+        provider_opts = "".join(f"<option value='{p['id']}'>{esc(p['label'])}</option>" for p in enabled_providers)
+        all_models = models.list_all()
+        provider_label_by_id = {p["id"]: p["label"] for p in all_providers}
+        model_rows = []
+        for m in all_models:
+            provider_label = provider_label_by_id.get(m["provider_id"], "(no provider -- needs relinking)")
+            model_rows.append(
+                "<div class=list-row><div class=list-meta>"
+                f"<b>{esc(m['alias'])}</b>"
+                f"<small>{esc(provider_label)} · {esc(m['model_name'])} · "
+                f"{'enabled' if m['enabled'] else 'disabled'}</small>"
                 f"<form method=post action='/admin/models/{m['id']}/effort' style='display:flex;gap:.4rem;"
                 "align-items:center;margin-top:.4rem'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
@@ -3972,47 +4070,126 @@ class Handler(BaseHTTPRequestHandler):
                 "</div>"
                 f"<div class=list-actions><form method=post action='/admin/models/{m['id']}/toggle'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
-                f"<button class=btn>{'disable' if m['enabled'] else 'enable'}</button></form></div></div>")
-        assistant_name = config.get("workspace", sess["workspace_id"], "assistant_name")
-        main = (
-            f"{e}{i}"
-            f"<div class=section><h2>{esc(assistant_name)}'s current model</h2>"
-            "<p class=muted>applies immediately, no restart needed -- picked up on her very next reply.</p>"
-            "<form method=post action='/admin/models/default' style='display:flex;gap:.5rem'>"
-            f"<input type=hidden name=csrf value='{csrf}'>"
-            f"<select name=slug style='flex:1'>{default_opts}</select>"
-            "<button class='btn btn-primary'>set as default</button></form></div>"
-            "<div class=section><h2>add a model</h2>"
-            "<p class=muted>a model you add is untested by definition -- shown as such everywhere it "
-            "appears, never implied to be as reliable as the tested three.</p>"
+                f"<button class=btn>{'disable' if m['enabled'] else 'enable'}</button></form>"
+                f"<form method=post action='/admin/models/{m['id']}/delete'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class='btn btn-danger'>delete</button></form></div></div>")
+        add_model_form = (
             "<form method=post action='/admin/models'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
-            "<div class=field><label>OpenRouter model slug</label>"
-            "<input type=text name=slug placeholder='e.g. anthropic/claude-haiku-4.5' required></div>"
-            "<div class=field><label>label</label><input type=text name=label placeholder='display name' required></div>"
+            "<div class=field><label>alias</label>"
+            "<input type=text name=alias placeholder='e.g. ClaudeLite' required></div>"
+            f"<div class=field><label>provider</label><select name=provider_id required>{provider_opts}</select></div>"
+            "<div class=field><label>model name</label>"
+            "<input type=text name=model_name placeholder=\"that provider's own model name\" required></div>"
             "<div class=field><label>reasoning effort (leave blank if the model doesn't use one)</label>"
             "<select name=reasoning_effort>"
             + "".join(f"<option value='{v}'>{v or '(no reasoning)'}</option>"
                      for v in ("", "minimal", "low", "medium", "high", "xhigh", "max"))
             + "</select></div>"
-            "<button class='btn btn-primary btn-block'>add</button></form></div>"
-            f"<div class=section><h2>roster</h2>{''.join(rows)}</div>"
+            "<button class='btn btn-primary btn-block'>add</button></form>"
+        ) if provider_opts else "<p class=muted>connect a provider above first.</p>"
+        main_models = (
+            f"<div class=section><h2>Models</h2>"
+            "<p class=muted>an alias + the provider it runs through + that provider's own model name.</p>"
+            f"{add_model_form}"
+            f"<div style='margin-top:1rem'>{''.join(model_rows) or '<p class=muted>none yet.</p>'}</div></div>"
         )
-        self._settings_response(sess, "models", main)
 
-    def models_default_post(self, sess: dict, form: dict):
+        # -- Primary + fallback chain --
+        chain = models.get_chain(wsid)
+        chain_ids = [c["id"] for c in chain]
+        enabled_models = models.list_enabled()
+
+        def _chain_select(name: str, selected: int | None) -> str:
+            opts = "<option value=''>(none)</option>" + "".join(
+                f"<option value='{m['id']}'{' selected' if m['id'] == selected else ''}>{esc(m['alias'])}</option>"
+                for m in enabled_models)
+            return f"<select name='{name}'>{opts}</select>"
+
+        fallback_slots = chain_ids[1:] + [None] * max(0, 3 - len(chain_ids[1:]))
+        chain_form = (
+            "<form method=post action='/admin/models/chain'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<div class=field><label>primary</label>{_chain_select('primary', chain_ids[0] if chain_ids else None)}</div>"
+            + "".join(f"<div class=field><label>fallback {n + 1}</label>{_chain_select(f'fallback_{n}', v)}</div>"
+                     for n, v in enumerate(fallback_slots))
+            + "<button class='btn btn-primary btn-block'>save</button></form>"
+        ) if enabled_models else "<p class=muted>enable a model above first.</p>"
+        assistant_name = config.get("workspace", wsid, "assistant_name")
+        main_chain = (
+            f"<div class=section><h2>{esc(assistant_name)}'s primary &amp; fallback models</h2>"
+            "<p class=muted>applies immediately, no restart needed. A fallback is tried only if an "
+            "earlier one's provider fails for that turn.</p>"
+            f"{chain_form}</div>"
+        )
+
+        self._settings_response(sess, "models", f"{e}{i}{main_provider}{main_models}{main_chain}")
+
+    def providers_create_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
-        slug = form.get("slug") or ""
-        if slug and models.get_by_slug(slug) is None:
-            return self.models_admin_form(sess, "no such model")
-        config.set("workspace", sess["workspace_id"], "default_model_slug", slug)
-        return self.models_admin_form(sess, info=f"default model set to {slug or '(env var fallback)'}")
+        ptype = form.get("type") or ""
+        label = form.get("label") or ""
+        wsid = sess["workspace_id"]
+        if ptype in providers.API_KEY_TYPES:
+            ok, msg = providers.create_api_key(wsid, ptype, label, form.get("api_key") or "", sess["user_id"])
+            return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        if ptype in ("anthropic_oauth", "openai_oauth"):
+            ok, result = providers.begin_oauth_manual(wsid, ptype, label, sess["user_id"])
+            if not ok:
+                return self.models_admin_form(sess, err=result)
+            # The authorize link itself now shows persistently under the
+            # provider's own row (see pending_display() in models_admin_form)
+            # -- a real, copyable link/button, not a long URL crammed into
+            # this one-shot flash message the way it used to be.
+            return self.models_admin_form(sess, info="added -- see below to connect")
+        if ptype == "github_copilot":
+            ok, msg, data = providers.begin_device_flow(wsid, label, sess["user_id"])
+            if not ok:
+                return self.models_admin_form(sess, err=msg)
+            return self.models_admin_form(sess, info="added -- see below to connect")
+        return self.models_admin_form(sess, err="pick a provider type")
+
+    def providers_delete_post(self, sess: dict, provider_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int(provider_id)
+        except ValueError:
+            return self.models_admin_form(sess, "bad id")
+        providers.delete(pid)
+        return self.models_admin_form(sess, info="removed")
+
+    def providers_oauth_complete_post(self, sess: dict, provider_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int(provider_id)
+        except ValueError:
+            return self.models_admin_form(sess, "bad id")
+        ok, msg = providers.complete_oauth_manual(pid, form.get("pasted") or "")
+        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+
+    def providers_oauth_check_post(self, sess: dict, provider_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int(provider_id)
+        except ValueError:
+            return self.models_admin_form(sess, "bad id")
+        ok, msg = providers.check_device_flow(pid)
+        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
 
     def models_create_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
-        ok, msg = models.create(form.get("slug") or "", form.get("label") or "", form.get("reasoning_effort"))
+        try:
+            provider_id = int(form.get("provider_id") or 0)
+        except ValueError:
+            return self.models_admin_form(sess, "bad provider")
+        ok, msg = models.create(form.get("alias") or "", provider_id, form.get("model_name") or "",
+                                form.get("reasoning_effort"))
         return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
 
     def models_toggle_post(self, sess: dict, model_id: str, form: dict):
@@ -4028,6 +4205,16 @@ class Handler(BaseHTTPRequestHandler):
         models.set_enabled(mid, not row["enabled"])
         return self.models_admin_form(sess)
 
+    def models_delete_post(self, sess: dict, model_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            mid = int(model_id)
+        except ValueError:
+            return self.models_admin_form(sess, "bad id")
+        models.delete(mid)
+        return self.models_admin_form(sess, info="deleted")
+
     def models_effort_post(self, sess: dict, model_id: str, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -4037,6 +4224,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.models_admin_form(sess, "bad id")
         ok, msg = models.set_reasoning_effort(mid, form.get("reasoning_effort"))
         return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+
+    def models_chain_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        ids = []
+        for key in ["primary", "fallback_0", "fallback_1", "fallback_2"]:
+            v = (form.get(key) or "").strip()
+            if v:
+                try:
+                    ids.append(int(v))
+                except ValueError:
+                    return self.models_admin_form(sess, "bad model id")
+        # de-dupe, preserving order -- the same model picked twice (e.g.
+        # left as both primary and a fallback slot) would otherwise violate
+        # model_chain's own (workspace_id, priority) shape for no benefit,
+        # since retrying the exact same model on its own failure buys nothing.
+        seen = set()
+        ids = [i for i in ids if not (i in seen or seen.add(i))]
+        models.set_chain(sess["workspace_id"], ids)
+        return self.models_admin_form(sess, info="saved")
 
     # -- admin: web search/fetch domain rules (2026-09-14) --------------------
     def webtools_admin_form(self, sess: dict, err: str = "", info: str = ""):
@@ -6869,7 +7076,7 @@ class Handler(BaseHTTPRequestHandler):
                     flagged_by = " (peer-requested)" if f["actor"] == "peer" else ""
                     frows.append(
                         f"<div class=list-row><div class=list-meta>"
-                        f"<b>[{esc(f['type'] or '?')}] {esc(f['value'] or '')}</b>"
+                        f"<b class=wrap>[{esc(f['type'] or '?')}] {esc(f['value'] or '')}</b>"
                         f"<small>flagged{esc(flagged_by)}: {esc(f['note'] or '')}</small></div>"
                         f"<div class=list-actions>"
                         f"<form method=post action='/settings/memory/resolve'>"
@@ -6894,7 +7101,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 erows = "".join(
                     f"<div class=list-row><div class=list-meta>"
-                    f"<b>{esc(d['value'])}</b>"
+                    f"<b class=wrap>{esc(d['value'])}</b>"
                     f"<small>{esc(d['source'])}{' · pinned' if d['pinned'] else ''}"
                     f"{' · SAFETY/CONSTRAINT' if d['safety_tier'] else ''}"
                     f"{' · ' + esc(', '.join(d['tags'])) if d['tags'] else ''}</small></div>"
@@ -8665,17 +8872,22 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     _redirect_logs()
     load_env(ENV_PATH)
-    # Loud at startup, not just at first failed chat send (2026-09-26,
-    # the operator: "anyone self-hosting debugs from docker compose logs first, so
-    # a missing key should log a clear warning... ideally at startup if
-    # the key is absent"). The container still comes up and serves --
-    # this warns, it doesn't refuse to boot, since a fresh install with
-    # nothing configured yet is a normal, expected state, not a crash.
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        print("WARNING: OPENROUTER_API_KEY is not set -- every chat send will fail until "
-             "it's filled in (see .env.example). The app will still start and serve normally.",
-             flush=True)
     store.init()
+    # Providers/Models rework (2026-09-30, see providers.py) -- there is
+    # deliberately no default provider anymore, so no startup warning about
+    # a missing OPENROUTER_API_KEY: a fresh install with nothing configured
+    # in Settings > Models is the normal expected state, not a misconfig.
+    # migrate_from_env() is the upgrade path for an instance that WAS
+    # relying on that env var -- a no-op on a fresh install (no workspace,
+    # nothing to migrate) and a no-op on a second startup (a provider
+    # already exists by then).
+    wsid = accounts.the_workspace_id()
+    if wsid is not None:
+        admin_row = store.read(lambda c: c.execute(
+            "SELECT id FROM users WHERE workspace_id=? AND role='admin' ORDER BY id LIMIT 1",
+            (wsid,)).fetchone())
+        if admin_row is not None:
+            providers.migrate_from_env(wsid, admin_row["id"])
     n = tool_builder.load_approved_tools()
     m = mcp_servers.register_all()
     p = peers.register_all()
@@ -8686,7 +8898,6 @@ def main() -> int:
     notes.register_peer_actions()  # same reasoning, see that module's own docstring
     reminders.register_peer_actions()  # same reasoning, see that module's own docstring
     trackers.register_peer_actions()  # same reasoning, see that module's own docstring
-    models.seed_defaults()
     swept = jobs.sweep_orphaned()
     peers.start()
     scheduler.start()

@@ -94,8 +94,7 @@ class BudgetTimezoneTests(unittest.TestCase):
         self.assertAlmostEqual(summary["period"]["cost"], 0.02, places=6)
 
     def test_jobs_cost_summary_excludes_the_disputed_hour(self):
-        ok, sid = sub_agents.create(self.uid, "Tester Agent", "x-ai/grok-4.3",
-                                    "https://openrouter.ai/api/v1", "")
+        ok, sid = sub_agents.create(self.uid, "Tester Agent", None)
         self.assertTrue(ok, sid)
         store.write(lambda c: c.execute(
             "INSERT INTO jobs(user_id, sub_agent_id, task, status, created_ts, cost_usd) "

@@ -253,16 +253,13 @@ CREATE TABLE IF NOT EXISTS emotion_state (
 );
 
 -- Sub-agent roster (2026-09-12) -- admin-curated, see sub_agents.py. She
--- picks from this list, never invents an endpoint or key herself.
--- api_key_enc is encrypted at rest via crypto.py (the helper built in
--- Phase 1, before anything used it) -- the first real secret this app
--- stores that's actually as sensitive as it gets.
--- api_key_enc empty string ("") is a real, distinct state, not "forgot to
--- set one" -- it means "use the operator's own OPENROUTER_API_KEY", made
--- explicit rather than silently breaking or demanding re-entry (2026-09-12,
--- see sub_agents.real_api_key()). Kept NOT NULL/empty-string rather than
--- nullable so this doesn't need a live migration on an already-created
--- table (CREATE TABLE IF NOT EXISTS is a no-op against an existing one).
+-- picks from this list, never invents an endpoint or model herself.
+-- model/base_url/api_key_enc were the original per-agent endpoint+key
+-- (api_key_enc encrypted at rest via crypto.py); superseded 2026-09-30 by
+-- model_id, a real FK into the models roster (provider + auth already
+-- encapsulated there, see providers.py) -- kept as NOT NULL/empty-string
+-- columns rather than dropped, same "ALTER-only, never destructive"
+-- migration rule as everywhere else in this file.
 -- tool_call_limit (2026-09-14, operator's own ask: "one agent might get
 -- zero tool calls, another 100 per run") -- 0 means genuinely no tools,
 -- the original behaviour, still the default for every new entry so
@@ -279,15 +276,45 @@ CREATE TABLE IF NOT EXISTS sub_agents (
     tool_call_limit INTEGER NOT NULL DEFAULT 0,
     tool_byte_limit INTEGER NOT NULL DEFAULT 2000000,
     created_ts      REAL NOT NULL,
-    created_by      INTEGER NOT NULL REFERENCES users(id)
+    created_by      INTEGER NOT NULL REFERENCES users(id),
+    -- model_id (2026-09-30, see providers.py/models.py) -- a sub-agent now
+    -- points at a roster Model (alias -> provider -> real model name)
+    -- instead of free-typing its own model/base_url/api_key. The three
+    -- old columns above stay (SQLite can't cheaply drop a column) but are
+    -- no longer written by new rows; NULL model_id on an old row means
+    -- "still running the pre-migration way until an admin repoints it."
+    model_id        INTEGER REFERENCES models(id)
 );
 
--- Model roster (2026-09-12, see models.py) -- the three operator-tested
--- options (grok/gpt-4.1-mini/luna) are seeded rows here, not hardcoded,
--- specifically so adding a new one never needs a second mechanism.
--- `seeded`=1 marks one of those three known-tested-together entries;
--- anything else is operator-added and untested by definition (surfaced
--- honestly in the UI, never implied otherwise). Disabling (not deleting)
+-- Providers (2026-09-30, see providers.py) -- a configured connection to
+-- an LLM backend: OpenRouter with an API key, or an OAuth-connected
+-- subscription (Anthropic/OpenAI/GitHub Copilot). There is deliberately
+-- no default/seeded provider -- an instance with nothing configured here
+-- has no model access at all until an admin adds one, rather than quietly
+-- assuming OpenRouter the way this table's predecessor did.
+CREATE TABLE IF NOT EXISTS providers (
+    id                 INTEGER PRIMARY KEY,
+    workspace_id       INTEGER NOT NULL REFERENCES workspaces(id),
+    type               TEXT NOT NULL,
+    label              TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'unconfigured',
+    api_key_enc        TEXT,
+    access_token_enc   TEXT,
+    refresh_token_enc  TEXT,
+    token_expires_ts   REAL,
+    account_meta       TEXT,
+    pending_enc        TEXT,
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    created_ts         REAL NOT NULL,
+    created_by         INTEGER NOT NULL REFERENCES users(id)
+);
+
+-- Model roster (2026-09-12, reworked 2026-09-30 -- see models.py). Each
+-- row is an alias + the provider it runs through + that provider's own
+-- model-name string. No more auto-seeded "tested trio" -- those were
+-- implicitly OpenRouter-only, which doesn't generalize now that a model
+-- can belong to any provider type; an admin adds their own from the roster
+-- of providers they've actually configured. Disabling (not deleting)
 -- takes a model out of circulation the same config-preserved way the MCP
 -- toggles already work. reasoning_effort is nullable -- NULL means "don't
 -- send the parameter at all" for a model that doesn't accept it, distinct
@@ -295,13 +322,23 @@ CREATE TABLE IF NOT EXISTS sub_agents (
 -- rejected) value.
 CREATE TABLE IF NOT EXISTS models (
     id               INTEGER PRIMARY KEY,
-    slug             TEXT NOT NULL UNIQUE,
-    label            TEXT NOT NULL,
+    provider_id      INTEGER REFERENCES providers(id),
+    model_name       TEXT NOT NULL,
+    alias            TEXT NOT NULL,
     reasoning_effort TEXT,
     enabled          INTEGER NOT NULL DEFAULT 1,
     seeded           INTEGER NOT NULL DEFAULT 0,
     created_ts       REAL NOT NULL
 );
+
+-- model_chain (primary + fallback model ordering, 2026-09-30) is created
+-- further down in init(), AFTER the models-rebuild migration runs, not
+-- here -- see that block's own comment for why: creating it here, before
+-- an existing install's `models` gets rebuilt, would compile its FK
+-- against the OLD `models` table, which SQLite's own RENAME TABLE then
+-- silently repoints at the throwaway `models_pre_provider_rework` name
+-- (SQLite updates every other table's REFERENCES clause on a rename),
+-- permanently broken the moment that throwaway table is dropped.
 
 -- Sub-agent jobs (2026-09-12) -- see jobs.py. Dispatched, run in a
 -- background thread, never auto-retried on failure (same standing rule as
@@ -1700,6 +1737,8 @@ _MIGRATIONS: list[str] = [
     # emitting a receipt at all is an explicit opt-in, never something a
     # peer connection acquires silently on upgrade.
     "ALTER TABLE peers ADD COLUMN receipt_granularity TEXT NOT NULL DEFAULT 'off'",
+    # sub_agents.model_id is NOT here -- see init()'s own comment on why
+    # (same models-rename FK-rewrite hazard as model_chain).
 ]
 
 
@@ -1813,7 +1852,7 @@ def init() -> None:
         # down to the same meaning. No ALTER involved (schema unchanged),
         # so this can't be coupled to one succeeding once like the block
         # above -- just an always-safe no-op once there's nothing left to
-        # normalize, run every startup the same way seed_defaults() is.
+        # normalize, run every startup regardless.
         conn.execute("UPDATE models SET reasoning_effort=NULL WHERE reasoning_effort='none'")
         # schedule_runs briefly shipped with a `REFERENCES schedules(id)`
         # FK (this feature's very first deploy, before any real schedule
@@ -1836,6 +1875,49 @@ def init() -> None:
             conn.execute("INSERT INTO schedule_runs SELECT * FROM schedule_runs_pre_fk_fix")
             conn.execute("DROP TABLE schedule_runs_pre_fk_fix")
             conn.execute("CREATE INDEX IF NOT EXISTS ix_schedule_runs_schedule ON schedule_runs(schedule_id, ts)")
+        # Providers/Models rework (2026-09-30) -- `models` moves from a
+        # flat OpenRouter-slug list (slug/label, slug UNIQUE) to
+        # provider_id/model_name/alias, and the old UNIQUE-on-slug
+        # constraint has to go: two different providers can legitimately
+        # use the same underlying model_name string. RENAME COLUMN can't
+        # drop a constraint, so this is a real rebuild, same shape as the
+        # schedule_runs fix just above -- detected via table_info (a
+        # fresh database's SCHEMA above already creates the new shape
+        # directly, so this is a no-op there), acts once. provider_id is
+        # left NULL for every migrated row; providers.migrate_from_env()
+        # (called once at startup, after this) links them to an
+        # auto-created OpenRouter provider if OPENROUTER_API_KEY is set,
+        # or leaves them unlinked -- surfaced honestly in the UI as
+        # "needs a provider" -- if it isn't.
+        if any(r["name"] == "slug" for r in conn.execute("PRAGMA table_info(models)").fetchall()):
+            conn.execute("ALTER TABLE models RENAME TO models_pre_provider_rework")
+            conn.execute(
+                "CREATE TABLE models (id INTEGER PRIMARY KEY, provider_id INTEGER REFERENCES providers(id), "
+                "model_name TEXT NOT NULL, alias TEXT NOT NULL, reasoning_effort TEXT, "
+                "enabled INTEGER NOT NULL DEFAULT 1, seeded INTEGER NOT NULL DEFAULT 0, "
+                "created_ts REAL NOT NULL)")
+            conn.execute(
+                "INSERT INTO models(id, provider_id, model_name, alias, reasoning_effort, enabled, "
+                "seeded, created_ts) SELECT id, NULL, slug, label, reasoning_effort, enabled, seeded, "
+                "created_ts FROM models_pre_provider_rework")
+            conn.execute("DROP TABLE models_pre_provider_rework")
+        # See the comment where model_chain used to live in SCHEMA above --
+        # created here, unconditionally (IF NOT EXISTS -- a no-op on every
+        # later startup), always AFTER `models` is guaranteed to already be
+        # in its final shape, whether that took the rebuild just above or
+        # SCHEMA's own CREATE TABLE IF NOT EXISTS already had it right on a
+        # fresh database.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS model_chain (workspace_id INTEGER NOT NULL REFERENCES workspaces(id), "
+            "model_id INTEGER NOT NULL REFERENCES models(id), priority INTEGER NOT NULL, "
+            "PRIMARY KEY (workspace_id, priority))")
+        # sub_agents.model_id -- same reasoning as model_chain just above:
+        # added here (never in _MIGRATIONS, which runs before this point)
+        # so its FK always compiles against `models` in its FINAL shape.
+        try:
+            conn.execute("ALTER TABLE sub_agents ADD COLUMN model_id INTEGER REFERENCES models(id)")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def write(fn):

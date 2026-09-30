@@ -172,7 +172,7 @@ def _direct_key(provider: str) -> str | None:
 
 def _call_direct(messages: list[dict], *, provider: str, native_model: str, max_tokens: int,
                  temperature: float, timeout: int, tools: list | None, tool_choice,
-                 want_json: bool, reasoning_effort: str | None) -> dict:
+                 want_json: bool, reasoning_effort: str | None, api_key: str | None = None) -> dict:
     """Same request the OpenRouter path below would have made, translated
     to that provider's own native Chat Completions shape and sent straight
     to them, bypassing OpenRouter entirely. Returns the identical
@@ -237,7 +237,12 @@ def _call_direct(messages: list[dict], *, provider: str, native_model: str, max_
         # value it actually accepts instead. See _REQUIRES_LITERAL_NONE's
         # own comment above; the admin never had to know this.
         body["reasoning_effort"] = "none"
-    key = _direct_key(provider)
+    # api_key override (2026-09-30, see _call_openai_api_key) -- an
+    # explicitly configured Provider's own key takes precedence over the
+    # legacy env-var-only OAI_API_KEY lookup, same "caller already
+    # resolved this" precedence call() itself makes for its own api_key
+    # override.
+    key = api_key or _direct_key(provider)
     if not key:
         raise ModelError(f"no direct key configured for provider {provider!r}")
     last = None
@@ -280,7 +285,17 @@ def _call_direct(messages: list[dict], *, provider: str, native_model: str, max_
 def call(messages: list[dict], *, model: str | None = None, max_tokens: int | None = None,
          temperature: float | None = None, timeout: int | None = None,
          tools: list | None = None, tool_choice: str | dict | None = None,
-         want_json: bool = False, reasoning_effort: str | None = None) -> dict:
+         want_json: bool = False, reasoning_effort: str | None = None,
+         api_key: str | None = None, base_url: str | None = None,
+         extra_headers: dict | None = None) -> dict:
+    """api_key/base_url/extra_headers (2026-09-30, see providers.py) are
+    overrides used by call_for_model()'s OpenRouter/Copilot adapters below
+    -- both are OpenAI-chat-completions-shaped, so they reuse this
+    function wholesale instead of duplicating its retry/timeout logic,
+    just pointed at a different endpoint/key/headers. Every existing
+    caller that doesn't pass these (vision(), the background-task callers
+    that pass a bare model= slug) gets EXACTLY today's behavior: OpenRouter,
+    _key()'s env-only key, no extra headers."""
     model_slug = model or DEFAULT_MODEL
     mtok = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
     temp = temperature if temperature is not None else DEFAULT_TEMPERATURE
@@ -308,23 +323,28 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
     # param this shape doesn't happen to support -- so this is strictly
     # additive: a model with no direct key configured, or a direct call
     # that fails for any reason, behaves exactly as it always has.
-    provider = model_slug.split("/", 1)[0] if "/" in model_slug else ""
-    if _direct_key(provider):
-        native_model = model_slug.split("/", 1)[1]
-        try:
-            return _call_direct(messages, provider=provider, native_model=native_model,
-                                max_tokens=mtok, temperature=temp, timeout=to, tools=tools,
-                                tool_choice=tool_choice, want_json=want_json, reasoning_effort=effort)
-        except ModelError as exc:
-            print(f"chat.call: direct {provider} call for {model_slug!r} failed ({exc}) -- "
-                 f"falling back to OpenRouter for this turn", flush=True)
+    # Legacy direct-provider vendor-sniffing (see _DIRECT_PROVIDERS above)
+    # only applies when the caller hasn't already told us exactly where to
+    # send this -- an api_key/base_url override (call_for_model()'s own
+    # adapters) means a real Provider has already been resolved, and takes
+    # precedence over guessing from the slug's vendor prefix.
+    if api_key is None and base_url is None:
+        provider = model_slug.split("/", 1)[0] if "/" in model_slug else ""
+        if _direct_key(provider):
+            native_model = model_slug.split("/", 1)[1]
+            try:
+                return _call_direct(messages, provider=provider, native_model=native_model,
+                                    max_tokens=mtok, temperature=temp, timeout=to, tools=tools,
+                                    tool_choice=tool_choice, want_json=want_json, reasoning_effort=effort)
+            except ModelError as exc:
+                print(f"chat.call: direct {provider} call for {model_slug!r} failed ({exc}) -- "
+                     f"falling back to OpenRouter for this turn", flush=True)
 
     body = {
         "model": model_slug,
         "messages": messages,
         "max_tokens": mtok,
         "temperature": temp,
-        "provider": {"zdr": True},
         # Real per-call dollar cost back in the response (usage.cost) --
         # not included by default; OpenRouter only computes/returns it
         # when explicitly asked. Needed to measure actual spend rather
@@ -332,6 +352,10 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
         # tokens (billed as output) can make meaningfully wrong.
         "usage": {"include": True},
     }
+    if base_url is None:
+        # OpenRouter-specific routing hint -- meaningless (and not sent)
+        # once base_url points somewhere else, e.g. Copilot's own endpoint.
+        body["provider"] = {"zdr": True}
     if want_json:
         body["response_format"] = {"type": "json_object"}
     if tools:
@@ -345,13 +369,16 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
     # existing caller/model and only pass explicitly where it matters.
     if effort:
         body["reasoning"] = {"effort": effort}
+    url = base_url or API_URL
+    headers = {"Authorization": f"Bearer {api_key or _key()}", "Content-Type": "application/json",
+              "X-Title": "nori"}
+    if extra_headers:
+        headers.update(extra_headers)
     last = None
     for attempt in range(API_RETRIES + 1):
         try:
             req = urllib.request.Request(
-                API_URL, data=json.dumps(body).encode("utf-8"), method="POST",
-                headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json",
-                        "X-Title": "nori"})
+                url, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
             try:
                 data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
             except concurrent.futures.TimeoutError:
@@ -578,21 +605,326 @@ def _detect_leaked_call(text: str, leak_re: re.Pattern | None) -> str | None:
     return m.group(0) if m else None
 
 
-def _resolve_model(workspace_id: int) -> tuple[str | None, str | None]:
-    """(model_slug, reasoning_effort) for this workspace's current choice
-    (models.py + config.default_model_slug), falling back to the env vars
-    (NORI_MODEL/NORI_REASONING_EFFORT) when nothing's been explicitly
-    chosen yet, or the configured model has since been disabled/removed --
-    never a hard failure over a settings gap. None/None defers entirely
-    to call()'s own env-var defaults."""
+def _resolve_model_chain(workspace_id: int) -> list[dict]:
+    """This workspace's primary+fallback models, in order, each with its
+    provider nested (see models.get_chain()) -- empty if nothing's
+    configured, or every configured entry's provider/model has since been
+    disabled -- never a hard failure over a settings gap; call_via_chain()
+    turns an empty chain into one clear ModelError instead."""
     import models  # local: models.py has no import chain back to chat.py, but kept local/lazy for consistency with the pattern elsewhere in this file
-    slug = config.get("workspace", workspace_id, "default_model_slug")
-    if not slug:
+    return models.get_chain(workspace_id)
+
+
+def _resolve_model(workspace_id: int) -> tuple[str | None, str | None]:
+    """Back-compat convenience for callers that just want the PRIMARY
+    model's (model_name, reasoning_effort) for display/capability checks
+    (server.py's status page, model_accepts_images()) -- not for making a
+    call, which should go through call_via_chain() instead. None/None
+    means nothing's configured for this workspace."""
+    chain = _resolve_model_chain(workspace_id)
+    if not chain:
         return None, None
-    row = models.get_by_slug(slug)
-    if row is None or not row["enabled"]:
-        return None, None
-    return row["slug"], row["reasoning_effort"]
+    return chain[0]["model_name"], chain[0]["reasoning_effort"]
+
+
+# ── Provider dispatch (2026-09-30, see providers.py) ───────────────────
+# OpenRouter and GitHub Copilot are both OpenAI-chat-completions-shaped,
+# so their adapters just reuse call() above with a different base_url/
+# api_key/headers. Anthropic and OpenAI's OAuth-subscription endpoints
+# are NOT chat-completions-shaped (Anthropic's own Messages API; OpenAI's
+# ChatGPT-backend Responses-style endpoint) and need real request/response
+# translation -- see each adapter's own docstring for exactly how
+# confident that translation is; both are unofficial, undocumented paths.
+
+def _call_openrouter(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                     want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    import providers
+    key = providers.api_key_for(entry["provider"])
+    return call(messages, model=entry["model_name"], reasoning_effort=entry["reasoning_effort"],
+               tools=tools, tool_choice=tool_choice, want_json=want_json, max_tokens=max_tokens,
+               temperature=temperature, timeout=timeout, api_key=key)
+
+
+def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                         want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    import providers
+    token = providers.access_token_for(entry["provider"])
+    headers = {"copilot-integration-id": "vscode-chat", "openai-intent": "conversation-panel",
+              "x-github-api-version": "2025-04-01", **providers._COPILOT_HEADERS}
+    return call(messages, model=entry["model_name"], reasoning_effort=entry["reasoning_effort"],
+               tools=tools, tool_choice=tool_choice, want_json=want_json, max_tokens=max_tokens,
+               temperature=temperature, timeout=timeout, api_key=token,
+               base_url=providers.COPILOT_COMPLETIONS_URL, extra_headers=headers)
+
+
+_ANTHROPIC_CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
+
+
+def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool = False) -> tuple[list[dict], list[dict]]:
+    """Nori's messages are OpenAI-chat-completions-shaped (a "system" role
+    message, "tool" role results, assistant tool_calls); Anthropic's
+    Messages API takes system as a separate top-level param and wants
+    tool results as content blocks inside a user message. Best-effort
+    translation covering plain text turns and simple tool round-trips --
+    NOT yet fully verified against a real streaming/tool-heavy
+    conversation (see _call_anthropic_oauth's own docstring).
+
+    claude_code_identity=True (OAuth only, see _call_anthropic_oauth)
+    prepends the "You are Claude Code" system block Anthropic's Cloudflare
+    gate requires alongside an OAuth bearer token. A real API key
+    (_call_anthropic_api_key) is a normal, fully-supported call -- sending
+    that fake identity there would be pointless mimicry with no gate to
+    satisfy, so it's opt-in, not the default."""
+    system_blocks = [{"type": "text", "text": _ANTHROPIC_CLAUDE_CODE_SYSTEM}] if claude_code_identity else []
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            system_blocks.append({"type": "text", "text": m.get("content") or ""})
+        elif role == "tool":
+            out.append({"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": m.get("tool_call_id"),
+                "content": m.get("content") or ""}]})
+        elif role == "assistant" and m.get("tool_calls"):
+            blocks = []
+            if m.get("content"):
+                blocks.append({"type": "text", "text": m["content"]})
+            for tc in m["tool_calls"]:
+                fn = tc.get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (ValueError, TypeError):
+                    args = {}
+                blocks.append({"type": "tool_use", "id": tc.get("id"), "name": fn.get("name"), "input": args})
+            out.append({"role": "assistant", "content": blocks})
+        else:
+            out.append({"role": role, "content": m.get("content") or ""})
+    return system_blocks, out
+
+
+def _tools_to_anthropic(tools: list[dict] | None) -> list[dict] | None:
+    if not tools:
+        return None
+    out = []
+    for t in tools:
+        fn = t.get("function") or {}
+        out.append({"name": fn.get("name"), "description": fn.get("description") or "",
+                   "input_schema": fn.get("parameters") or {"type": "object", "properties": {}}})
+    return out
+
+
+def _anthropic_messages_request(model_name: str, messages: list[dict], tools: list[dict] | None,
+                                reasoning_effort: str | None, max_tokens, temperature, timeout,
+                                headers: dict, *, claude_code_identity: bool) -> dict:
+    """Shared request-build + HTTP call + response parsing for both
+    Anthropic adapters (OAuth and API-key, below) -- only auth headers and
+    the identity system block differ between them; the wire shape and
+    response translation are identical either way, so this is the one
+    place that needs updating if either changes."""
+    import providers
+    system_blocks, anth_messages = _messages_to_anthropic(messages, claude_code_identity=claude_code_identity)
+    body: dict = {"model": model_name, "messages": anth_messages, "system": system_blocks,
+                 "max_tokens": max_tokens or DEFAULT_MAX_TOKENS}
+    if temperature is not None:
+        body["temperature"] = temperature
+    anth_tools = _tools_to_anthropic(tools)
+    if anth_tools:
+        body["tools"] = anth_tools
+    if reasoning_effort:
+        body["thinking"] = {"type": "enabled", "budget_tokens": 4096}
+    to = timeout or API_TIMEOUT_S
+    req = urllib.request.Request(providers.ANTHROPIC_MESSAGES_URL, data=json.dumps(body).encode("utf-8"),
+                                 method="POST", headers=headers)
+    try:
+        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise ModelError(f"Anthropic call failed ({exc.code}): {detail}", transient=exc.code >= 500)
+    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
+        raise ModelError(f"Anthropic call failed: {exc}")
+    if data.get("error"):
+        raise ModelError(f"Anthropic api error: {str(data['error'])[:300]}", transient=True)
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    tool_calls = [{"id": b.get("id"), "type": "function",
+                  "function": {"name": b.get("name"), "arguments": json.dumps(b.get("input") or {})}}
+                 for b in data.get("content", []) if b.get("type") == "tool_use"]
+    usage = data.get("usage") or {}
+    return {"content": text, "finish_reason": data.get("stop_reason"), "tool_calls": tool_calls,
+           "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
+                     "cost": None}}
+
+
+def _call_anthropic_oauth(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                          want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """Anthropic gates OAuth-bearer-token requests on looking like Claude
+    Code itself (the claude-code-20250219/oauth-2025-04-20 beta headers
+    plus the identity system block _anthropic_messages_request adds) --
+    confirmed against public reports at the time this was written. There
+    is also a real, reported possibility that a Claude Code OAuth token is
+    scoped to the Claude Code client specifically and simply refuses
+    third-party Messages API calls no matter what headers accompany it --
+    if every call through this adapter fails with a 401/403 despite a
+    valid, freshly-refreshed token, that's the likely cause, not a bug
+    here. See _call_anthropic_api_key for the (much simpler) real-API-key
+    path, which needs none of this mimicry."""
+    import providers
+    token = providers.access_token_for(entry["provider"])
+    headers = {"Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
+              "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+              "x-app": "cli", "User-Agent": "claude-cli/1.0.56 (external, cli)"}
+    return _anthropic_messages_request(entry["model_name"], messages, tools, entry["reasoning_effort"],
+                                       max_tokens, temperature, timeout, headers, claude_code_identity=True)
+
+
+def _call_anthropic_api_key(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                            want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """A real Anthropic API key against the real Messages API -- no OAuth,
+    no Claude-Code mimicry, none of _call_anthropic_oauth's gate-related
+    caveats. Same request/response translation either way (see
+    _anthropic_messages_request); only the auth header differs."""
+    import providers
+    key = providers.api_key_for(entry["provider"])
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    return _anthropic_messages_request(entry["model_name"], messages, tools, entry["reasoning_effort"],
+                                       max_tokens, temperature, timeout, headers, claude_code_identity=False)
+
+
+def _call_openai_api_key(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                         want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """A real OpenAI API key against the real, public Chat Completions API
+    -- reuses _call_direct (the same OpenAI-native request shape the
+    legacy env-var-only direct-OpenAI path already gets right:
+    max_completion_tokens not max_tokens, temperature dropped for a
+    reasoning call, flat reasoning_effort not OpenRouter's nested wrapper)
+    rather than call()'s plain OpenRouter-shaped body, which real OpenAI
+    models -- especially reasoning ones -- 400 on. Only the key source
+    differs from the legacy path: this Provider's own key, not
+    OAI_API_KEY."""
+    import providers
+    key = providers.api_key_for(entry["provider"])
+    mtok = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+    temp = temperature if temperature is not None else DEFAULT_TEMPERATURE
+    to = timeout if timeout is not None else API_TIMEOUT_S
+    return _call_direct(messages, provider="openai", native_model=entry["model_name"], max_tokens=mtok,
+                        temperature=temp, timeout=to, tools=tools, tool_choice=tool_choice,
+                        want_json=want_json, reasoning_effort=entry["reasoning_effort"], api_key=key)
+
+
+def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                       want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """The ChatGPT-backend Codex endpoint (chatgpt.com/backend-api/codex/
+    responses) is NOT the public OpenAI Chat Completions API -- it's the
+    same Responses-style endpoint the Codex CLI itself talks to over its
+    OAuth session, undocumented beyond what's visible in Codex's own
+    issue tracker at the time this was written. This translation (a
+    Responses-API-shaped {"input": [...]} body, text extracted back out
+    of output[].content[].text) is a best-effort reading of that public
+    information, refined against real errors from a real connected
+    account as they surface (store:false, below, was the first) rather
+    than fully verified up front -- still treat a new failure through
+    this adapter as likely needing another real fix here, not a bug
+    elsewhere.
+    """
+    import providers
+    token = providers.access_token_for(entry["provider"])
+    input_items = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            input_items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
+                               "output": m.get("content") or ""})
+        elif role == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function") or {}
+                input_items.append({"type": "function_call", "call_id": tc.get("id"),
+                                   "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
+        else:
+            input_items.append({"role": role, "content": m.get("content") or ""})
+    # store:false is REQUIRED, not optional, on this endpoint -- found
+    # live (2026-09-30): omitting it (the public Responses API's own
+    # default, store:true) 400s with "Store must be set to false" on the
+    # ChatGPT-backend path specifically, since it has nowhere to persist
+    # a stored response the way the public API does.
+    body: dict = {"model": entry["model_name"], "input": input_items, "stream": False, "store": False}
+    if tools:
+        body["tools"] = [{"type": "function", "name": (t.get("function") or {}).get("name"),
+                         "description": (t.get("function") or {}).get("description") or "",
+                         "parameters": (t.get("function") or {}).get("parameters") or {}}
+                        for t in tools]
+    if entry["reasoning_effort"]:
+        body["reasoning"] = {"effort": entry["reasoning_effort"]}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+              "chatgpt-account-id": (entry["provider"].get("account_meta") or {}).get("account_id", "")}
+    to = timeout or API_TIMEOUT_S
+    req = urllib.request.Request(providers.OPENAI_CODEX_URL, data=json.dumps(body).encode("utf-8"),
+                                 method="POST", headers=headers)
+    try:
+        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise ModelError(f"OpenAI OAuth call failed ({exc.code}): {detail}", transient=exc.code >= 500)
+    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
+        raise ModelError(f"OpenAI OAuth call failed: {exc}")
+    if data.get("error"):
+        raise ModelError(f"OpenAI OAuth api error: {str(data['error'])[:300]}", transient=True)
+    text_parts, tool_calls = [], []
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for c in item.get("content", []):
+                if c.get("type") in ("output_text", "text"):
+                    text_parts.append(c.get("text", ""))
+        elif item.get("type") == "function_call":
+            tool_calls.append({"id": item.get("call_id"), "type": "function",
+                              "function": {"name": item.get("name"), "arguments": item.get("arguments") or "{}"}})
+    usage = data.get("usage") or {}
+    return {"content": "".join(text_parts), "finish_reason": data.get("status"), "tool_calls": tool_calls,
+           "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
+                     "cost": None}}
+
+
+_PROVIDER_CALLERS = {
+    "openrouter": _call_openrouter,
+    "github_copilot": _call_github_copilot,
+    "anthropic_oauth": _call_anthropic_oauth,
+    "anthropic_api_key": _call_anthropic_api_key,
+    "openai_oauth": _call_openai_oauth,
+    "openai_api_key": _call_openai_api_key,
+}
+
+
+def call_for_model(entry: dict, messages: list[dict], **kw) -> dict:
+    """Dispatch one completion call through a single resolved model
+    (models.get_with_provider()'s shape -- a model row with "provider"
+    nested). Raises ModelError on any failure; a caller wanting a
+    fallback chain should use call_via_chain() instead, which catches
+    this and tries the next model. jobs.py (sub-agents, exactly one model
+    each, no chain) calls this directly."""
+    provider = entry.get("provider")
+    if provider is None:
+        raise ModelError(f"model {entry.get('alias')!r} has no provider linked")
+    caller = _PROVIDER_CALLERS.get(provider["type"])
+    if caller is None:
+        raise ModelError(f"unknown provider type {provider['type']!r}")
+    return caller(entry, messages, **kw)
+
+
+def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
+    """The primary-then-fallback loop: try this workspace's primary model,
+    then each fallback in order, on ModelError -- generalizes the old
+    direct-provider-then-OpenRouter fallback into the real Providers/
+    Models chain. This is what run() below uses for every real turn."""
+    chain = _resolve_model_chain(workspace_id)
+    if not chain:
+        raise ModelError(
+            "no model configured for this workspace -- add a provider and a model in "
+            "Settings > Models", transient=False)
+    attempts = []
+    for entry in chain:
+        try:
+            return call_for_model(entry, messages, **kw)
+        except ModelError as exc:
+            attempts.append(f"{entry['alias']}: {exc}")
+    raise ModelError("every configured model failed for this turn -- " + "; ".join(attempts))
 
 
 def run(session: dict, user_id: int, display_name: str, *, extra_message: dict | None = None,
@@ -680,8 +1012,9 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         messages.append(checklist)
     schemas = tools.active_schemas(session)
     leak_re = _leak_pattern({s["function"]["name"] for s in schemas}) if schemas else None
-    model_slug, reasoning_effort = _resolve_model(session["workspace_id"])
+    model_slug, _reasoning_effort = _resolve_model(session["workspace_id"])
     t.model = model_slug or DEFAULT_MODEL
+    workspace_id = session["workspace_id"]
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
     cost_unavailable = False
 
@@ -711,7 +1044,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
 
     for rnd in range(1, rounds + 1):
         with t.stage("model_call", round=rnd):
-            result = call(messages, tools=schemas or None, model=model_slug, reasoning_effort=reasoning_effort)
+            result = call_via_chain(messages, workspace_id, tools=schemas or None)
         _add_usage(result.get("usage") or {})
         calls = result.get("tool_calls") or []
         if not calls:
@@ -722,7 +1055,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
             print(f"chat.run round {rnd}: LEAKED TOOL CALL detected -- matched={leak!r} -- retrying once",
                  flush=True)
             with t.stage("model_call", round=rnd, retry="leak"):
-                retry = call(messages + [_LEAK_NUDGE], tools=schemas or None, model=model_slug, reasoning_effort=reasoning_effort)
+                retry = call_via_chain(messages + [_LEAK_NUDGE], workspace_id, tools=schemas or None)
             _add_usage(retry.get("usage") or {})
             retry_calls = retry.get("tool_calls") or []
             if retry_calls:

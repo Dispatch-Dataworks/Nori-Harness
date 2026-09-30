@@ -6,17 +6,14 @@
 # file at the root of this repository, or
 # <https://www.gnu.org/licenses/agpl-3.0.html>.
 
-"""Model roster -- the only module with raw SQL against `models`. Gives
-the operator real control over which models Nori (and sub-agents) can
-run on, without a code change or restart for anything but the currently-
-selected default (see chat.py's own resolution logic).
-
-The three models actually compared today (2026-09-12: Grok, gpt-4.1-mini,
-gpt-5.6-luna) are seeded rows, not a hardcoded list -- once the operator
-can add their own, the built-ins need to live in the same table or there
-are two mechanisms doing the same job. `seed_defaults()` is idempotent
-(checked by slug), safe to call every startup the same way mcp_servers.
-register_all() already is.
+"""Model roster -- the only module with raw SQL against `models` and
+`model_chain`. Reworked 2026-09-30 (see providers.py): a model is now an
+alias + the provider it runs through + that provider's own model-name
+string, not a flat OpenRouter-slug list. No more auto-seeded "tested
+trio" -- those were implicitly OpenRouter-only, which doesn't generalize
+now that a model can belong to any provider type; an admin adds their own
+from the roster of providers they've actually configured, and there is
+deliberately no default.
 """
 from __future__ import annotations
 
@@ -24,57 +21,22 @@ import time
 
 import store
 
-# (slug, label, reasoning_effort) -- reasoning_effort=None means "don't
-# send the parameter"; both Grok and gpt-4.1-mini were tested without it
-# and never needed it. Luna's is "low" -- the whole basis of the cost
-# expectation for using it at all.
-_SEEDED = [
-    ("x-ai/grok-4.3", "Grok 4.3", None),
-    ("openai/gpt-4.1-mini", "GPT-4.1 Mini", None),
-    ("openai/gpt-5.6-luna", "GPT-5.6 Luna", "low"),
-]
-
 _VALID_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 # "none" deliberately NOT a selectable value here (2026-09-14, the models
 # page's own confusing-pair bug) -- reasoning_effort=None already means
-# "no reasoning" and is the only way to say that now. It used to also be
-# expressible as the literal string "none", which looked like a second,
-# different option in the dropdown ("(none -- do not send)" vs "none")
-# even though both meant the same thing to every model except Luna --
-# whose own native API rejects OMITTING the field outright when tools are
-# present, needing the literal string sent instead. That's not something
-# an admin should have to know or choose per model: chat.py's own
-# per-model quirk table (_REQUIRES_LITERAL_NONE) now decides HOW "no
-# reasoning" gets represented on the wire; the admin only ever picks
-# whether reasoning is wanted, once, the same way for every model.
-
-
-def seed_defaults() -> int:
-    """Insert the tested trio if they aren't already there -- never
-    overwrites an operator's own edits to them (an existing row, however
-    it got there, is left alone)."""
-    added = 0
-    now = time.time()
-    for slug, label, effort in _SEEDED:
-        exists = store.read(lambda c, slug=slug: c.execute(
-            "SELECT 1 FROM models WHERE slug=?", (slug,)).fetchone())
-        if exists:
-            continue
-        store.write(lambda c, slug=slug, label=label, effort=effort: c.execute(
-            "INSERT INTO models(slug, label, reasoning_effort, enabled, seeded, created_ts) "
-            "VALUES (?,?,?,1,1,?)", (slug, label, effort, now)))
-        added += 1
-    return added
+# "no reasoning" and is the only way to say that now. See chat.py's own
+# per-model quirk table for how "no reasoning" gets represented on the
+# wire for a model that rejects omitting the field outright.
 
 
 def list_all() -> list[dict]:
     return [dict(r) for r in store.read(lambda c: c.execute(
-        "SELECT * FROM models ORDER BY seeded DESC, label").fetchall())]
+        "SELECT * FROM models ORDER BY alias").fetchall())]
 
 
 def list_enabled() -> list[dict]:
     return [dict(r) for r in store.read(lambda c: c.execute(
-        "SELECT * FROM models WHERE enabled=1 ORDER BY seeded DESC, label").fetchall())]
+        "SELECT * FROM models WHERE enabled=1 ORDER BY alias").fetchall())]
 
 
 def get(model_id: int) -> dict | None:
@@ -82,25 +44,52 @@ def get(model_id: int) -> dict | None:
     return dict(r) if r else None
 
 
-def get_by_slug(slug: str) -> dict | None:
-    r = store.read(lambda c: c.execute("SELECT * FROM models WHERE slug=?", (slug,)).fetchone())
-    return dict(r) if r else None
+def get_with_provider(model_id: int) -> dict | None:
+    """A model row with its provider row nested under "provider" -- what
+    chat.py's dispatch (call_for_model/call_via_chain) and jobs.py's
+    sub-agent execution both actually need to make a call. None if the
+    model doesn't exist, is disabled, or has no provider linked yet."""
+    import providers
+    row = get(model_id)
+    if row is None or not row["enabled"] or not row["provider_id"]:
+        return None
+    provider = providers.get(row["provider_id"])
+    if provider is None or not provider["enabled"]:
+        return None
+    row["provider"] = provider
+    return row
 
 
-def create(slug: str, label: str, reasoning_effort: str | None) -> tuple[bool, str]:
-    slug = (slug or "").strip()
-    label = (label or "").strip()
+def create(alias: str, provider_id: int, model_name: str, reasoning_effort: str | None) -> tuple[bool, str]:
+    alias = (alias or "").strip()
+    model_name = (model_name or "").strip()
     reasoning_effort = (reasoning_effort or "").strip() or None
-    if not slug or not label:
-        return False, "slug and label are both required"
+    if not alias:
+        return False, "an alias is required"
+    if not provider_id:
+        return False, "a provider is required"
+    if not model_name:
+        return False, "a model name is required"
     if reasoning_effort and reasoning_effort not in _VALID_EFFORTS:
         return False, f"reasoning effort must be one of: {', '.join(_VALID_EFFORTS)}"
-    if get_by_slug(slug) is not None:
-        return False, f"{slug!r} is already in the list"
     store.write(lambda c: c.execute(
-        "INSERT INTO models(slug, label, reasoning_effort, enabled, seeded, created_ts) "
-        "VALUES (?,?,?,1,0,?)", (slug, label, reasoning_effort, time.time())))
+        "INSERT INTO models(provider_id, model_name, alias, reasoning_effort, enabled, seeded, created_ts) "
+        "VALUES (?,?,?,?,1,0,?)", (provider_id, model_name, alias, reasoning_effort, time.time())))
     return True, "added"
+
+
+def delete(model_id: int) -> None:
+    """References cleared BEFORE the models row itself -- both model_chain
+    and sub_agents.model_id are real FKs to models(id) (PRAGMA
+    foreign_keys=ON), so deleting the parent row first violates the
+    constraint the moment either table still points at it (found live,
+    2026-09-30: any migrated model already set as primary/fallback, or
+    already assigned to a sub-agent, failed to delete). A sub-agent
+    losing its model this way is left with model_id NULL -- "needs
+    reconfiguring," surfaced honestly, not a crash."""
+    store.write(lambda c: c.execute("DELETE FROM model_chain WHERE model_id=?", (model_id,)))
+    store.write(lambda c: c.execute("UPDATE sub_agents SET model_id=NULL WHERE model_id=?", (model_id,)))
+    store.write(lambda c: c.execute("DELETE FROM models WHERE id=?", (model_id,)))
 
 
 def set_enabled(model_id: int, enabled: bool) -> None:
@@ -115,3 +104,33 @@ def set_reasoning_effort(model_id: int, reasoning_effort: str | None) -> tuple[b
     store.write(lambda c: c.execute(
         "UPDATE models SET reasoning_effort=? WHERE id=?", (reasoning_effort, model_id)))
     return True, "saved"
+
+
+# ── Primary + fallback chain (2026-09-30, replaces config.default_model_slug) ──
+
+def get_chain(workspace_id: int) -> list[dict]:
+    """Every model in this workspace's primary/fallback chain, in order
+    (priority 0 = primary), each with its provider nested (see
+    get_with_provider) -- entries whose model/provider has since been
+    disabled or unlinked are silently dropped rather than raising, so a
+    stale chain degrades to "try the next one" instead of erroring."""
+    rows = store.read(lambda c: c.execute(
+        "SELECT model_id FROM model_chain WHERE workspace_id=? ORDER BY priority", (workspace_id,)).fetchall())
+    out = []
+    for r in rows:
+        entry = get_with_provider(r["model_id"])
+        if entry is not None:
+            out.append(entry)
+    return out
+
+
+def set_chain(workspace_id: int, model_ids: list[int]) -> None:
+    """Replaces the whole chain for this workspace in one transaction --
+    model_ids[0] becomes priority 0 (primary), the rest fallbacks in the
+    order given. An empty list clears it entirely (no model configured)."""
+    def _txn(c):
+        c.execute("DELETE FROM model_chain WHERE workspace_id=?", (workspace_id,))
+        for priority, model_id in enumerate(model_ids):
+            c.execute("INSERT INTO model_chain(workspace_id, model_id, priority) VALUES (?,?,?)",
+                     (workspace_id, model_id, priority))
+    store.write(_txn)

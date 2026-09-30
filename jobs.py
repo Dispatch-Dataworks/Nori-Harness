@@ -15,10 +15,10 @@ by US, as a total-job deadline -- not something we trust the far end to
 honor, and not reset per HTTP call once a job can make more than one (see
 _run_job_with_tools).
 
-ZDR is OpenRouter-specific request syntax. It's added automatically when
-a roster entry's base_url is OpenRouter's; a different provider an
-operator adds to the roster is trusted on its own data practices, since
-we can't force a flag a provider might not even understand.
+A sub-agent's HTTP call (which provider, what auth, ZDR or not) is
+entirely chat.py/providers.py's concern now (2026-09-30) -- see _call()
+below, which dispatches through chat.call_for_model() using the Model
+the roster entry points at, exactly like the primary chat turn.
 
 ── Tool access (2026-09-14, operator's own ask) ─────────────────────────
 Every sub-agent used to get zero tools, unconditionally -- a bare one-shot
@@ -108,8 +108,6 @@ import json
 import os
 import threading
 import time
-import urllib.error
-import urllib.request
 
 import store
 import sub_agents
@@ -192,20 +190,21 @@ def _update(job_id: int, **cols) -> None:
     store.write(lambda c: c.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*cols.values(), job_id)))
 
 
-def _post(agent: dict, body: dict, timeout_s: float) -> dict:
-    req = urllib.request.Request(
-        agent["base_url"], data=json.dumps(body).encode("utf-8"), method="POST",
-        headers={"Authorization": f"Bearer {sub_agents.real_api_key(agent)}",
-                "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _base_body(agent: dict) -> dict:
-    body = {"model": agent["model"]}
-    if "openrouter.ai" in agent["base_url"]:
-        body["provider"] = {"zdr": True}
-    return body
+def _call(agent: dict, messages: list[dict], tool_schema: list[dict] | None, timeout_s: float) -> dict:
+    """Dispatch through chat.py's own provider dispatch (2026-09-30, see
+    providers.py/models.py) instead of building an OpenAI-chat-completions
+    request by hand -- a sub-agent now runs on whatever provider its
+    assigned Model points at (OpenRouter, an OAuth subscription, Copilot),
+    the same as the primary chat turn, rather than needing its own
+    base_url/key. Raises chat.ModelError on failure; callers here already
+    have a broad except Exception around the whole job."""
+    import chat
+    import models
+    entry = models.get_with_provider(agent["model_id"])
+    if entry is None:
+        raise chat.ModelError(f"sub-agent {agent['label']!r}'s model is no longer available "
+                              f"(disabled, deleted, or its provider was removed)")
+    return chat.call_for_model(entry, messages, tools=tool_schema, timeout=timeout_s)
 
 
 def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int) -> None:
@@ -213,15 +212,10 @@ def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int) -> No
     default for every agent nobody has touched) still gets exactly this:
     one plain completion, no `tools` in the request, nothing else."""
     _update(job_id, status="running", started_ts=time.time())
-    body = {**_base_body(agent), "messages": [{"role": "user", "content": task}]}
     try:
-        data = _post(agent, body, timeout_s)
-        if data.get("error"):
-            _update(job_id, status="failed", error=str(data["error"])[:500], finished_ts=time.time())
-            return
+        data = _call(agent, [{"role": "user", "content": task}], None, timeout_s)
         usage = data.get("usage") or {}
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        _update(job_id, status="done", result=content, finished_ts=time.time(),
+        _update(job_id, status="done", result=data.get("content", ""), finished_ts=time.time(),
                cost_usd=usage.get("cost"), cost_unavailable=1 if usage.get("cost") is None else 0,
                prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0))
     except TimeoutError:
@@ -278,16 +272,7 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                        cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
                        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
                 return
-            body = {**_base_body(agent), "messages": messages}
-            if tools_offered:
-                body["tools"] = tool_schema
-            data = _post(agent, body, remaining)
-            if data.get("error"):
-                _update(job_id, status="failed", error=str(data["error"])[:500], finished_ts=time.time(),
-                       tool_calls_used=calls_used, tool_bytes_used=bytes_used,
-                       cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
-                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-                return
+            data = _call(agent, messages, tool_schema if tools_offered else None, remaining)
             usage = data.get("usage") or {}
             prompt_tokens += usage.get("prompt_tokens", 0)
             completion_tokens += usage.get("completion_tokens", 0)
@@ -296,16 +281,15 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
             else:
                 cost_total += usage["cost"]
 
-            msg = (data.get("choices") or [{}])[0].get("message", {})
-            tool_calls = msg.get("tool_calls") or []
+            tool_calls = data.get("tool_calls") or []
             if not tool_calls or not tools_offered:
-                _update(job_id, status="done", result=msg.get("content", ""), finished_ts=time.time(),
+                _update(job_id, status="done", result=data.get("content", ""), finished_ts=time.time(),
                        tool_calls_used=calls_used, tool_bytes_used=bytes_used,
                        cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
                        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
                 return
 
-            messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": tool_calls})
+            messages.append({"role": "assistant", "content": data.get("content"), "tool_calls": tool_calls})
             budget_hit = False
             for tc in tool_calls:
                 name = (tc.get("function") or {}).get("name")
@@ -506,6 +490,9 @@ def _dispatch_impl(session: dict, agent_label: str, task: str, raw_file_access: 
     if agent is None:
         names = [a["label"] for a in sub_agents.list_all() if a["enabled"]]
         return {"error": f"no such sub-agent {agent_label!r} -- available: {', '.join(names) or '(none configured)'}"}
+    if not agent.get("model_id"):
+        return {"error": f"sub-agent {agent_label!r} has no model configured -- pick one in "
+                         f"Settings > Sub-agents"}
     task = (task or "").strip()[:MAX_TASK_CHARS]
     if not task:
         return {"error": "task can't be empty"}

@@ -16,9 +16,11 @@ control, and web search, all through one persistent chat.
 ```
 git clone https://github.com/Dispatch-Dataworks/Nori-Harness.git nori
 cd nori
-cp .env.example .env   # fill in OPENROUTER_API_KEY at minimum
+cp .env.example .env
 docker compose up -d
 ```
+
+Once it's running, sign in and add at least one model provider under Settings > Models (OpenRouter with your own key, or an OAuth-connected Anthropic/OpenAI/GitHub Copilot subscription) and pick a primary model -- there's no default configured out of the box.
 
 Open `http://localhost:8877` — the first account you create becomes
 the household's admin.

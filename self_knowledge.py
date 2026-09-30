@@ -128,9 +128,12 @@ def _paci_summary(session: dict) -> dict:
 
 def _sub_agents_summary() -> dict:
     import jobs
+    import models
     import sub_agents
 
-    roster = [{"label": a["label"], "model": a["model"], "enabled": bool(a["enabled"]),
+    model_alias_by_id = {m["id"]: m["alias"] for m in models.list_all()}
+    roster = [{"label": a["label"], "model": model_alias_by_id.get(a["model_id"], "(none configured)"),
+              "enabled": bool(a["enabled"]),
               "tool_call_limit": a["tool_call_limit"], "tool_byte_limit": a["tool_byte_limit"]}
              for a in sub_agents.list_all()]
     return {"what_they_can_do": jobs.SUBAGENT_LIMITS_EXPLAIN, "configured_roster": roster}

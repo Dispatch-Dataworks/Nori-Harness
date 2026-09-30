@@ -8,16 +8,15 @@
 
 """Admin-managed sub-agent roster -- the only module with raw SQL against
 `sub_agents`. She picks a labeled entry from this list, never invents an
-endpoint or key herself -- adding or
-disabling an entry is an admin-only HTTP action, not something a tool call
-can do. The API key is encrypted at rest via crypto.py.
+endpoint or model herself -- adding or disabling an entry is an admin-only
+HTTP action, not something a tool call can do. Each entry points at a
+models.py roster Model (provider + auth already encapsulated there, see
+providers.py) via model_id, rather than carrying its own endpoint/key.
 """
 from __future__ import annotations
 
-import os
 import time
 
-import crypto
 import store
 
 # Sane bounds for the two per-agent tool caps (2026-09-14, operator's own
@@ -39,32 +38,39 @@ def _validate_limits(tool_call_limit: int, tool_byte_limit: int) -> str | None:
     return None
 
 
-def create(created_by: int, label: str, model: str, base_url: str, api_key: str,
+def create(created_by: int, label: str, model_id: int | None,
           tool_call_limit: int = 0, tool_byte_limit: int = TOOL_BYTE_LIMIT_DEFAULT) -> tuple[bool, str | int]:
-    """api_key may be blank -- means "use the operator's own
-    OPENROUTER_API_KEY" (2026-09-12), made explicit rather than the
-    previous behavior (required, so a blank field just errored and had to
-    be re-entered every time). Stored as a literal empty string, not
-    encrypted-empty -- real_api_key() below checks for exactly that.
+    """model_id (2026-09-30, see models.py/providers.py) -- a sub-agent
+    now picks a roster Model (alias -> provider -> real model name)
+    instead of free-typing its own model/base_url/api key; jobs.py
+    resolves and dispatches through it exactly like the primary chat turn.
+    May be None/0 -- the admin form always requires picking one, but the
+    data layer itself allows a sub-agent to exist unconfigured (same state
+    an old pre-migration row is left in), rather than making "has no
+    model yet" an error instead of a fact jobs.py can just report cleanly
+    when someone tries to actually dispatch to it.
 
     tool_call_limit=0 (the default) means exactly what it always meant
     before tools existed at all: no tools, one plain completion, nothing
     else to configure. See jobs.py for what a nonzero limit actually buys."""
     label = label.strip()
-    if not label or not model.strip() or not base_url.strip():
-        return False, "label, model, and base_url are all required"
+    if not label:
+        return False, "a label is required"
     if get_by_label(label) is not None:
         return False, f"a sub-agent named {label!r} already exists"
     err = _validate_limits(tool_call_limit, tool_byte_limit)
     if err:
         return False, err
     now = time.time()
-    key_enc = crypto.encrypt(api_key) if api_key.strip() else ""
+    # model/base_url/api_key_enc are legacy NOT NULL columns kept for old
+    # rows (see store.py's schema comment) -- new rows just satisfy the
+    # NOT NULL constraint with empty placeholders; model_id is what
+    # jobs.py actually reads.
     sid = store.write(lambda c: c.execute(
         "INSERT INTO sub_agents(label, model, base_url, api_key_enc, enabled, "
-        "tool_call_limit, tool_byte_limit, created_ts, created_by) VALUES (?,?,?,?,1,?,?,?,?)",
-        (label, model.strip(), base_url.strip(), key_enc, tool_call_limit, tool_byte_limit,
-         now, created_by)).lastrowid)
+        "tool_call_limit, tool_byte_limit, created_ts, created_by, model_id) "
+        "VALUES (?,'','','',1,?,?,?,?,?)",
+        (label, tool_call_limit, tool_byte_limit, now, created_by, model_id or None)).lastrowid)
     return True, sid
 
 
@@ -81,11 +87,8 @@ def set_limits(sub_agent_id: int, tool_call_limit: int, tool_byte_limit: int) ->
 
 
 def list_all() -> list[dict]:
-    # api_key_enc included (2026-09-12) -- uses_default_key() needs it for
-    # the roster's own "default key" vs "own key" display; the real
-    # decrypted key itself is never exposed by this function regardless.
     rows = store.read(lambda c: c.execute(
-        "SELECT id, label, model, base_url, api_key_enc, enabled, tool_call_limit, "
+        "SELECT id, label, model_id, enabled, tool_call_limit, "
         "tool_byte_limit, created_ts FROM sub_agents ORDER BY id").fetchall())
     return [dict(r) for r in rows]
 
@@ -108,13 +111,3 @@ def get_enabled_by_label(label: str) -> dict | None:
 def set_enabled(sub_agent_id: int, enabled: bool) -> None:
     store.write(lambda c: c.execute(
         "UPDATE sub_agents SET enabled=? WHERE id=?", (1 if enabled else 0, sub_agent_id)))
-
-
-def uses_default_key(row: dict) -> bool:
-    return not row["api_key_enc"]
-
-
-def real_api_key(row: dict) -> str:
-    if uses_default_key(row):
-        return os.environ.get("OPENROUTER_API_KEY", "")
-    return crypto.decrypt(row["api_key_enc"])
