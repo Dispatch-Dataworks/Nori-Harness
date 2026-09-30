@@ -2913,6 +2913,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.subagents_limits_post(sess, path.split("/")[3], form)
         if path.startswith("/admin/subagents/") and path.endswith("/delete"):
             return self.subagents_delete_post(sess, path.split("/")[3], form)
+        if path == "/admin/subagents/test":
+            return self.subagents_test_post(sess, form)
         if path == "/admin/models":
             return self.models_create_post(sess, form)
         if path == "/admin/models/chain":
@@ -3897,7 +3899,16 @@ class Handler(BaseHTTPRequestHandler):
         return self.invite_admin_form(sess, link=link)
 
     # -- admin: sub-agent roster --
-    def subagents_admin_form(self, sess: dict, err: str = "", info: str = ""):
+    def subagents_admin_form(self, sess: dict, err: str = "", info: str = "", test_result: dict | None = None):
+        """test_result (2026-09-30, operator's own ask: a way to test a
+        sub-agent's own provider/model config directly, without a live
+        chat turn) -- {"label", "prompt", "ok", "content"|"error", "usage"}
+        from subagents_test_post, rendered as its own section. Calls
+        through the exact same chat.call_for_model() dispatch_subagent's
+        own job runner uses (see jobs.py's _call()) -- same provider/auth/
+        translation, just synchronous and with no job row, no tool access,
+        no persona/system prompt (neither this nor a real dispatched job
+        ever gets one -- see jobs.py's own module docstring)."""
         if sess["role"] != "admin":
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
@@ -4004,6 +4015,39 @@ class Handler(BaseHTTPRequestHandler):
         ) if model_opts else (
             "<p class=muted>no enabled models yet -- add one in "
             "<a href='/settings?tab=models'>Model Config</a> first.</p>")
+
+        # -- Test a sub-agent directly (2026-09-30) -- a raw prompt straight
+        # to its configured model, synchronous, no job row, no tool access,
+        # no persona -- for checking a provider/model config actually
+        # works without waiting on a live chat turn to decide to ask it.
+        agent_opts = "".join(f"<option value='{a['id']}'>{esc(a['label'])}</option>"
+                             for a in sub_agents.list_all())
+        test_form = (
+            "<form method=post action='/admin/subagents/test'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<div class=field><label>sub-agent</label><select name=sub_agent_id required>{agent_opts}"
+            "</select></div>"
+            "<div class=field><label>prompt</label>"
+            "<textarea name=prompt rows=3 placeholder='a raw test prompt' required></textarea></div>"
+            "<button class='btn btn-primary btn-block'>send</button></form>"
+        ) if agent_opts else "<p class=muted>add a sub-agent above first.</p>"
+        test_result_html = ""
+        if test_result:
+            if test_result["ok"]:
+                usage = test_result.get("usage") or {}
+                usage_line = (f"<small>{usage.get('prompt_tokens', 0)} in / "
+                             f"{usage.get('completion_tokens', 0)} out</small>" if usage else "")
+                test_result_html = (
+                    f"<div class=section><h2>result: {esc(test_result['label'])}</h2>"
+                    f"<p class=muted style='margin:0 0 .4rem'>prompt: {esc(test_result['prompt'])}</p>"
+                    f"<div class=list-row><div class=list-meta><b class=wrap>{esc(test_result['content'])}</b>"
+                    f"{usage_line}</div></div></div>")
+            else:
+                test_result_html = (
+                    f"<div class=section><h2>result: {esc(test_result['label'])}</h2>"
+                    f"<p class=muted style='margin:0 0 .4rem'>prompt: {esc(test_result['prompt'])}</p>"
+                    f"<p class=err>{esc(test_result['error'])}</p></div>")
+
         main = (
             f"{e}{i}"
             f"{running_section}"
@@ -4013,6 +4057,8 @@ class Handler(BaseHTTPRequestHandler):
             "<a href='/settings?tab=models'>Model Config</a>.</p>"
             f"<div class=section>{add_form}</div>"
             f"<div class=section><h2>roster</h2>{rows}</div>"
+            f"<div class=section><h2>test a sub-agent</h2>{test_form}</div>"
+            f"{test_result_html}"
         )
         self._settings_response(sess, "subagents", main)
 
@@ -4056,6 +4102,39 @@ class Handler(BaseHTTPRequestHandler):
         force = bool(form.get("force"))
         ok, msg = sub_agents.delete(sid, force=force)
         return self.subagents_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+
+    def subagents_test_post(self, sess: dict, form: dict):
+        """See subagents_admin_form's own docstring -- a raw, synchronous
+        test prompt straight to a sub-agent's configured model, same
+        dispatch chat.py's real job runner uses (jobs.py's own _call()),
+        just called directly here instead of from a background job
+        thread -- no job row, no tool access, no persona, same as a real
+        dispatched job already gets none of either."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            sid = int(form.get("sub_agent_id", ""))
+        except (TypeError, ValueError):
+            return self.subagents_admin_form(sess, "bad id")
+        agent = sub_agents.get(sid)
+        if agent is None:
+            return self.subagents_admin_form(sess, "no such sub-agent")
+        prompt = (form.get("prompt") or "").strip()
+        if not prompt:
+            return self.subagents_admin_form(sess, "a prompt is required")
+        entry = models.get_with_provider(agent["model_id"]) if agent.get("model_id") else None
+        if entry is None:
+            return self.subagents_admin_form(
+                sess, f"{agent['label']!r} has no model configured -- pick one above first")
+        try:
+            result = chat.call_for_model(entry, [{"role": "user", "content": prompt}],
+                                        tools=None, timeout=60)
+        except chat.ModelError as exc:
+            return self.subagents_admin_form(sess, test_result={
+                "label": agent["label"], "prompt": prompt, "ok": False, "error": str(exc)})
+        return self.subagents_admin_form(sess, test_result={
+            "label": agent["label"], "prompt": prompt, "ok": True,
+            "content": result.get("content") or "(empty reply)", "usage": result.get("usage")})
 
     def subagents_limits_post(self, sess: dict, sub_agent_id: str, form: dict):
         if sess["role"] != "admin":
