@@ -770,6 +770,41 @@ def set_safety_tier(user_id: int, memory_id: int, safety: bool) -> dict:
     return {"ok": True}
 
 
+def delete_memory(user_id: int, memory_id: int) -> dict:
+    """Real, immediate delete -- the settings page's own direct action
+    (2026-09-30, operator's own ask: "I want to be able to delete/edit
+    Nori's memories"). Same non-peer-gated path _forget()'s own docstring
+    already calls out as the normal case: only a PEER-triggered forget
+    flags for review instead of deleting outright; this is the operator
+    acting directly on their own settings page, exactly the "her own
+    direct forget() call... is unchanged -- still a real, immediate
+    delete" case that docstring describes, just reached from a button
+    instead of a live conversation."""
+    backend = _backend_for_user(user_id)
+    row = backend.get(user_id=user_id, memory_id=memory_id)
+    if row is None:
+        return {"error": "no such memory"}
+    deleted = backend.delete(user_id=user_id, memory_id=memory_id)
+    _log(memory_id, user_id, "remove", actor="user", type_=deleted["type"], value=deleted["value"])
+    return {"ok": True}
+
+
+def edit_memory(user_id: int, memory_id: int, value: str) -> dict:
+    """Real, immediate edit of a memory's own text -- settings-page
+    action (2026-09-30), same backend.update() the model's own
+    update_memory tool call already uses; tags/safety_tier untouched
+    (backend.update()'s own None-means-unchanged contract)."""
+    value = (value or "").strip()
+    if not value:
+        return {"error": "value can't be empty"}
+    updated = _backend_for_user(user_id).update(user_id=user_id, memory_id=memory_id,
+                                                value=value, tags=None, safety=None)
+    if updated is None:
+        return {"error": "no such memory"}
+    _log(memory_id, user_id, "update", actor="user", type_=updated["type"], value=updated["value"])
+    return {"ok": True}
+
+
 def _recall(session: dict, types: list | None = None, tags: list | None = None,
            query: str | None = None, limit: int = 20) -> dict:
     limit = max(1, min(int(limit or 20), 100))

@@ -33,8 +33,18 @@ Four provider types, TYPES below:
                       we poll. A GitHub access token alone isn't a Copilot
                       completions token; access_token_for() mints/refreshes
                       the short-lived one (~30 min) from it on demand.
+  xai_api_key      -- API key, https://api.x.ai -- xAI's own official,
+                      documented API (OpenAI-SDK-compatible), not a
+                      reverse-engineered path at all, same footing as
+                      openrouter/openai_api_key/anthropic_api_key.
+  xai_oauth        -- a SuperGrok/X Premium+ subscription, via Grok
+                      Build's (xAI's own official CLI coding agent) public
+                      OAuth client -- also device-code flow, verified
+                      against a real, actively-maintained third-party
+                      client's source (stnly/pi-grok, itself built on the
+                      Hermes agent's xai-oauth flow), not guessed.
 
-None of this is vendor-supported. These are the same unofficial client
+None of this beyond xai_api_key is vendor-supported. These are the same unofficial client
 IDs/endpoints Claude Code, Codex CLI, and VS Code's own Copilot Chat
 extension use internally -- verified against public references (issue
 trackers, the actively-maintained ericc-ch/copilot-api gateway) while this
@@ -65,6 +75,8 @@ TYPES: dict[str, dict] = {
     "openai_oauth":     {"label": "OpenAI (ChatGPT / Codex)",     "auth": "oauth_manual"},
     "openai_api_key":   {"label": "OpenAI (API key)",             "auth": "api_key"},
     "github_copilot":   {"label": "GitHub Copilot",               "auth": "oauth_device"},
+    "xai_api_key":      {"label": "xAI (API key)",                 "auth": "api_key"},
+    "xai_oauth":        {"label": "xAI (Grok / SuperGrok subscription)", "auth": "oauth_device"},
 }
 # Provider types whose "add" form is just a label + API key (2026-09-30,
 # see create_api_key()) -- same essential model as OpenRouter's, just a
@@ -74,7 +86,7 @@ TYPES: dict[str, dict] = {
 # mechanics at all. No Claude-Code-identity mimicry, no oauth-only beta
 # headers -- those exist ONLY to get an OAuth token past Anthropic's
 # Cloudflare gate; a real API key is a normal, fully-supported call.
-API_KEY_TYPES = ("openrouter", "anthropic_api_key", "openai_api_key")
+API_KEY_TYPES = ("openrouter", "anthropic_api_key", "openai_api_key", "xai_api_key")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # No OPENAI_API_KEY_URL constant here -- chat.py's _call_openai_api_key
@@ -141,12 +153,54 @@ _COPILOT_HEADERS = {
 }
 COPILOT_COMPLETIONS_URL = "https://api.githubcopilot.com/chat/completions"
 
+# -- xAI (Grok Build's own public OAuth client -- xAI's official CLI coding
+# agent for SuperGrok/X Premium+ subscribers) --------------------------------
+# Verified directly against stnly/pi-grok's real source (itself built on
+# the Hermes agent's xai-oauth flow), not a summary/guess -- see module
+# docstring. Device-code flow (RFC 8628), same shape as GitHub's above,
+# different vendor endpoints/client id/headers.
+_XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+_XAI_DEVICE_CODE_URL = "https://auth.x.ai/oauth2/device/code"
+_XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token"
+_XAI_SCOPE = ("openid profile email offline_access grok-cli:access api:access "
+             "conversations:read conversations:write")
+_XAI_CLIENT_VERSION = "0.2.101"
+_XAI_DEVICE_HEADERS = {"Content-Type": "application/x-www-form-urlencoded",
+                       "x-grok-client-version": _XAI_CLIENT_VERSION, "x-grok-client-surface": "cli"}
+# The subscription (not pay-per-token) inference path -- a plain
+# api.x.ai API key does NOT ride this; it hits api.x.ai directly instead
+# (see xai_api_key/XAI_API_KEY_URL below). Responses-API-shaped
+# ("api: openai-responses" in pi-grok's own provider registration).
+XAI_PROXY_RESPONSES_URL = "https://cli-chat-proxy.grok.com/v1/responses"
+XAI_API_KEY_URL = "https://api.x.ai/v1/chat/completions"
+
+
+def _xai_proxy_headers(model_id: str | None = None) -> dict:
+    headers = {"User-Agent": f"grok-shell/{_XAI_CLIENT_VERSION}", "x-grok-client-identifier": "grok-shell",
+              "x-grok-client-version": _XAI_CLIENT_VERSION, "x-grok-client-mode": "interactive",
+              "X-XAI-Token-Auth": "xai-grok-cli", "x-authenticateresponse": "authenticate-response"}
+    if model_id:
+        headers["x-grok-model-override"] = model_id
+    return headers
+
+
 _HTTP_TIMEOUT_S = 20
 
 
 def _post_json(url: str, body: dict | None, *, headers: dict, method: str = "POST") -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _post_form(url: str, fields: dict, *, headers: dict) -> dict:
+    """Same shape as _post_json but application/x-www-form-urlencoded --
+    xAI's device-code/token endpoints take form-encoded bodies, not JSON
+    (verified against pi-grok's real source, unlike GitHub's, which are
+    JSON)."""
+    data = urllib.parse.urlencode(fields).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -330,16 +384,23 @@ def complete_oauth_manual(provider_id: int, pasted: str) -> tuple[bool, str]:
 
 def _refresh_oauth_manual(provider: dict) -> str:
     if provider["type"] == "anthropic_oauth":
-        token_url, client_id, headers = _ANTHROPIC_TOKEN_URL, _ANTHROPIC_CLIENT_ID, _ANTHROPIC_HEADERS
+        token_url, client_id, headers, poster = _ANTHROPIC_TOKEN_URL, _ANTHROPIC_CLIENT_ID, _ANTHROPIC_HEADERS, _post_json
+    elif provider["type"] == "xai_oauth":
+        # Same access+refresh+expiry storage shape as the two manual
+        # flows above (unlike github_copilot's mint-on-demand pattern) --
+        # xAI's device flow hands back a real OAuth token pair, it just
+        # uses form-encoding and its own headers/client_id (see
+        # _post_form's own docstring).
+        token_url, client_id, headers, poster = _XAI_TOKEN_URL, _XAI_CLIENT_ID, _XAI_DEVICE_HEADERS, _post_form
     else:
-        token_url, client_id, headers = _OPENAI_TOKEN_URL, _OPENAI_CLIENT_ID, {"Content-Type": "application/json"}
+        token_url, client_id, headers, poster = _OPENAI_TOKEN_URL, _OPENAI_CLIENT_ID, {"Content-Type": "application/json"}, _post_json
     if not provider.get("refresh_token_enc"):
         _mark_needs_reauth(provider["id"])
         raise ValueError(f"provider {provider['label']!r} needs reconnecting (no refresh token on file)")
     refresh_token = crypto.decrypt(provider["refresh_token_enc"])
     body = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
     try:
-        data = _post_json(token_url, body, headers=headers)
+        data = poster(token_url, body, headers=headers)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         _mark_needs_reauth(provider["id"])
         raise ValueError(f"provider {provider['label']!r} needs reconnecting (refresh failed: {exc})") from exc
@@ -363,54 +424,91 @@ def _mark_needs_reauth(provider_id: int) -> None:
 
 # ── GitHub Copilot: device flow ────────────────────────────────────────
 
-def begin_device_flow(workspace_id: int, label: str, created_by: int) -> tuple[bool, str, dict | None]:
+_DEVICE_FLOW_TYPES = ("github_copilot", "xai_oauth")
+
+
+def begin_device_flow(workspace_id: int, provider_type: str, label: str,
+                      created_by: int) -> tuple[bool, str, dict | None]:
+    if provider_type not in _DEVICE_FLOW_TYPES:
+        return False, f"{provider_type!r} isn't a device-flow provider type", None
+    if provider_type == "github_copilot":
+        url, body, headers = (_GITHUB_DEVICE_CODE_URL, {"client_id": _GITHUB_CLIENT_ID, "scope": _GITHUB_SCOPE},
+                              {"Content-Type": "application/json", "Accept": "application/json"})
+        poster = _post_json
+    else:
+        url, body, headers = (_XAI_DEVICE_CODE_URL,
+                              {"client_id": _XAI_CLIENT_ID, "scope": _XAI_SCOPE, "referrer": "grok-build"},
+                              _XAI_DEVICE_HEADERS)
+        poster = _post_form
     try:
-        data = _post_json(_GITHUB_DEVICE_CODE_URL, {"client_id": _GITHUB_CLIENT_ID, "scope": _GITHUB_SCOPE},
-                          headers={"Content-Type": "application/json", "Accept": "application/json"})
+        data = poster(url, body, headers=headers)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return False, f"couldn't start the device flow: {exc}", None
     # user_code/verification_uri persisted here too, same reasoning as
     # begin_oauth_manual's authorize_url -- see pending_display().
+    verification_uri = data.get("verification_uri") or data.get("verification_uri_complete")
     pending = crypto.encrypt(json.dumps({
         "device_code": data["device_code"], "interval": data.get("interval", 5), "ts": time.time(),
-        "user_code": data["user_code"], "verification_uri": data["verification_uri"]}))
-    label = (label or "").strip() or TYPES["github_copilot"]["label"]
+        "user_code": data["user_code"], "verification_uri": verification_uri}))
+    label = (label or "").strip() or TYPES[provider_type]["label"]
     provider_id = store.write(lambda c: c.execute(
         "INSERT INTO providers(workspace_id, type, label, status, pending_enc, enabled, "
         "created_ts, created_by) VALUES (?,?,?,?,?,1,?,?)",
-        (workspace_id, "github_copilot", label, "unconfigured", pending, time.time(), created_by)).lastrowid)
+        (workspace_id, provider_type, label, "unconfigured", pending, time.time(), created_by)).lastrowid)
     return True, "waiting for you to authorize", {
-        "provider_id": provider_id, "user_code": data["user_code"],
-        "verification_uri": data["verification_uri"]}
+        "provider_id": provider_id, "user_code": data["user_code"], "verification_uri": verification_uri}
 
 
 def check_device_flow(provider_id: int) -> tuple[bool, str]:
     """One poll, called from a "check status" button (see module docstring
     -- Nori has no background-JS polling loop today). Returns (True, ...)
-    once GitHub actually has a token; (False, "pending") is normal and not
-    an error while the admin hasn't finished authorizing yet."""
+    once the vendor actually has a token; (False, "pending") is normal and
+    not an error while the admin hasn't finished authorizing yet."""
     provider = get(provider_id)
-    if provider is None or provider["type"] != "github_copilot" or not provider.get("pending_enc"):
+    if provider is None or provider["type"] not in _DEVICE_FLOW_TYPES or not provider.get("pending_enc"):
         return False, "this provider isn't waiting on a connect step"
     pending = json.loads(crypto.decrypt(provider["pending_enc"]))
+    if provider["type"] == "github_copilot":
+        url = _GITHUB_ACCESS_TOKEN_URL
+        body = {"client_id": _GITHUB_CLIENT_ID, "device_code": pending["device_code"],
+               "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        poster = _post_json
+    else:
+        url = _XAI_TOKEN_URL
+        body = {"client_id": _XAI_CLIENT_ID, "device_code": pending["device_code"],
+               "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}
+        headers = _XAI_DEVICE_HEADERS
+        poster = _post_form
     try:
-        data = _post_json(_GITHUB_ACCESS_TOKEN_URL, {
-            "client_id": _GITHUB_CLIENT_ID, "device_code": pending["device_code"],
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code"},
-            headers={"Content-Type": "application/json", "Accept": "application/json"})
+        data = poster(url, body, headers=headers)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return False, f"couldn't check yet: {exc}"
     if data.get("access_token"):
-        store.write(lambda c: c.execute(
-            "UPDATE providers SET status='connected', refresh_token_enc=?, pending_enc=NULL WHERE id=?",
-            (crypto.encrypt(data["access_token"]), provider_id)))
+        if provider["type"] == "github_copilot":
+            # Long-lived GitHub token, stored as-is -- the short-lived
+            # Copilot completions token is minted from it on demand (see
+            # _mint_copilot_token), never stored directly.
+            store.write(lambda c: c.execute(
+                "UPDATE providers SET status='connected', refresh_token_enc=?, pending_enc=NULL WHERE id=?",
+                (crypto.encrypt(data["access_token"]), provider_id)))
+        else:
+            # xAI hands back a real access+refresh pair -- same storage
+            # shape complete_oauth_manual() uses for Anthropic/OpenAI.
+            expires_ts = time.time() + float(data.get("expires_in") or 3600)
+            store.write(lambda c: c.execute(
+                "UPDATE providers SET status='connected', access_token_enc=?, refresh_token_enc=?, "
+                "token_expires_ts=?, pending_enc=NULL WHERE id=?",
+                (crypto.encrypt(data["access_token"]),
+                 crypto.encrypt(data["refresh_token"]) if data.get("refresh_token") else None,
+                 expires_ts, provider_id)))
         return True, "connected"
     err = data.get("error", "authorization_pending")
     if err == "authorization_pending":
         return False, "pending"
     if err == "expired_token":
         return False, "that code expired -- start over"
-    return False, f"GitHub said: {err}"
+    return False, f"{provider['type']} said: {err}"
 
 
 def pending_display(provider: dict) -> dict | None:
@@ -426,7 +524,7 @@ def pending_display(provider: dict) -> dict | None:
     pending = json.loads(crypto.decrypt(provider["pending_enc"]))
     if provider["type"] in ("anthropic_oauth", "openai_oauth") and pending.get("authorize_url"):
         return {"authorize_url": pending["authorize_url"]}
-    if provider["type"] == "github_copilot" and pending.get("user_code"):
+    if provider["type"] in _DEVICE_FLOW_TYPES and pending.get("user_code"):
         return {"user_code": pending["user_code"], "verification_uri": pending["verification_uri"]}
     return None
 
@@ -464,16 +562,21 @@ _REFRESH_MARGIN_S = 90
 
 def access_token_for(provider: dict) -> str:
     """Decrypted, refreshed-if-needed bearer token for an OAuth provider
-    (any of the three OAuth types). Always re-fetches provider from the
+    (any of the four OAuth types). Always re-fetches provider from the
     DB first -- the row passed in (e.g. from models._resolve_model_chain's
     join) may be stale if another call refreshed it moments ago."""
     provider = get(provider["id"]) or provider
     if provider["type"] == "github_copilot":
+        # The one type with no real refresh_token pair of its own -- a
+        # long-lived GitHub token mints a fresh short-lived Copilot
+        # completions token on demand instead (see _mint_copilot_token).
         if provider.get("access_token_enc") and (provider.get("token_expires_ts") or 0) > time.time() + _REFRESH_MARGIN_S:
             return crypto.decrypt(provider["access_token_enc"])
         token, _ = _mint_copilot_token(provider)
         return token
-    # anthropic_oauth / openai_oauth
+    # anthropic_oauth / openai_oauth / xai_oauth -- a real access+refresh
+    # token pair, same shape/refresh mechanics for all three (see
+    # _refresh_oauth_manual's own per-type branch).
     if provider.get("access_token_enc") and (provider.get("token_expires_ts") or 0) > time.time() + _REFRESH_MARGIN_S:
         return crypto.decrypt(provider["access_token_enc"])
     return _refresh_oauth_manual(provider)
@@ -510,6 +613,19 @@ def list_models(provider: dict) -> tuple[bool, list[dict] | str]:
             return _list_models_anthropic(headers=headers)
         if provider["type"] == "github_copilot":
             return _list_models_copilot(provider)
+        if provider["type"] == "xai_api_key":
+            return _list_models_openai(url="https://api.x.ai/v1/models",
+                                       headers={"Authorization": f"Bearer {api_key_for(provider)}"})
+        if provider["type"] == "xai_oauth":
+            # Best-effort: the standard api.x.ai listing, with the OAuth
+            # token -- not yet confirmed this is what the subscription
+            # proxy itself would return (its own /v1/models, seen in
+            # pi-grok's source, wasn't fully characterized before this
+            # was built). If the subscription's real catalog differs,
+            # that's the next real fix here, same as every other adapter
+            # in this file that started as a reasonable first attempt.
+            return _list_models_openai(url="https://api.x.ai/v1/models",
+                                       headers={"Authorization": f"Bearer {access_token_for(provider)}"})
         if provider["type"] == "openai_oauth":
             return False, ("no known models-list endpoint for the ChatGPT/Codex OAuth session -- "
                           "check Codex's own docs for the exact model name and type it in directly")
@@ -518,12 +634,15 @@ def list_models(provider: dict) -> tuple[bool, list[dict] | str]:
         return False, str(exc)
 
 
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
 def _list_models_openrouter(provider: dict) -> tuple[bool, list[dict] | str]:
     headers = {"Accept": "application/json"}
     if provider.get("api_key_enc"):
         headers["Authorization"] = f"Bearer {api_key_for(provider)}"
     try:
-        data = _post_json(f"{OPENROUTER_URL.rsplit('/', 1)[0]}/models", None, headers=headers, method="GET")
+        data = _post_json(_OPENROUTER_MODELS_URL, None, headers=headers, method="GET")
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return False, f"couldn't list models: {exc}"
     items = data.get("data") or []

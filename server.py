@@ -352,6 +352,51 @@ def info_tip(text: str) -> str:
            f"aria-label='More detail'>i</button><span class=info-pop>{esc(text)}</span></span>")
 
 
+def _debug_text(debug: dict) -> str:
+    """Plain, unescaped multi-line text for one assistant message's debug
+    panel (2026-09-30) -- mirrors info_tip()'s own "plain text in, this
+    function escapes it" contract; renders via .dbg-pop's white-space:
+    pre-wrap, so \\n is all the layout this needs. Shared by the server-
+    rendered bubble (_bubble()) and the client-side JS builder
+    (makeDebugBtn() in APP_JS) so the two never drift apart -- built once
+    here, the JS version is a straight line-for-line port."""
+    lines = [
+        f"Provider: {debug.get('provider_label')} ({debug.get('provider_type')})",
+        f"Model: {debug.get('model_alias')} ({debug.get('model_name')})",
+        f"Position: {debug.get('chain_position')} of {debug.get('chain_length')}",
+        f"Request ID: {debug.get('request_id') or '—'}",
+        f"Time: {time.strftime('%b %d, %H:%M:%S', time.localtime(debug.get('ts') or time.time()))}",
+        f"Latency: {debug.get('latency_ms')} ms",
+        f"Tokens: {debug.get('prompt_tokens', 0)} in / {debug.get('completion_tokens', 0)} out",
+        "Cost: " + ("unavailable" if debug.get("cost_unavailable") else f"${debug.get('cost_usd', 0):.4f}"),
+    ]
+    failed = debug.get("failed_attempts") or []
+    if failed:
+        lines.append("Failed attempts:")
+        lines += [f"  {f['alias']} ({f['provider_type']}): {f['error']}" for f in failed]
+    calls = debug.get("tool_calls") or []
+    if calls:
+        lines.append("Tool calls:")
+        lines += [f"  round {c['round']}: {c['name']}({json.dumps(c['args'])})" for c in calls]
+    if debug.get("reasoning"):
+        lines.append("Reasoning:")
+        lines.append(debug["reasoning"])
+    return "\n".join(lines)
+
+
+def _debug_btn(debug: dict | None) -> str:
+    """The message-bubble sibling to _copy_btn() -- a small ⓘ that toggles
+    the panel above, next to the copy button. Empty string (no button at
+    all) when there's no debug meta (round-limit/leak-failure fallback
+    text that never reached a real model call -- see server.py's own
+    persist-site comment)."""
+    if not debug:
+        return ""
+    return (f"<span class=info-wrap><button type=button class=info-btn aria-expanded=false "
+           f"aria-label='Message info'>ⓘ</button><span class='info-pop dbg-pop'>"
+           f"{esc(_debug_text(debug))}</span></span>")
+
+
 # ── design tokens + shared component styles ──────────────────────────────
 # One dark visual identity, not a light theme inverted -- a deliberate
 # product decision, not viewer-adaptive. System-ui
@@ -578,6 +623,19 @@ tr:last-child td{border-bottom:0}
   box-shadow:0 10px 28px rgba(0,0,0,.35)}
 .info-btn[aria-expanded=true] + .info-pop{display:block}
 @media (hover:hover){.info-wrap:hover .info-pop{display:block}}
+
+/* per-message debug panel (2026-09-30, operator's own ask) -- same
+   info-wrap/info-btn/info-pop toggle mechanics above, just a wider,
+   left-aligned, pre-wrapped variant (provider/model/reasoning text runs
+   longer than this component's usual one-line explanations) and its own
+   icon so it doesn't get confused with the identical-looking copy
+   button. Click-to-select isn't needed here the way the OAuth connect
+   fields need it -- this is read-only reference info, not a value to
+   copy elsewhere. */
+.dbg-pop{width:min(360px,calc(100vw - 40px));white-space:pre-wrap;text-align:left;
+  max-height:60vh;overflow-y:auto}
+.dbg-pop b{color:var(--text)}
+.msg-actions{display:inline-flex;gap:2px;align-items:center}
 
 /* ── auth pages (setup/login/invite) + one-off error pages (2026-09-18,
    design pass -- these used to be a separate, simpler shell with no
@@ -1529,6 +1587,42 @@ CHAT_JS = (
     "function makeCopyBtn(text){var btn=document.createElement('button');"
     "btn.type='button';btn.className='copy-btn';btn.setAttribute('aria-label','Copy message');"
     "btn.dataset.copy=text;btn.textContent='\\u{1F4CB}';return btn;}"
+    # Debug panel (2026-09-30, operator's own ask) -- mirrors
+    # server.py's own _debug_text()/_debug_btn() line for line so the
+    # server-rendered history and this live path show identical content;
+    # info-wrap/info-btn/info-pop reuse the same generic toggle (TIP_JS,
+    # above) that every settings-page info_tip() already relies on --
+    # zero new JS wiring needed for the toggle itself.
+    "function debugText(d){var lines=["
+    "'Provider: '+d.provider_label+' ('+d.provider_type+')',"
+    "'Model: '+d.model_alias+' ('+d.model_name+')',"
+    "'Position: '+d.chain_position+' of '+d.chain_length,"
+    "'Request ID: '+(d.request_id||'\\u2014'),"
+    "'Time: '+new Date((d.ts||Date.now()/1000)*1000).toLocaleString(),"
+    "'Latency: '+d.latency_ms+' ms',"
+    "'Tokens: '+(d.prompt_tokens||0)+' in / '+(d.completion_tokens||0)+' out',"
+    "'Cost: '+(d.cost_unavailable?'unavailable':'$'+(d.cost_usd||0).toFixed(4))];"
+    "if(d.failed_attempts&&d.failed_attempts.length){lines.push('Failed attempts:');"
+    "d.failed_attempts.forEach(function(f){lines.push('  '+f.alias+' ('+f.provider_type+'): '+f.error);});}"
+    "if(d.tool_calls&&d.tool_calls.length){lines.push('Tool calls:');"
+    "d.tool_calls.forEach(function(c){lines.push('  round '+c.round+': '+c.name+'('+JSON.stringify(c.args)+')');});}"
+    "if(d.reasoning){lines.push('Reasoning:');lines.push(d.reasoning);}"
+    "return lines.join('\\n');}"
+    "function makeDebugBtn(d){var wrap=document.createElement('span');wrap.className='info-wrap';"
+    "var btn=document.createElement('button');btn.type='button';btn.className='info-btn';"
+    "btn.setAttribute('aria-expanded','false');btn.setAttribute('aria-label','Message info');"
+    "btn.textContent='\\u24d8';"
+    "var pop=document.createElement('span');pop.className='info-pop dbg-pop';pop.textContent=debugText(d);"
+    "wrap.appendChild(btn);wrap.appendChild(pop);return wrap;}"
+    # msgActions (2026-09-30) -- wraps whichever of copy/debug actually
+    # apply to this message in one flex row (see .msg-actions CSS) so two
+    # buttons sit side by side instead of each forcing its own block-level
+    # line the way .copy-btn's display:block would otherwise stack them.
+    "function msgActions(m){var has=false;var wrap=document.createElement('span');"
+    "wrap.className='msg-actions';"
+    "if(m.role==='assistant'&&m.content){wrap.appendChild(makeCopyBtn(m.content));has=true;}"
+    "if(m.role==='assistant'&&m.meta&&m.meta.debug){wrap.appendChild(makeDebugBtn(m.meta.debug));has=true;}"
+    "return has?wrap:null;}"
     # navigator.clipboard needs a secure context (CSP doesn't gate it --
     # it's not a script-src/connect-src resource load at all, just a
     # browser permission tied to https/localhost) -- Nori's only ever
@@ -1610,7 +1704,7 @@ CHAT_JS = (
     "var b=document.createElement('div');b.className='msg '+m.role;"
     "if(m.id!=null)b.id='message-'+m.id;"
     "b.textContent=m.content;"
-    "if(m.role==='assistant'&&m.content)b.appendChild(makeCopyBtn(m.content));"
+    "var acts=msgActions(m);if(acts)b.appendChild(acts);"
     "msglist.appendChild(b);scrollDown();"
     # Voice mode mirror -- the ONE hook that makes voice mode's transcript
     # and auto-playback work regardless of what triggered the message
@@ -2739,6 +2833,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.settings_memory_pin_post(sess, form)
         if path == "/settings/memory/safety":
             return self.settings_memory_safety_post(sess, form)
+        if path == "/settings/memory/edit":
+            return self.settings_memory_edit_post(sess, form)
+        if path == "/settings/memory/delete":
+            return self.settings_memory_delete_post(sess, form)
         if path == "/settings/notes/resolve":
             return self.notes_resolve_post(sess, form)
         if path == "/settings/household":
@@ -2813,6 +2911,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.subagents_toggle_post(sess, path.split("/")[3], form)
         if path.startswith("/admin/subagents/") and path.endswith("/limits"):
             return self.subagents_limits_post(sess, path.split("/")[3], form)
+        if path.startswith("/admin/subagents/") and path.endswith("/delete"):
+            return self.subagents_delete_post(sess, path.split("/")[3], form)
         if path == "/admin/models":
             return self.models_create_post(sess, form)
         if path == "/admin/models/chain":
@@ -2833,6 +2933,8 @@ class Handler(BaseHTTPRequestHandler):
                 handler = (self.providers_oauth_complete_post if parts[5] == "complete"
                           else self.providers_oauth_check_post)
                 return handler(sess, parts[3], form)
+            if len(parts) == 5 and parts[4] == "models":
+                return self.providers_list_models_post(sess, parts[3], form)
         if path == "/admin/webtools/rules":
             return self.webtools_rule_add_post(sess, form)
         if path.startswith("/admin/webtools/rules/"):
@@ -3795,18 +3897,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.invite_admin_form(sess, link=link)
 
     # -- admin: sub-agent roster --
-    def subagents_admin_form(self, sess: dict, err: str = ""):
+    def subagents_admin_form(self, sess: dict, err: str = "", info: str = ""):
         if sess["role"] != "admin":
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
         csrf = esc(sess["csrf"])
         model_by_id = {m["id"]: m for m in models.list_all()}
+        job_counts = sub_agents.job_counts()
         def _row(a: dict) -> str:
             tools_desc = ("no tools" if a["tool_call_limit"] == 0 else
                          f"up to {a['tool_call_limit']} tool call(s), "
                          f"{a['tool_byte_limit']:,} bytes/job")
             m = model_by_id.get(a["model_id"])
             model_desc = m["alias"] if m else "(no model configured)"
+            jc = job_counts.get(a["id"], 0)
+            confirm_msg = (f"Delete {a['label']!r}? It has {jc} job(s) in its history -- those will be "
+                          f"deleted too. This can't be undone." if jc else "")
+            confirm_attr = f" data-confirm=\"{esc(confirm_msg)}\"" if confirm_msg else ""
             return (
                 f"<div class=list-row><div class=list-icon>🤖</div>"
                 f"<div class=list-meta><b>{esc(a['label'])}</b><small>{esc(model_desc)} · "
@@ -3825,7 +3933,11 @@ class Handler(BaseHTTPRequestHandler):
                 f"<button class='btn'>save limits</button></form></div>"
                 f"<div class=list-actions><form method=post action='/admin/subagents/{a['id']}/toggle'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
-                f"<button class='btn'>{'disable' if a['enabled'] else 'enable'}</button></form></div></div>")
+                f"<button class='btn'>{'disable' if a['enabled'] else 'enable'}</button></form>"
+                f"<form method=post action='/admin/subagents/{a['id']}/delete'{confirm_attr}>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<input type=hidden name=force value=1>"
+                "<button class='btn btn-danger'>delete</button></form></div></div>")
 
         rows = "".join(_row(a) for a in sub_agents.list_all()) or "<p class=muted>none configured yet</p>"
 
@@ -3893,7 +4005,7 @@ class Handler(BaseHTTPRequestHandler):
             "<p class=muted>no enabled models yet -- add one in "
             "<a href='/settings?tab=models'>Model Config</a> first.</p>")
         main = (
-            f"{e}"
+            f"{e}{i}"
             f"{running_section}"
             f"{interrupted_section}"
             "<p class=muted>she picks a label from this list to hand work off to -- "
@@ -3932,6 +4044,19 @@ class Handler(BaseHTTPRequestHandler):
         sub_agents.set_enabled(sid, not agent["enabled"])
         return self.subagents_admin_form(sess)
 
+    def subagents_delete_post(self, sess: dict, sub_agent_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            sid = int(sub_agent_id)
+        except ValueError:
+            return self.subagents_admin_form(sess, "bad id")
+        if sub_agents.get(sid) is None:
+            return self.subagents_admin_form(sess, "no such sub-agent")
+        force = bool(form.get("force"))
+        ok, msg = sub_agents.delete(sid, force=force)
+        return self.subagents_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+
     def subagents_limits_post(self, sess: dict, sub_agent_id: str, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -3951,7 +4076,7 @@ class Handler(BaseHTTPRequestHandler):
     # -- admin: Providers + model roster + primary/fallback chain. Controls
     # both Nori's own primary/fallback models (this page) and what shows up
     # in the sub-agent form's model dropdown.
-    def models_admin_form(self, sess: dict, err: str = "", info: str = ""):
+    def models_admin_form(self, sess: dict, err: str = "", info: str = "", browse: dict | None = None):
         """Providers + Models + primary/fallback chain (2026-09-30, see
         providers.py/models.py) -- reworked from the old OpenRouter-only
         roster+single-default form. Three sections: configured Providers
@@ -3959,7 +4084,12 @@ class Handler(BaseHTTPRequestHandler):
         name), and the primary/fallback chain picked from enabled Models.
         There is deliberately no default provider or model -- an instance
         with nothing configured here shows that honestly instead of
-        silently assuming OpenRouter."""
+        silently assuming OpenRouter.
+
+        browse (2026-09-30, see providers.list_models()) -- optional
+        {"provider_id", "provider_label", "q", "ok", "items"|"error"}
+        from providers_list_models_post, rendered as its own section so
+        the admin can pick a real model name instead of guessing one."""
         if sess["role"] != "admin":
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
@@ -3978,7 +4108,15 @@ class Handler(BaseHTTPRequestHandler):
             uses, just inlined here since this is the only place on a
             settings page that needs it."""
             v = esc(value)
-            open_link = (f"<a class=btn href='{v}' target=_blank rel=noopener>open</a>" if open_url else "")
+            # href uses open_url, NOT v -- real bug, found live (2026-09-30):
+            # for the device-code case (Copilot/xAI), `value` is the short
+            # user code and `open_url` is the actual verification page --
+            # two DIFFERENT strings. Using `v` here happened to work for
+            # Anthropic/OpenAI's manual-code flow purely by coincidence
+            # (there, value and open_url are called with the identical
+            # authorize_url), which is exactly how this went unnoticed.
+            open_link = (f"<a class=btn href='{esc(open_url)}' target=_blank rel=noopener>open</a>"
+                        if open_url else "")
             return (
                 "<div style='display:flex;gap:.4rem;align-items:center;margin-top:.4rem'>"
                 f"<input type=text readonly value='{v}' onclick='this.select()' "
@@ -3997,9 +4135,19 @@ class Handler(BaseHTTPRequestHandler):
                           "error": "<span class='chip warn'>error</span>"}.get(
                 p["status"], f"<span class=chip>{esc(p['status'])}</span>")
             connect_ui = ""
+            # pending_display() needs the RAW row (pending_enc intact) --
+            # `p` itself comes from providers.list_all(), which strips
+            # every *_enc column for UI safety (see that function's own
+            # docstring), pending_enc included. Passing `p` straight in
+            # here silently returned None for EVERY OAuth provider type
+            # (real bug, found live 2026-09-30: the authorize link/device
+            # code never rendered for any of them, just the button below
+            # it) -- a fresh providers.get(p['id']) re-fetches the intact
+            # row for this one lookup, still never handed anywhere beyond
+            # pending_display()'s own already-safe derived output.
             if p["status"] in ("unconfigured", "needs_reauth") and p["type"] in (
                     "anthropic_oauth", "openai_oauth"):
-                pending = providers.pending_display(p)
+                pending = providers.pending_display(providers.get(p["id"]))
                 link_ui = (_copyfield(pending["authorize_url"], open_url=pending["authorize_url"])
                           if pending else "")
                 connect_ui = (
@@ -4010,8 +4158,8 @@ class Handler(BaseHTTPRequestHandler):
                     "<input type=text name=pasted placeholder='paste the code (or the failed "
                     "redirect URL) here' style='flex:1'>"
                     "<button class=btn>finish connecting</button></form>")
-            elif p["status"] in ("unconfigured", "needs_reauth") and p["type"] == "github_copilot":
-                pending = providers.pending_display(p)
+            elif p["status"] in ("unconfigured", "needs_reauth") and p["type"] in ("github_copilot", "xai_oauth"):
+                pending = providers.pending_display(providers.get(p["id"]))
                 code_ui = (_copyfield(pending["user_code"], open_url=pending["verification_uri"])
                           if pending else "")
                 connect_ui = (
@@ -4019,12 +4167,17 @@ class Handler(BaseHTTPRequestHandler):
                     f"<form method=post action='/admin/providers/{p['id']}/oauth/check' style='margin-top:.4rem'>"
                     f"<input type=hidden name=csrf value='{csrf}'>"
                     "<button class=btn>check if authorized yet</button></form>")
+            browse_btn = (
+                f"<form method=post action='/admin/providers/{p['id']}/models'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class=btn>list models</button></form>") if p["status"] == "connected" else ""
             provider_rows.append(
                 "<div class=list-row><div class=list-meta>"
                 f"<b>{esc(p['label'])}</b> {status_chip}"
                 f"<small>{esc(providers.TYPES.get(p['type'], {}).get('label', p['type']))}</small>"
                 f"{connect_ui}</div>"
-                f"<div class=list-actions><form method=post action='/admin/providers/{p['id']}/delete'>"
+                f"<div class=list-actions>{browse_btn}"
+                f"<form method=post action='/admin/providers/{p['id']}/delete'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 "<button class='btn btn-danger'>remove</button></form></div></div>")
         type_opts = "".join(f"<option value='{k}'>{esc(v['label'])}</option>" for k, v in providers.TYPES.items())
@@ -4044,6 +4197,47 @@ class Handler(BaseHTTPRequestHandler):
             "<button class='btn btn-primary'>add / connect</button></form>"
             f"{''.join(provider_rows) or '<p class=muted>none configured yet.</p>'}</div>"
         )
+
+        # -- Browse results (2026-09-30, see providers.list_models()) --
+        main_browse = ""
+        if browse:
+            if not browse["ok"]:
+                main_browse = (f"<div class=section><h2>models on {esc(browse['provider_label'])}</h2>"
+                              f"<p class=err>{esc(browse['error'])}</p></div>")
+            else:
+                items = browse["items"]
+                q = (browse.get("q") or "").strip().lower()
+                shown = [m for m in items if not q or q in m["id"].lower() or q in m["label"].lower()]
+                cap = 150
+                truncated = len(shown) - cap
+                shown = shown[:cap]
+
+                def _result_row(m: dict) -> str:
+                    alias_default = esc(m["label"] if m["label"] != m["id"] else m["id"].rsplit("/", 1)[-1])
+                    return (
+                        "<div class=list-row><div class=list-meta>"
+                        f"<b>{esc(m['label'])}</b><small>{esc(m['id'])}</small></div>"
+                        f"<form method=post action='/admin/models' style='display:flex;gap:.4rem;"
+                        "align-items:center'>"
+                        f"<input type=hidden name=csrf value='{csrf}'>"
+                        f"<input type=hidden name=provider_id value='{browse['provider_id']}'>"
+                        f"<input type=hidden name=model_name value='{esc(m['id'])}'>"
+                        f"<input type=text name=alias value='{alias_default}' style='width:12em'>"
+                        "<button class=btn>add</button></form></div>")
+
+                main_browse = (
+                    f"<div class=section><h2>models on {esc(browse['provider_label'])}</h2>"
+                    f"<p class=muted>{len(items)} available"
+                    f"{f', showing first {cap} of {len(shown) + max(truncated, 0)} matching' if truncated > 0 else ''}"
+                    "-- filter narrows by id/name, alias is editable before you add one.</p>"
+                    f"<form method=post action='/admin/providers/{browse['provider_id']}/models' "
+                    "style='display:flex;gap:.4rem;margin-bottom:.6rem'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>"
+                    f"<input type=text name=q value='{esc(browse.get('q') or '')}' placeholder='filter…' "
+                    "style='flex:1'>"
+                    "<button class=btn>filter</button></form>"
+                    f"{''.join(_result_row(m) for m in shown) or '<p class=muted>no matches.</p>'}</div>"
+                )
 
         # -- Models --
         enabled_providers = [p for p in all_providers if p["enabled"] and p["status"] == "connected"]
@@ -4124,7 +4318,7 @@ class Handler(BaseHTTPRequestHandler):
             f"{chain_form}</div>"
         )
 
-        self._settings_response(sess, "models", f"{e}{i}{main_provider}{main_models}{main_chain}")
+        self._settings_response(sess, "models", f"{e}{i}{main_provider}{main_browse}{main_models}{main_chain}")
 
     def providers_create_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4144,8 +4338,8 @@ class Handler(BaseHTTPRequestHandler):
             # -- a real, copyable link/button, not a long URL crammed into
             # this one-shot flash message the way it used to be.
             return self.models_admin_form(sess, info="added -- see below to connect")
-        if ptype == "github_copilot":
-            ok, msg, data = providers.begin_device_flow(wsid, label, sess["user_id"])
+        if ptype in ("github_copilot", "xai_oauth"):
+            ok, msg, data = providers.begin_device_flow(wsid, ptype, label, sess["user_id"])
             if not ok:
                 return self.models_admin_form(sess, err=msg)
             return self.models_admin_form(sess, info="added -- see below to connect")
@@ -4160,6 +4354,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.models_admin_form(sess, "bad id")
         providers.delete(pid)
         return self.models_admin_form(sess, info="removed")
+
+    def providers_list_models_post(self, sess: dict, provider_id: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int(provider_id)
+        except ValueError:
+            return self.models_admin_form(sess, "bad id")
+        provider = providers.get(pid)
+        if provider is None:
+            return self.models_admin_form(sess, "no such provider")
+        ok, result = providers.list_models(provider)
+        browse = {"provider_id": pid, "provider_label": provider["label"], "q": form.get("q") or "",
+                 "ok": ok, "items": result if ok else None, "error": result if not ok else None}
+        return self.models_admin_form(sess, browse=browse)
 
     def providers_oauth_complete_post(self, sess: dict, provider_id: str, form: dict):
         if sess["role"] != "admin":
@@ -7104,7 +7313,13 @@ class Handler(BaseHTTPRequestHandler):
                     f"<b class=wrap>{esc(d['value'])}</b>"
                     f"<small>{esc(d['source'])}{' · pinned' if d['pinned'] else ''}"
                     f"{' · SAFETY/CONSTRAINT' if d['safety_tier'] else ''}"
-                    f"{' · ' + esc(', '.join(d['tags'])) if d['tags'] else ''}</small></div>"
+                    f"{' · ' + esc(', '.join(d['tags'])) if d['tags'] else ''}</small>"
+                    f"<form method=post action='/settings/memory/edit' "
+                    f"style='display:flex;gap:.4rem;margin-top:.4rem'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>"
+                    f"<input type=hidden name=memory_id value='{d['id']}'>"
+                    f"<textarea name=value rows=2 style='flex:1;font:inherit'>{esc(d['value'])}</textarea>"
+                    f"<button class=btn>save</button></form></div>"
                     f"<div class=list-actions>"
                     f"<form method=post action='/settings/memory/pin'>"
                     f"<input type=hidden name=csrf value='{csrf}'>"
@@ -7116,6 +7331,11 @@ class Handler(BaseHTTPRequestHandler):
                     f"<input type=hidden name=memory_id value='{d['id']}'>"
                     f"<input type=hidden name=action value='{'unsafety' if d['safety_tier'] else 'safety'}'>"
                     f"<button class=btn>{'unmark safety' if d['safety_tier'] else 'mark safety'}</button></form>"
+                    f"<form method=post action='/settings/memory/delete' "
+                    f"data-confirm=\"Delete this memory? This can't be undone.\">"
+                    f"<input type=hidden name=csrf value='{csrf}'>"
+                    f"<input type=hidden name=memory_id value='{d['id']}'>"
+                    f"<button class='btn btn-danger'>delete</button></form>"
                     f"</div></div>"
                     for d in entries)
                 sections.append(f"<div class=section><h2>{esc(t)}</h2>{erows}</div>")
@@ -7289,6 +7509,26 @@ class Handler(BaseHTTPRequestHandler):
         if "error" in result:
             return self.settings_page(sess, "memory", err=result["error"])
         return self.settings_page(sess, "memory", info="marked safety/constraint" if flag else "unmarked")
+
+    def settings_memory_edit_post(self, sess: dict, form: dict):
+        try:
+            memory_id = int(form.get("memory_id", ""))
+        except (TypeError, ValueError):
+            return self.settings_page(sess, "memory", err="bad id")
+        result = memory.edit_memory(sess["user_id"], memory_id, form.get("value") or "")
+        if "error" in result:
+            return self.settings_page(sess, "memory", err=result["error"])
+        return self.settings_page(sess, "memory", info="saved")
+
+    def settings_memory_delete_post(self, sess: dict, form: dict):
+        try:
+            memory_id = int(form.get("memory_id", ""))
+        except (TypeError, ValueError):
+            return self.settings_page(sess, "memory", err="bad id")
+        result = memory.delete_memory(sess["user_id"], memory_id)
+        if "error" in result:
+            return self.settings_page(sess, "memory", err=result["error"])
+        return self.settings_page(sess, "memory", info="deleted")
 
     def settings_household_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -8336,8 +8576,15 @@ class Handler(BaseHTTPRequestHandler):
                        f"<button type=button class=chatimage aria-label='View image full screen'{prompt_attr}>"
                        f"<img src='/image/{fid}' alt='' loading=lazy></button>{cap}{copy_btn}</div>")
             copy_btn = _copy_btn(m["content"]) if m["role"] == "assistant" and m.get("content") else ""
+            debug_btn = ""
+            if m["role"] == "assistant" and m.get("meta"):
+                try:
+                    debug_btn = _debug_btn(json.loads(m["meta"]).get("debug"))
+                except (ValueError, TypeError):
+                    pass
+            actions = f"<span class=msg-actions>{copy_btn}{debug_btn}</span>" if copy_btn or debug_btn else ""
             return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}'>"
-                   f"{esc(m['content'])}{copy_btn}</div>")
+                   f"{esc(m['content'])}{actions}</div>")
 
         # the state shown on the LAST page load, before whatever just
         # happened (a new reply, or nothing if this is a plain reload) --
@@ -8696,11 +8943,27 @@ class Handler(BaseHTTPRequestHandler):
         reply_meta = conversation.cost_meta(res["usage"])
         if voice:
             reply_meta["source"] = "voice"
+        # debug panel (2026-09-30, operator's own ask) -- provider/model/
+        # chain-position/request-id/reasoning/latency/failed-fallback-
+        # attempts (dispatch_meta, built in chat.call_via_chain) plus this
+        # turn's own tool-call log, folded under one "debug" sub-key so it
+        # doesn't collide with cost_meta's existing fields. None (not a
+        # key at all) when dispatch_meta is unset -- a round-limit/leak-
+        # failure fallback text that never reached a real model call, so
+        # there's honestly nothing to show, not an empty panel.
+        dispatch_meta = res.get("dispatch_meta")
+        if dispatch_meta:
+            reply_meta["debug"] = {**dispatch_meta, "tool_calls": res.get("tool_calls") or [],
+                                   "ts": time.time(), "cost_usd": reply_meta["cost_usd"],
+                                   "cost_unavailable": reply_meta["cost_unavailable"],
+                                   "prompt_tokens": reply_meta["prompt_tokens"],
+                                   "completion_tokens": reply_meta["completion_tokens"]}
         with turn.stage("persist_reply"):
             aid = conversation.add_message(user["id"], "assistant", reply, emotion=state, meta=reply_meta)
         turn.finish()
         return {"ok": True, "messages": tool_msgs + [{"id": aid, "role": "assistant", "content": reply,
-                                                       "emotion": state, "kind": "chat"}], "state": state}
+                                                       "emotion": state, "kind": "chat", "meta": reply_meta}],
+               "state": state}
 
     def send_msg(self, sess: dict, form: dict):
         """JSON, not a redirect -- the client renders its own optimistic

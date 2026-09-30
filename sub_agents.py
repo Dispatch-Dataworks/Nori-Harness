@@ -111,3 +111,34 @@ def get_enabled_by_label(label: str) -> dict | None:
 def set_enabled(sub_agent_id: int, enabled: bool) -> None:
     store.write(lambda c: c.execute(
         "UPDATE sub_agents SET enabled=? WHERE id=?", (1 if enabled else 0, sub_agent_id)))
+
+
+def job_counts() -> dict[int, int]:
+    """{sub_agent_id: job count}, every agent that has run at least one --
+    server.py's roster row uses this to word the delete confirmation
+    accurately per agent instead of a generic warning."""
+    rows = store.read(lambda c: c.execute(
+        "SELECT sub_agent_id, COUNT(*) AS n FROM jobs GROUP BY sub_agent_id").fetchall())
+    return {r["sub_agent_id"]: r["n"] for r in rows}
+
+
+def delete(sub_agent_id: int, force: bool = False) -> tuple[bool, str]:
+    """jobs.sub_agent_id is a real, NOT NULL FK (unlike models.provider_id/
+    sub_agents.model_id, both nullable) -- a sub-agent with real job/cost
+    history can't be deleted without also deleting that history, no
+    middle ground the schema allows. Without force, that's refused with a
+    clear count rather than silently destroying an audit trail (disable
+    stays the non-destructive option). With force=True (2026-09-30,
+    operator's own explicit call: "if that means deleting the history
+    then we can do that") -- the caller (server.py's confirm() dialog) is
+    responsible for making that consequence clear before this is ever
+    invoked; this function trusts force and doesn't ask a second time."""
+    count = store.read(lambda c: c.execute(
+        "SELECT COUNT(*) AS n FROM jobs WHERE sub_agent_id=?", (sub_agent_id,)).fetchone())["n"]
+    if count and not force:
+        return False, (f"this agent has {count} job(s) in its history -- disable it instead to keep "
+                       f"that history intact, or delete again to also delete that history")
+    if count:
+        store.write(lambda c: c.execute("DELETE FROM jobs WHERE sub_agent_id=?", (sub_agent_id,)))
+    store.write(lambda c: c.execute("DELETE FROM sub_agents WHERE id=?", (sub_agent_id,)))
+    return True, f"deleted (including {count} job(s) of history)" if count else "deleted"

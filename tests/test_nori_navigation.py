@@ -102,7 +102,7 @@ def handler(role="admin"):
                # roster is non-empty -- real values from sub_agents.py, not
                # arbitrary, so a limit-range assertion here would still mean
                # something.
-               sub_agents=SimpleNamespace(list_all=lambda: [], TOOL_CALL_LIMIT_MAX=1000,
+               sub_agents=SimpleNamespace(list_all=lambda: [], job_counts=lambda: {}, TOOL_CALL_LIMIT_MAX=1000,
                                           TOOL_BYTE_LIMIT_MIN=10_000, TOOL_BYTE_LIMIT_MAX=50_000_000,
                                           TOOL_BYTE_LIMIT_DEFAULT=2_000_000),
                jobs=SimpleNamespace(running_jobs=lambda: [], recently_interrupted=lambda: []),

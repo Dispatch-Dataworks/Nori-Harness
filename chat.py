@@ -63,6 +63,74 @@ _CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_nam
 def _urlopen_json(req, socket_timeout: int) -> dict:
     with urllib.request.urlopen(req, timeout=socket_timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _urlopen_sse_final_response(req, socket_timeout: int) -> dict:
+    """For OpenAI's Responses-API SSE stream (see _call_openai_oauth --
+    that endpoint 400s on stream:false, so this is mandatory there, not
+    a nicety). Reads the whole stream (urlopen already blocks until the
+    connection closes or the timeout hits, same as the non-streaming
+    path -- there's no partial-result use for this app, which only ever
+    wants the finished turn).
+
+    Built from DELTA events (response.output_text.delta), NOT the
+    "response.completed" event's own embedded response.output -- found
+    live (2026-09-30, several rounds of real evidence): that embedded
+    output can be `[]` even when usage.output_tokens shows real non-
+    reasoning tokens were generated (confirmed: reasoning_tokens=88 of
+    output_tokens=111, 23 real tokens of content that response.completed
+    never surfaced). Whatever this ChatGPT-backend variant's own
+    consistency bug is between its streaming deltas and its final
+    snapshot, the deltas are the side that's actually been proven to
+    carry the real content, so they're the source of truth here -- the
+    completed event is used only for usage/status metadata now. Function
+    calls still come from response.output_item.done (that shape hasn't
+    shown the same discrepancy)."""
+    with urllib.request.urlopen(req, timeout=socket_timeout) as resp:
+        raw = resp.read().decode("utf-8")
+    text_parts, function_calls, usage, status, seen_types = [], [], {}, "completed", []
+    reasoning_parts, response_id = [], None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            evt = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        etype = evt.get("type", "")
+        seen_types.append(etype)
+        if etype == "response.output_text.delta" and evt.get("delta"):
+            text_parts.append(evt["delta"])
+        elif etype == "response.reasoning_summary_text.delta" and evt.get("delta"):
+            # Best-effort only -- reasoning.summary was seen null in a real
+            # response (not requested), so this accumulator likely stays
+            # empty for now; kept so it picks up real content for free if
+            # a summary ever IS present, without adding a new request
+            # param to chase (max_output_tokens already taught this
+            # endpoint 400s on params the public Responses API accepts).
+            reasoning_parts.append(evt["delta"])
+        elif etype == "response.output_item.done":
+            item = evt.get("item") or {}
+            if item.get("type") == "function_call":
+                function_calls.append({"type": "function_call", "call_id": item.get("call_id"),
+                                       "name": item.get("name"), "arguments": item.get("arguments") or "{}"})
+        elif etype == "response.completed" and isinstance(evt.get("response"), dict):
+            r = evt["response"]
+            usage = r.get("usage") or usage
+            status = r.get("status") or status
+            response_id = r.get("id") or response_id
+    output = list(function_calls)
+    if text_parts:
+        output.insert(0, {"type": "message", "content": [{"type": "output_text", "text": "".join(text_parts)}]})
+    if not output:
+        raise ModelError("OpenAI OAuth stream produced no text deltas and no function calls -- "
+                         f"event types seen: {seen_types}")
+    return {"output": output, "status": status, "usage": usage, "id": response_id,
+           "reasoning": "".join(reasoning_parts) or None}
 # Same default a sibling application uses -- confirmed ZDR-eligible there, and vision
 # support doesn't exist in Nori at all until workfiles.py's image reads.
 VISION_MODEL = os.environ.get("NORI_VISION_MODEL", "qwen/qwen3-vl-235b-a22b-instruct")
@@ -261,7 +329,9 @@ def _call_direct(messages: list[dict], *, provider: str, native_model: str, max_
             return {"content": msg.get("content") or "",
                     "finish_reason": ch0.get("finish_reason"),
                     "tool_calls": msg.get("tool_calls") or [],
-                    "usage": usage}
+                    "usage": usage,
+                    "request_id": data.get("id"),
+                    "reasoning": (msg.get("reasoning") or "").strip() or None}
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
             last = ModelError(f"direct {provider} call failed ({exc.code}): {detail}",
@@ -389,11 +459,12 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
             ch0 = (data.get("choices") or [{}])[0]
             msg = ch0.get("message") or {}
             content = msg.get("content") or ""
+            reasoning = (msg.get("reasoning") or "").strip() or None
             if not content.strip():
                 # Same misrouted-into-reasoning fallback a sibling application needed for
                 # Nebius/Hermes -- harmless no-op for any model that doesn't
                 # do this, only fires when content is genuinely empty.
-                content = (msg.get("reasoning") or "").strip()
+                content = reasoning or ""
             usage = data.get("usage") or {}
             # OpenRouter's own total (its price, markup included) lives at
             # usage.cost; usage.cost_details.upstream_inference_cost is the
@@ -411,7 +482,24 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
             return {"content": content,
                     "finish_reason": ch0.get("finish_reason"),
                     "tool_calls": msg.get("tool_calls") or [],
-                    "usage": usage}
+                    "usage": usage,
+                    "request_id": data.get("id"),
+                    "reasoning": reasoning}
+        except urllib.error.HTTPError as exc:
+            # Real gap, found live (2026-09-30: a Copilot 400 surfaced as
+            # bare "HTTP Error 400: Bad Request", no detail at all, unlike
+            # _call_direct/the Anthropic adapters, which already read the
+            # response body here). str(HTTPError) never includes the
+            # body; exc.read() does, and is still available at this point
+            # since _urlopen_json never touches it on a non-2xx response.
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001 -- best-effort; the bare HTTPError is still logged either way
+                detail = ""
+            last = ModelError(f"HTTP {exc.code}: {detail or exc.reason}", transient=exc.code >= 500)
+            if not last.transient or attempt == API_RETRIES:
+                break
+            time.sleep(1.5 * (attempt + 1))
         except (ModelError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             last = exc
             if not getattr(exc, "transient", True) or attempt == API_RETRIES:
@@ -647,14 +735,175 @@ def _call_openrouter(entry: dict, messages: list[dict], *, tools=None, tool_choi
 
 def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
                          want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """Tries /chat/completions first (the common case, and what every
+    model up to now has used) -- falls through to _call_copilot_responses
+    only on that endpoint's own explicit "unsupported_api_for_model"
+    rejection (2026-09-30, real gap found live: xAI's entire Grok family
+    on Copilot -- confirmed directly against Copilot's own /models
+    capabilities -- reports supported_endpoints:["/responses"] only, no
+    /chat/completions at all). Self-healing per model, no schema change,
+    no extra API call on the normal path -- the fallback only fires for a
+    model that's actually been rejected."""
     import providers
     token = providers.access_token_for(entry["provider"])
     headers = {"copilot-integration-id": "vscode-chat", "openai-intent": "conversation-panel",
               "x-github-api-version": "2025-04-01", **providers._COPILOT_HEADERS}
+    try:
+        return call(messages, model=entry["model_name"], reasoning_effort=entry["reasoning_effort"],
+                   tools=tools, tool_choice=tool_choice, want_json=want_json, max_tokens=max_tokens,
+                   temperature=temperature, timeout=timeout, api_key=token,
+                   base_url=providers.COPILOT_COMPLETIONS_URL, extra_headers=headers)
+    except ModelError as exc:
+        if "unsupported_api_for_model" not in str(exc):
+            raise
+        return _call_copilot_responses(entry, messages, tools=tools, tool_choice=tool_choice,
+                                       want_json=want_json, max_tokens=max_tokens,
+                                       temperature=temperature, timeout=timeout)
+
+
+def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list[dict]]:
+    """Shared translation, Nori's OpenAI-chat-shaped messages -> the
+    public Responses API's own {"instructions", "input": [...]} shape --
+    used by any PLAIN-JSON Responses-API consumer (Copilot's /responses
+    fallback, xAI's OAuth proxy below). NOT used by _call_openai_oauth,
+    which has its own inline version -- that adapter's endpoint needed
+    several genuine quirk-fixes (store:false, stream:true-only) this
+    shared version has no evidence either of these two needs, and
+    inheriting unconfirmed quirks into a working adapter would be a step
+    backward, not a simplification."""
+    system_parts, input_items = [], []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            system_parts.append(m.get("content") or "")
+        elif role == "tool":
+            input_items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
+                               "output": m.get("content") or ""})
+        elif role == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                fn = tc.get("function") or {}
+                input_items.append({"type": "function_call", "call_id": tc.get("id"),
+                                   "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
+        else:
+            input_items.append({"role": role, "content": m.get("content") or ""})
+    instructions = "\n\n".join(p for p in system_parts if p) or None
+    return instructions, input_items
+
+
+def _responses_tools(tools: list[dict] | None) -> list[dict] | None:
+    if not tools:
+        return None
+    return [{"type": "function", "name": (t.get("function") or {}).get("name"),
+            "description": (t.get("function") or {}).get("description") or "",
+            "parameters": (t.get("function") or {}).get("parameters") or {}}
+           for t in tools]
+
+
+def _parse_responses_output(data: dict) -> tuple[str, list[dict]]:
+    text_parts, tool_calls = [], []
+    for item in data.get("output", []):
+        if item.get("type") == "function_call":
+            tool_calls.append({"id": item.get("call_id"), "type": "function",
+                              "function": {"name": item.get("name"), "arguments": item.get("arguments") or "{}"}})
+            continue
+        for c in item.get("content") or []:
+            if isinstance(c, dict) and c.get("text"):
+                text_parts.append(c["text"])
+        if isinstance(item.get("text"), str) and item["text"]:
+            text_parts.append(item["text"])
+    return "".join(text_parts), tool_calls
+
+
+def _plain_responses_call(url: str, headers: dict, model_name: str, messages: list[dict],
+                          tools: list[dict] | None, reasoning_effort: str | None, timeout,
+                          vendor: str) -> dict:
+    """Shared HTTP call for a PLAIN-JSON (non-streaming) Responses API
+    endpoint -- see _messages_to_responses_input's own docstring for why
+    this is separate from _call_openai_oauth's SSE-based version. Used by
+    both _call_copilot_responses and _call_xai_oauth; `vendor` is only for
+    the error message prefix."""
+    instructions, input_items = _messages_to_responses_input(messages)
+    body: dict = {"model": model_name, "input": input_items}
+    if instructions:
+        body["instructions"] = instructions
+    responses_tools = _responses_tools(tools)
+    if responses_tools:
+        body["tools"] = responses_tools
+    if reasoning_effort:
+        body["reasoning"] = {"effort": reasoning_effort}
+    to = timeout or API_TIMEOUT_S
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
+    try:
+        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise ModelError(f"{vendor} /responses call failed ({exc.code}): {detail}", transient=exc.code >= 500)
+    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
+        raise ModelError(f"{vendor} /responses call failed: {exc}")
+    if data.get("error"):
+        raise ModelError(f"{vendor} /responses api error: {str(data['error'])[:300]}", transient=True)
+    text, tool_calls = _parse_responses_output(data)
+    usage = data.get("usage") or {}
+    return {"content": text, "finish_reason": data.get("status"), "tool_calls": tool_calls,
+           "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
+                     "cost": None},
+           "request_id": data.get("id"), "reasoning": None}
+
+
+def _call_copilot_responses(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                            want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """The /responses fallback for a Copilot model whose own capabilities
+    say /chat/completions isn't available for it (see
+    _call_github_copilot). Plain JSON response, NOT SSE -- unlike OpenAI's
+    own ChatGPT-backend Codex endpoint (_call_openai_oauth, which 400s on
+    stream:false), Copilot's /chat/completions already returns plain
+    JSON, so this assumes /responses does too rather than assuming it
+    needs the same streaming workaround; if that assumption's wrong here
+    too, the next real error will say so as plainly as
+    "unsupported_api_for_model" did, not silently."""
+    import providers
+    token = providers.access_token_for(entry["provider"])
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+              "copilot-integration-id": "vscode-chat", "x-github-api-version": "2025-04-01",
+              **providers._COPILOT_HEADERS}
+    return _plain_responses_call("https://api.githubcopilot.com/responses", headers, entry["model_name"],
+                                 messages, tools, entry["reasoning_effort"], timeout, "Copilot")
+
+
+def _call_xai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                    want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """A SuperGrok/X Premium+ subscription, via Grok Build's own device-
+    code OAuth (see providers.py's module docstring) -- inference rides
+    the subscription proxy (cli-chat-proxy.grok.com), not api.x.ai
+    directly (that's xai_api_key, a real API key billed separately). This
+    proxy's own request/response shape was NOT directly inspected before
+    this was built (verified the OAuth mechanics and the fact that it's
+    Responses-API-shaped against pi-grok's real source, not the wire
+    format itself) -- treat the first real call through this adapter the
+    same way every other OAuth adapter in this file started: a reasonable
+    first attempt, refined from whatever error actually comes back."""
+    import providers
+    token = providers.access_token_for(entry["provider"])
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+              **providers._xai_proxy_headers(entry["model_name"])}
+    return _plain_responses_call(providers.XAI_PROXY_RESPONSES_URL, headers, entry["model_name"],
+                                 messages, tools, entry["reasoning_effort"], timeout, "xAI")
+
+
+def _call_xai_api_key(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
+                      want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
+    """A real xAI API key against the real, official, documented xAI API
+    -- OpenAI-chat-completions-compatible (xAI's own docs: "OpenAI SDK
+    compatible, requiring only a change to the base_url and api_key"),
+    so this just reuses call() with a different base_url/key, same as
+    _call_openrouter/_call_github_copilot. Not the subscription/OAuth
+    path (_call_xai_oauth, above) -- this bills per-token against a
+    regular xAI API account."""
+    import providers
+    key = providers.api_key_for(entry["provider"])
     return call(messages, model=entry["model_name"], reasoning_effort=entry["reasoning_effort"],
                tools=tools, tool_choice=tool_choice, want_json=want_json, max_tokens=max_tokens,
-               temperature=temperature, timeout=timeout, api_key=token,
-               base_url=providers.COPILOT_COMPLETIONS_URL, extra_headers=headers)
+               temperature=temperature, timeout=timeout, api_key=key, base_url=providers.XAI_API_KEY_URL)
 
 
 _ANTHROPIC_CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -745,13 +994,16 @@ def _anthropic_messages_request(model_name: str, messages: list[dict], tools: li
     if data.get("error"):
         raise ModelError(f"Anthropic api error: {str(data['error'])[:300]}", transient=True)
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    reasoning = "\n".join(b.get("thinking", "") for b in data.get("content", [])
+                          if b.get("type") == "thinking") or None
     tool_calls = [{"id": b.get("id"), "type": "function",
                   "function": {"name": b.get("name"), "arguments": json.dumps(b.get("input") or {})}}
                  for b in data.get("content", []) if b.get("type") == "tool_use"]
     usage = data.get("usage") or {}
     return {"content": text, "finish_reason": data.get("stop_reason"), "tool_calls": tool_calls,
            "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
-                     "cost": None}}
+                     "cost": None},
+           "request_id": data.get("id"), "reasoning": reasoning}
 
 
 def _call_anthropic_oauth(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
@@ -827,10 +1079,22 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     """
     import providers
     token = providers.access_token_for(entry["provider"])
-    input_items = []
+    # system messages go to the top-level "instructions" field, not into
+    # "input" as a role:"system" item (2026-09-30, second real gap found
+    # live -- every turn came back status:"completed", output:[], no
+    # error at all: the request mechanics were all correct, but the
+    # response showed "instructions": null. Codex CLI's own real usage of
+    # this endpoint sets its system prompt via "instructions" specifically
+    # -- a system role item buried in "input" may simply not register as
+    # an instruction to this backend, hence a well-formed request that
+    # produces nothing). Multiple system messages are joined in order,
+    # same as Nori's own context ever sends more than one.
+    system_parts, input_items = [], []
     for m in messages:
         role = m.get("role")
-        if role == "tool":
+        if role == "system":
+            system_parts.append(m.get("content") or "")
+        elif role == "tool":
             input_items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
                                "output": m.get("content") or ""})
         elif role == "assistant" and m.get("tool_calls"):
@@ -844,8 +1108,23 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     # live (2026-09-30): omitting it (the public Responses API's own
     # default, store:true) 400s with "Store must be set to false" on the
     # ChatGPT-backend path specifically, since it has nowhere to persist
-    # a stored response the way the public API does.
-    body: dict = {"model": entry["model_name"], "input": input_items, "stream": False, "store": False}
+    # a stored response the way the public API does. stream:true is ALSO
+    # required (found live immediately after fixing store) -- this
+    # endpoint apparently only supports the streaming form, unlike the
+    # public Responses API, hence _urlopen_sse_final_response below
+    # instead of a plain JSON read.
+    # max_output_tokens was tried here (2026-09-30, guessing at the
+    # output=[]-with-no-error gap as reasoning-token exhaustion, the
+    # standard Responses API's own documented shape for it) and 400'd
+    # outright: {"detail":"Unsupported parameter: max_output_tokens"} --
+    # this ChatGPT-backend endpoint has a trimmed param set that doesn't
+    # match the public Responses API, and doesn't accept ANY token-budget
+    # control apparently. Reverted; the empty-result diagnostic print
+    # below (status/incomplete_details/full response) is what actually
+    # tells us the real cause next time, not another guess at a param.
+    body: dict = {"model": entry["model_name"], "input": input_items, "stream": True, "store": False}
+    if system_parts:
+        body["instructions"] = "\n\n".join(p for p in system_parts if p)
     if tools:
         body["tools"] = [{"type": "function", "name": (t.get("function") or {}).get("name"),
                          "description": (t.get("function") or {}).get("description") or "",
@@ -856,10 +1135,11 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",
               "chatgpt-account-id": (entry["provider"].get("account_meta") or {}).get("account_id", "")}
     to = timeout or API_TIMEOUT_S
+    headers["Accept"] = "text/event-stream"
     req = urllib.request.Request(providers.OPENAI_CODEX_URL, data=json.dumps(body).encode("utf-8"),
                                  method="POST", headers=headers)
     try:
-        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+        data = _CALL_EXECUTOR.submit(_urlopen_sse_final_response, req, to).result(timeout=to)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         raise ModelError(f"OpenAI OAuth call failed ({exc.code}): {detail}", transient=exc.code >= 500)
@@ -869,17 +1149,52 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
         raise ModelError(f"OpenAI OAuth api error: {str(data['error'])[:300]}", transient=True)
     text_parts, tool_calls = [], []
     for item in data.get("output", []):
-        if item.get("type") == "message":
-            for c in item.get("content", []):
-                if c.get("type") in ("output_text", "text"):
-                    text_parts.append(c.get("text", ""))
-        elif item.get("type") == "function_call":
+        itype = item.get("type")
+        if itype == "function_call":
             tool_calls.append({"id": item.get("call_id"), "type": "function",
                               "function": {"name": item.get("name"), "arguments": item.get("arguments") or "{}"}})
+            continue
+        # Widened past a strict type=="message"/type in ("output_text","text")
+        # match (2026-09-30, see the diagnostic print below) -- take any
+        # content block that actually carries non-empty text, on any item
+        # type, rather than betting the whole result on one exact shape
+        # this endpoint's real events haven't been confirmed to match.
+        for c in item.get("content") or []:
+            if isinstance(c, dict) and c.get("text"):
+                text_parts.append(c["text"])
+        if isinstance(item.get("text"), str) and item["text"]:
+            text_parts.append(item["text"])
     usage = data.get("usage") or {}
-    return {"content": "".join(text_parts), "finish_reason": data.get("status"), "tool_calls": tool_calls,
-           "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
-                     "cost": None}}
+    result = {"content": "".join(text_parts), "finish_reason": data.get("status"), "tool_calls": tool_calls,
+             "usage": {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens"),
+                       "cost": None},
+             "request_id": data.get("id"), "reasoning": data.get("reasoning")}
+    if not result["content"] and not tool_calls:
+        # Real gap, found live (2026-09-30, the operator: primary-OpenAI
+        # turns coming back as "the model returned nothing") -- the call
+        # itself succeeded (no ModelError above), so whatever this
+        # endpoint actually sent didn't match ANY of the shapes this
+        # adapter knows to look for. Logged loudly, same standing rule as
+        # ModelError's own -- a turn that silently produces nothing is a
+        # defect to fix from real evidence, not guess at again blind.
+        # A whole-response dump (round 2) got its useful fields truncated
+        # out by the "instructions" field's own bulk (Nori's full persona
+        # prompt, several KB) once that got added -- round 3: only the
+        # small fields that might actually explain an empty output,
+        # explicitly, with "instructions"/"tools"/"input" (all
+        # necessarily large and already known) left out entirely.
+        # Round 4: usage.attribution (a per-INPUT-message token breakdown,
+        # one entry per item in a multi-turn conversation -- easily
+        # dozens) was the new bulk-eater, this time hiding usage's own
+        # top-level input_tokens/output_tokens/reasoning_tokens totals --
+        # the actual thing worth seeing here. Stripped specifically,
+        # everything else in usage kept.
+        small = {k: v for k, v in data.items()
+                if k not in ("instructions", "tools", "input", "safety_identifier", "prompt_cache_key")}
+        if isinstance(small.get("usage"), dict):
+            small["usage"] = {k: v for k, v in small["usage"].items() if k != "attribution"}
+        print(f"chat._call_openai_oauth: empty result -- {json.dumps(small)[:3000]}", flush=True)
+    return result
 
 
 _PROVIDER_CALLERS = {
@@ -889,6 +1204,8 @@ _PROVIDER_CALLERS = {
     "anthropic_api_key": _call_anthropic_api_key,
     "openai_oauth": _call_openai_oauth,
     "openai_api_key": _call_openai_api_key,
+    "xai_oauth": _call_xai_oauth,
+    "xai_api_key": _call_xai_api_key,
 }
 
 
@@ -912,18 +1229,43 @@ def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
     """The primary-then-fallback loop: try this workspace's primary model,
     then each fallback in order, on ModelError -- generalizes the old
     direct-provider-then-OpenRouter fallback into the real Providers/
-    Models chain. This is what run() below uses for every real turn."""
+    Models chain. This is what run() below uses for every real turn.
+
+    dispatch_meta (2026-09-30, see the per-message debug panel) -- the
+    successful result gets a "_dispatch_meta" key attached: which
+    provider/model actually served the turn, its position in the chain
+    (primary vs which fallback), every earlier attempt that failed and
+    why, and wall-clock latency. Nothing else about the result shape
+    changes -- existing callers that only read content/tool_calls/usage
+    are unaffected; this is purely additive."""
     chain = _resolve_model_chain(workspace_id)
     if not chain:
         raise ModelError(
             "no model configured for this workspace -- add a provider and a model in "
             "Settings > Models", transient=False)
-    attempts = []
-    for entry in chain:
+    attempts, failed = [], []
+    for position, entry in enumerate(chain):
+        started = time.time()
         try:
-            return call_for_model(entry, messages, **kw)
+            result = call_for_model(entry, messages, **kw)
         except ModelError as exc:
             attempts.append(f"{entry['alias']}: {exc}")
+            failed.append({"alias": entry["alias"], "provider_type": entry["provider"]["type"], "error": str(exc)})
+            continue
+        provider = entry["provider"]
+        result["_dispatch_meta"] = {
+            "provider_type": provider["type"],
+            "provider_label": provider["label"],
+            "model_alias": entry["alias"],
+            "model_name": entry["model_name"],
+            "chain_position": "primary" if position == 0 else f"fallback {position}",
+            "chain_length": len(chain),
+            "request_id": result.get("request_id"),
+            "reasoning": result.get("reasoning"),
+            "latency_ms": round((time.time() - started) * 1000),
+            "failed_attempts": failed,
+        }
+        return result
     raise ModelError("every configured model failed for this turn -- " + "; ".join(attempts))
 
 
@@ -1017,6 +1359,12 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
     workspace_id = session["workspace_id"]
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
     cost_unavailable = False
+    # Whichever round's call_via_chain() result actually produced the text
+    # _finish() is called with -- see the per-message debug panel (2026-
+    # 09-30). Read-only inside _finish(), reassigned at every real model
+    # call site below, so it always reflects the round that mattered.
+    last_dispatch_meta: dict | None = None
+    tool_call_log: list[dict] = []
 
     def _add_usage(u: dict) -> None:
         nonlocal cost_unavailable
@@ -1040,11 +1388,13 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         # peers._run_prompted_turn's own new logging for where this is
         # read and made durable.
         return {"text": text, "usage": {**usage, "cost": None if cost_unavailable else usage["cost"]},
-               "hit_round_limit": hit_round_limit}
+               "hit_round_limit": hit_round_limit, "dispatch_meta": last_dispatch_meta,
+               "tool_calls": list(tool_call_log)}
 
     for rnd in range(1, rounds + 1):
         with t.stage("model_call", round=rnd):
             result = call_via_chain(messages, workspace_id, tools=schemas or None)
+        last_dispatch_meta = result.get("_dispatch_meta")
         _add_usage(result.get("usage") or {})
         calls = result.get("tool_calls") or []
         if not calls:
@@ -1056,6 +1406,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
                  flush=True)
             with t.stage("model_call", round=rnd, retry="leak"):
                 retry = call_via_chain(messages + [_LEAK_NUDGE], workspace_id, tools=schemas or None)
+            last_dispatch_meta = retry.get("_dispatch_meta")
             _add_usage(retry.get("usage") or {})
             retry_calls = retry.get("tool_calls") or []
             if retry_calls:
@@ -1081,6 +1432,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
             except json.JSONDecodeError:
                 args = {}
             out = tools.dispatch(name, args, session, timing_turn=t, round=rnd)
+            tool_call_log.append({"round": rnd, "name": name, "args": args})
             # set_emotion used to be excluded from ever getting a row here at
             # all -- stronger than VISIBLE_TOOLS_FILTER's own display-only
             # suppression (conversation.py), and the mismatch meant an
