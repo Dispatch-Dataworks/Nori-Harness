@@ -813,6 +813,58 @@ def edit_memory(user_id: int, memory_id: int, value: str) -> dict:
     return {"ok": True}
 
 
+def migrate_local_to_nodrya(workspace_id: int) -> dict:
+    """One-time (repeatable, idempotent) bulk copy of every LOCAL memory
+    row into Nodrya -- for a household switching memory_backend over to
+    "nodrya" after already accumulating real history under "local"
+    (2026-10-01, operator's own ask). Independent of the active
+    memory_backend setting: this always writes through
+    NodryaMemoryBackend directly, regardless of which backend is
+    currently selected, so it can run BEFORE flipping the switch to
+    confirm the data actually lands before local reads stop being what
+    the rest of the app sees.
+
+    Idempotent by construction, not a special migrated-flag column: each
+    row this successfully copies gets a memory_events action="migrate"
+    entry against its LOCAL id (the same audit table every other
+    settings-page action already writes to), and a second run skips
+    anything already carrying one -- safe to click twice, or to retry
+    after a partial failure, without creating duplicate Nodrya notes.
+
+    One real Nodrya API call per row (create_note) -- a failure on one
+    row is recorded and the rest continue; this is never all-or-nothing,
+    since each row that succeeds is already its own independent write by
+    the time the next one starts."""
+    nodrya = NodryaMemoryBackend()
+    if nodrya._connection(workspace_id) is None:
+        return {"ok": False, "error": "Nodrya isn't configured for this workspace yet -- "
+                "fill in the connection above first"}
+    local = LocalMemoryBackend()
+    migrated, skipped, failed = 0, 0, []
+    for user in accounts.list_users(workspace_id):
+        uid = user["id"]
+        already = {r["memory_id"] for r in store.read(lambda c: c.execute(
+            "SELECT DISTINCT memory_id FROM memory_events WHERE user_id=? AND action='migrate'",
+            (uid,)).fetchall())}
+        for row in local.all_rows(user_id=uid):
+            if row["id"] in already:
+                skipped += 1
+                continue
+            try:
+                new_id = nodrya.write(user_id=uid, workspace_id=workspace_id, type_=row["type"],
+                                      value=row["value"], tags=row["tags"],
+                                      safety=row["safety_tier"], source="migration")
+                if row.get("pinned"):
+                    nodrya.set_pinned(user_id=uid, memory_id=new_id, pinned=True)
+            except NodryaBackendError as exc:
+                failed.append({"user_id": uid, "memory_id": row["id"], "error": str(exc)})
+                continue
+            _log(row["id"], uid, "migrate", actor="user", type_=row["type"],
+                note=f"copied to nodrya as memory_id {new_id}")
+            migrated += 1
+    return {"ok": True, "migrated": migrated, "skipped": skipped, "failed": failed}
+
+
 def _recall(session: dict, types: list | None = None, tags: list | None = None,
            query: str | None = None, limit: int = 20) -> dict:
     limit = max(1, min(int(limit or 20), 100))

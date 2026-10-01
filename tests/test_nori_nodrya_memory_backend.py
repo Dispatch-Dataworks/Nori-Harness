@@ -44,6 +44,13 @@ import store  # noqa: E402
 
 store.init()
 
+# bootstrap_admin() is genuinely first-run-only (returns None once any user
+# exists) -- one shared admin for every class in this file, not one per
+# class (same idiom test_nori_ping_signals.py already settled on).
+_USER = accounts.bootstrap_admin("Tester", "testpass123")
+_UID = _USER["id"]
+_WSID = _USER["workspace_id"]
+
 
 def _fake_embed(vectors_by_text=None):
     vectors_by_text = vectors_by_text or {}
@@ -60,9 +67,9 @@ def _mcp_result(payload: dict) -> dict:
 class NodryaMemoryBackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.user = accounts.bootstrap_admin("Tester", "testpass123")
-        cls.uid = cls.user["id"]
-        cls.wsid = cls.user["workspace_id"]
+        cls.user = _USER
+        cls.uid = _UID
+        cls.wsid = _WSID
         cls.backend = memory.NodryaMemoryBackend()
 
     def setUp(self):
@@ -255,6 +262,118 @@ class NodryaMemoryBackendTests(unittest.TestCase):
             self.assertEqual(local_rows["n"], 0)
         finally:
             config.set("workspace", self.wsid, "memory_backend", "local")
+
+
+class MigrateLocalToNodryaTests(unittest.TestCase):
+    """memory.migrate_local_to_nodrya (2026-10-01) -- bulk-copies LOCAL
+    rows into Nodrya, independent of the active memory_backend setting,
+    idempotently (a memory_events action='migrate' row per copied id)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.user = _USER
+        cls.uid = _UID
+        cls.wsid = _WSID
+        cls.local = memory.LocalMemoryBackend()
+
+    def setUp(self):
+        self._clean()
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "")
+        config.set("workspace", self.wsid, "nodrya_mcp_token", "")
+        config.set("workspace", self.wsid, "nodrya_memory_category_id", 0)
+
+    def tearDown(self):
+        # This class shares _UID/_WSID with NodryaMemoryBackendTests (one
+        # bootstrap_admin per file, see the module-level comment above) --
+        # without this, a local `memory` row left behind here would make
+        # that other class's "nothing landed in the local table" assertion
+        # fail depending on which class unittest happens to run first.
+        self._clean()
+
+    def _clean(self):
+        store.write(lambda c: c.execute("DELETE FROM memory WHERE user_id=?", (self.uid,)))
+        store.write(lambda c: c.execute("DELETE FROM memory_events WHERE user_id=?", (self.uid,)))
+        store.write(lambda c: c.execute("DELETE FROM nodrya_memory WHERE user_id=?", (self.uid,)))
+
+    def _configure(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
+        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
+        config.set("workspace", self.wsid, "nodrya_memory_category_id", 42)
+
+    def test_not_configured_returns_an_error_and_migrates_nothing(self):
+        self.local.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
+                         value="x", tags=None, safety=False)
+        result = memory.migrate_local_to_nodrya(self.wsid)
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+        n = store.read(lambda c: c.execute(
+            "SELECT COUNT(*) AS n FROM nodrya_memory WHERE user_id=?", (self.uid,)).fetchone())
+        self.assertEqual(n["n"], 0)
+
+    def test_copies_every_local_row_including_pinned_and_is_idempotent(self):
+        self._configure()
+        mid1 = self.local.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
+                                value="likes strong coffee", tags=["drink"], safety=False)
+        mid2 = self.local.write(user_id=self.uid, workspace_id=self.wsid, type_="identity",
+                                value="pinned fact", tags=None, safety=False)
+        self.local.set_pinned(user_id=self.uid, memory_id=mid2, pinned=True)
+
+        with patch.object(mcp_client, "call_tool",
+                          return_value=_mcp_result({"note": {"id": 900}})) as mock_call, \
+             patch("chat.openrouter_embed", _fake_embed()):
+            result = memory.migrate_local_to_nodrya(self.wsid)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["migrated"], 2)
+        self.assertEqual(result["skipped"], 0)
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(mock_call.call_count, 2)
+
+        rows = store.read(lambda c: c.execute(
+            "SELECT * FROM nodrya_memory WHERE user_id=? ORDER BY id", (self.uid,)).fetchall())
+        self.assertEqual(len(rows), 2)
+        pinned_row = next(r for r in rows if r["type"] == "identity")
+        self.assertEqual(pinned_row["pinned"], 1)
+
+        # Re-running must not create duplicates -- every id was already
+        # logged with a migrate event, so this run should skip both.
+        with patch.object(mcp_client, "call_tool",
+                          return_value=_mcp_result({"note": {"id": 901}})) as mock_call2, \
+             patch("chat.openrouter_embed", _fake_embed()):
+            result2 = memory.migrate_local_to_nodrya(self.wsid)
+        self.assertEqual(result2["migrated"], 0)
+        self.assertEqual(result2["skipped"], 2)
+        self.assertEqual(mock_call2.call_count, 0)
+        n = store.read(lambda c: c.execute(
+            "SELECT COUNT(*) AS n FROM nodrya_memory WHERE user_id=?", (self.uid,)).fetchone())
+        self.assertEqual(n["n"], 2)
+
+    def test_one_failure_does_not_block_the_rest_and_is_retried_next_run(self):
+        self._configure()
+        self.local.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
+                         value="will fail", tags=None, safety=False)
+        self.local.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
+                         value="will succeed", tags=None, safety=False)
+
+        def _call_tool(url, name, arguments, *, headers=None):
+            if arguments.get("content") == "will fail":
+                return {"content": [{"type": "text", "text": "boom"}], "isError": True}
+            return _mcp_result({"note": {"id": 950}})
+
+        with patch.object(mcp_client, "call_tool", side_effect=_call_tool), \
+             patch("chat.openrouter_embed", _fake_embed()):
+            result = memory.migrate_local_to_nodrya(self.wsid)
+        self.assertEqual(result["migrated"], 1)
+        self.assertEqual(len(result["failed"]), 1)
+
+        # Retrying should pick up only the one that previously failed --
+        # it was never logged as migrated, so it isn't skipped.
+        with patch.object(mcp_client, "call_tool",
+                          return_value=_mcp_result({"note": {"id": 951}})), \
+             patch("chat.openrouter_embed", _fake_embed()):
+            result2 = memory.migrate_local_to_nodrya(self.wsid)
+        self.assertEqual(result2["migrated"], 1)
+        self.assertEqual(result2["skipped"], 1)
+        self.assertEqual(result2["failed"], [])
 
 
 if __name__ == "__main__":

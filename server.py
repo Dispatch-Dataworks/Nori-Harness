@@ -2957,6 +2957,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/backend":
             return self.memory_backend_switch_post(sess, form)
+        if path == "/admin/memorybackend/migrate":
+            return self.memory_backend_migrate_post(sess, form)
         if path == "/admin/persona":
             return self.persona_admin_post(sess, form, "save")
         if path.startswith("/admin/persona/") and path[len("/admin/persona/"):] in persona_admin.ACTIONS:
@@ -4768,7 +4770,22 @@ class Handler(BaseHTTPRequestHandler):
             f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>"
             "<button class='btn btn-primary'>save connection</button></form></div>")
 
-        self._settings_response(sess, "memorybackend", e + i + backend_form + conn_form)
+        migrate_form = ""
+        if configured:
+            migrate_form = (
+                "<div class=section><h2>migrate existing memories</h2>"
+                "<p class=muted>Copies every memory currently stored locally -- for every "
+                "household member, not just you -- into Nodrya as a real note each. Safe to run "
+                "more than once: anything already copied is skipped, never duplicated. Local "
+                "rows aren't touched or deleted -- this only adds to Nodrya. Can take a while "
+                "with a lot of history; the page will wait for it to finish.</p>"
+                "<form method=post action='/admin/memorybackend/migrate' "
+                "data-confirm=\"Copy every local memory into Nodrya now? This makes real writes "
+                "to your Nodrya account.\">"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class='btn btn-primary'>migrate local memories to Nodrya</button></form></div>")
+
+        self._settings_response(sess, "memorybackend", e + i + backend_form + conn_form + migrate_form)
 
     def memory_backend_connection_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4805,6 +4822,19 @@ class Handler(BaseHTTPRequestHandler):
                     sess, err="fill in the Nodrya connection below before switching to it")
         config.set("workspace", wsid, "memory_backend", backend)
         return self.memory_backend_admin_form(sess, info="saved")
+
+    def memory_backend_migrate_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        result = memory.migrate_local_to_nodrya(sess["workspace_id"])
+        if not result["ok"]:
+            return self.memory_backend_admin_form(sess, err=result["error"])
+        msg = f"migrated {result['migrated']}, already copied {result['skipped']}"
+        if result["failed"]:
+            msg += f", {len(result['failed'])} failed -- check the logs"
+            print(f"server.memory_backend_migrate_post: {len(result['failed'])} row(s) failed: "
+                 f"{result['failed']}", flush=True)
+        return self.memory_backend_admin_form(sess, info=msg)
 
     # -- admin: Home Assistant (2026-09-15) -- discover from the real
     # instance, then an explicit per-entity checklist to expose. Discovery
