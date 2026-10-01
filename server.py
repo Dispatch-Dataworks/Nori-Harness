@@ -2957,6 +2957,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/categories":
             return self.memory_backend_categories_post(sess, form)
+        if path == "/admin/memorybackend/category":
+            return self.memory_backend_category_post(sess, form)
         if path == "/admin/memorybackend/backend":
             return self.memory_backend_switch_post(sess, form)
         if path == "/admin/memorybackend/migrate":
@@ -4707,20 +4709,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.webtools_admin_form(sess, err=str(exc))
         return self.webtools_admin_form(sess, info="saved")
 
-    # -- admin: memory backend (2026-10-01) -- where her typed memory
-    # actually lives: local (default) or Nodrya, via config.py's
-    # memory_backend switch and memory.py's NodryaMemoryBackend. No UI
-    # existed for this before -- the three nodrya_* keys were readable
-    # by config.get() the moment the backend class shipped, but nothing
-    # in server.py ever wrote them, so the switch was unreachable except
-    # by hand-editing the database. The token field here is the one real
-    # secret: encrypted with crypto.encrypt() before it's ever written,
-    # never echoed back once set (the form shows "set" not the value),
-    # and a blank submit leaves whatever's already stored untouched --
-    # same convention as every password-style field elsewhere in this
-    # app. The URL isn't encrypted -- NodryaMemoryBackend always sends
-    # the token as a separate Bearer header, never embedded in the URL,
-    # so the URL alone isn't a credential, just an endpoint.
+    # -- admin: memory backend (2026-10-01, reworked 2026-10-02) -- where
+    # her typed memory actually lives: local (default) or Nodrya, via
+    # config.py's memory_backend switch and memory.py's
+    # NodryaMemoryBackend. No UI existed for this before -- the nodrya_*
+    # keys were readable by config.get() the moment the backend class
+    # shipped, but nothing in server.py ever wrote them, so the switch
+    # was unreachable except by hand-editing the database.
+    #
+    # One connector field, not a URL plus a separate token (reworked
+    # 2026-10-02, operator's own correction: "the Nodrya MCP url contains
+    # the token" -- Nodrya's own connector link already carries it in the
+    # path, verified against Nodrya's real source, not guessed). That
+    # field is the one real secret: encrypted with crypto.encrypt()
+    # before it's ever written, never echoed back once set, and a blank
+    # resubmit leaves whatever's already stored untouched -- same
+    # convention as every password-style field elsewhere in this app.
+    #
+    # Deliberate two-step flow (the operator's own ask): saving the
+    # connector URL immediately queries Nodrya's own list_categories tool
+    # live, so step two is picking a name from a dropdown Nodrya itself
+    # just reported, never typing an id Nodrya's own UI doesn't show.
     def memory_backend_admin_form(self, sess: dict, err: str = "", info: str = "",
                                   categories: list | None = None):
         if sess["role"] != "admin":
@@ -4731,16 +4740,15 @@ class Handler(BaseHTTPRequestHandler):
         wsid = sess["workspace_id"]
 
         backend = config.get("workspace", wsid, "memory_backend")
-        url = config.get("workspace", wsid, "nodrya_mcp_url") or ""
-        token_enc = config.get("workspace", wsid, "nodrya_mcp_token") or ""
+        url_enc = config.get("workspace", wsid, "nodrya_mcp_url") or ""
         category_id = int(config.get("workspace", wsid, "nodrya_memory_category_id") or 0)
-        configured = bool(url and token_enc and category_id > 0)
-        has_credentials = bool(url and token_enc)
+        configured = bool(url_enc and category_id > 0)
+        has_connector = bool(url_enc)
 
         active = ("<span class='chip active'>using Nodrya</span>" if backend == "nodrya"
                  else "<span class=chip>using local storage</span>")
-        conn_status = ("<span class='chip active'>connection details set</span>" if configured
-                      else "<span class=chip>not configured yet -- fill in all three fields below</span>")
+        conn_status = ("<span class='chip active'>connector saved</span>" if has_connector
+                      else "<span class=chip>not connected yet</span>")
 
         backend_form = (
             "<div class=section><h2>active backend</h2>"
@@ -4748,8 +4756,8 @@ class Handler(BaseHTTPRequestHandler):
             "<p class=muted>Local keeps every memory in Nori's own database, same as today. "
             "Nodrya routes her typed memory reads/writes through your Nodrya account instead, "
             "with a local write-through cache so recall still works instantly -- see "
-            "memory.py's NodryaMemoryBackend. Switching to Nodrya is blocked here until the "
-            "connection below is fully filled in.</p>"
+            "memory.py's NodryaMemoryBackend. Switching to Nodrya is blocked here until a "
+            "connector is saved and a category is picked below.</p>"
             "<form method=post action='/admin/memorybackend/backend'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<div class=field><label>backend</label><select name=memory_backend>"
@@ -4759,60 +4767,51 @@ class Handler(BaseHTTPRequestHandler):
             "</select></div>"
             "<button class='btn btn-primary'>save</button></form></div>")
 
-        token_placeholder = "leave blank to keep the current token" if token_enc else "paste your Nodrya token"
-        category_value = str(category_id) if category_id else ""
-
-        # Nodrya's API only takes a category id, same as Nori stores it --
-        # but nothing in Nodrya's own UI ever shows that id, just the
-        # category's name (the operator's own report, 2026-10-01). Rather
-        # than ask them to go dig an id out of Nodrya some other way,
-        # "browse categories" below calls Nodrya's own list_categories
-        # tool live and swaps this field for a pick-by-name <select>
-        # (still posting the real id underneath) for this one render only
-        # -- nothing about the fetched list is persisted, so a stale name
-        # can never drift from Nodrya's own current state.
-        if categories:
-            def _cat_option(c: dict) -> str:
-                cid = int(c["id"])
-                label = str(c.get("name") or "").strip() or f"category {cid}"
-                note_count = int(c.get("note_count") or 0)
-                selected = " selected" if cid == category_id else ""
-                return f"<option value={cid}{selected}>{esc(label)} ({note_count} notes)</option>"
-            opts = "".join(_cat_option(c) for c in categories)
-            category_field = (
-                "<div class=field><label>memory category</label>"
-                f"<select name=nodrya_memory_category_id>{opts}</select></div>"
-                "<p class=muted>Loaded live from Nodrya just now -- pick one, then save connection.</p>")
-        elif categories is not None:
-            category_field = (
-                "<div class=field><label>memory category id</label>"
-                f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>"
-                "<p class=muted>Nodrya reported no categories yet -- create one there first, or "
-                "enter its id directly once you have it.</p>")
-        else:
-            category_field = (
-                "<div class=field><label>memory category id</label>"
-                f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>")
-
-        browse_form = ""
-        if has_credentials:
-            browse_form = (
-                "<form method=post action='/admin/memorybackend/categories' style='margin:.4rem 0'>"
-                f"<input type=hidden name=csrf value='{csrf}'>"
-                "<button class=btn>browse categories by name</button></form>")
-
+        url_placeholder = "leave blank to keep the current connector URL" if url_enc else "paste your Nodrya connector URL"
         conn_form = (
-            "<div class=section><h2>Nodrya connection</h2>"
+            "<div class=section><h2>step 1 -- connect</h2>"
             f"<p>{conn_status}</p>"
+            "<p class=muted>In Nodrya, create a write-scope MCP connector and copy its full "
+            "connector URL -- the auth token is already part of that URL, there's nothing "
+            "separate to paste. Saving it here immediately looks up your categories for step "
+            "2 below.</p>"
             "<form method=post action='/admin/memorybackend/connection'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
-            "<div class=field><label>MCP endpoint URL</label>"
-            f"<input name=nodrya_mcp_url value='{esc(url)}' placeholder='https://...'></div>"
-            "<div class=field><label>MCP token (write scope)</label>"
-            f"<input type=password name=nodrya_mcp_token placeholder='{esc(token_placeholder)}'></div>"
-            f"{category_field}"
-            "<button class='btn btn-primary'>save connection</button></form>"
-            f"{browse_form}</div>")
+            "<div class=field><label>Nodrya connector URL</label>"
+            f"<input type=password name=nodrya_mcp_url placeholder='{esc(url_placeholder)}'></div>"
+            "<button class='btn btn-primary'>save &amp; look up categories</button></form>"
+            + (
+                "<form method=post action='/admin/memorybackend/categories' style='margin:.4rem 0'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class=btn>look up categories again</button></form>" if has_connector else ""
+            ) + "</div>")
+
+        category_section = ""
+        if has_connector:
+            category_value = str(category_id) if category_id else ""
+            if categories:
+                def _cat_option(c: dict) -> str:
+                    cid = int(c["id"])
+                    label = str(c.get("name") or "").strip() or f"category {cid}"
+                    note_count = int(c.get("note_count") or 0)
+                    selected = " selected" if cid == category_id else ""
+                    return f"<option value={cid}{selected}>{esc(label)} ({note_count} notes)</option>"
+                opts = "".join(_cat_option(c) for c in categories)
+                category_field = f"<select name=nodrya_memory_category_id>{opts}</select>"
+            elif categories is not None:
+                category_field = (
+                    f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0>"
+                    "<p class=muted>Nodrya reported no categories yet -- create one there first.</p>")
+            else:
+                category_field = (
+                    f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0>")
+            category_section = (
+                "<div class=section><h2>step 2 -- pick a category</h2>"
+                "<p class=muted>Every memory Nori writes to Nodrya lands in this one category.</p>"
+                "<form method=post action='/admin/memorybackend/category'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                f"<div class=field><label>memory category</label>{category_field}</div>"
+                "<button class='btn btn-primary'>save category</button></form></div>")
 
         migrate_form = ""
         if configured:
@@ -4829,26 +4828,25 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 "<button class='btn btn-primary'>migrate local memories to Nodrya</button></form></div>")
 
-        self._settings_response(sess, "memorybackend", e + i + backend_form + conn_form + migrate_form)
+        self._settings_response(
+            sess, "memorybackend", e + i + backend_form + conn_form + category_section + migrate_form)
 
     def memory_backend_connection_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
         wsid = sess["workspace_id"]
         url = (form.get("nodrya_mcp_url") or "").strip()
-        token = (form.get("nodrya_mcp_token") or "").strip()
-        cat_raw = (form.get("nodrya_memory_category_id") or "").strip()
+        if url:
+            config.set("workspace", wsid, "nodrya_mcp_url", crypto.encrypt(url))
+        elif not (config.get("workspace", wsid, "nodrya_mcp_url") or ""):
+            return self.memory_backend_admin_form(sess, err="paste your Nodrya connector URL")
         try:
-            category_id = int(cat_raw) if cat_raw else 0
-        except ValueError:
-            return self.memory_backend_admin_form(sess, err="category id must be a whole number")
-        if category_id < 0:
-            return self.memory_backend_admin_form(sess, err="category id can't be negative")
-        config.set("workspace", wsid, "nodrya_mcp_url", url)
-        config.set("workspace", wsid, "nodrya_memory_category_id", category_id)
-        if token:
-            config.set("workspace", wsid, "nodrya_mcp_token", crypto.encrypt(token))
-        return self.memory_backend_admin_form(sess, info="connection saved")
+            categories = memory.NodryaMemoryBackend().list_categories(wsid)
+        except memory.NodryaBackendError as exc:
+            return self.memory_backend_admin_form(
+                sess, err=f"connector saved, but couldn't look up categories: {exc}")
+        return self.memory_backend_admin_form(
+            sess, info="connector saved -- pick a category below", categories=categories)
 
     def memory_backend_categories_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4859,6 +4857,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.memory_backend_admin_form(sess, err=str(exc))
         return self.memory_backend_admin_form(sess, categories=categories)
 
+    def memory_backend_category_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        cat_raw = (form.get("nodrya_memory_category_id") or "").strip()
+        try:
+            category_id = int(cat_raw) if cat_raw else 0
+        except ValueError:
+            return self.memory_backend_admin_form(sess, err="category id must be a whole number")
+        if category_id <= 0:
+            return self.memory_backend_admin_form(sess, err="pick a category first")
+        config.set("workspace", wsid, "nodrya_memory_category_id", category_id)
+        return self.memory_backend_admin_form(sess, info="category saved")
+
     def memory_backend_switch_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -4867,12 +4879,11 @@ class Handler(BaseHTTPRequestHandler):
         if backend not in ("local", "nodrya"):
             return self.memory_backend_admin_form(sess, err=f"{backend!r} isn't a known backend")
         if backend == "nodrya":
-            url = config.get("workspace", wsid, "nodrya_mcp_url") or ""
-            token_enc = config.get("workspace", wsid, "nodrya_mcp_token") or ""
+            url_enc = config.get("workspace", wsid, "nodrya_mcp_url") or ""
             category_id = int(config.get("workspace", wsid, "nodrya_memory_category_id") or 0)
-            if not (url and token_enc and category_id > 0):
+            if not (url_enc and category_id > 0):
                 return self.memory_backend_admin_form(
-                    sess, err="fill in the Nodrya connection below before switching to it")
+                    sess, err="connect to Nodrya and pick a category before switching to it")
         config.set("workspace", wsid, "memory_backend", backend)
         return self.memory_backend_admin_form(sess, info="saved")
 

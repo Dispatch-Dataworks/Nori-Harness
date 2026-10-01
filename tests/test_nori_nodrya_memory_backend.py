@@ -18,7 +18,12 @@ the write-through cache giving instant read-back before any live Nodrya
 call for recall(), a write/update/delete each raising NodryaBackendError
 (never a silent partial success) when Nodrya is unreachable, and that the
 whole backend is only reachable when a workspace has actually configured
-it (memory_backend="nodrya" plus URL/token/category all set).
+it (memory_backend="nodrya" plus a connector URL and category both set).
+
+The connector URL is the one credential (2026-10-02, reworked from a
+separate URL+token pair after the operator pointed out Nodrya's own
+connector link already carries its auth token in the path) -- stored
+encrypted, same as every other secret in this app.
 """
 import json
 import os
@@ -40,6 +45,7 @@ import config  # noqa: E402
 import crypto  # noqa: E402
 import mcp_client  # noqa: E402
 import memory  # noqa: E402
+import server  # noqa: E402
 import store  # noqa: E402
 
 store.init()
@@ -75,16 +81,17 @@ class NodryaMemoryBackendTests(unittest.TestCase):
     def setUp(self):
         store.write(lambda c: c.execute("DELETE FROM nodrya_memory WHERE user_id=?", (self.uid,)))
         config.set("workspace", self.wsid, "nodrya_mcp_url", "")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", "")
         config.set("workspace", self.wsid, "nodrya_memory_category_id", 0)
 
     def _configure(self, category_id=42):
-        # nodrya_mcp_token is stored encrypted at rest (server.py's
+        # nodrya_mcp_url is stored encrypted at rest (server.py's
         # memory_backend_connection_post encrypts before saving) --
         # _connection() decrypts on read, so a plaintext value here would
-        # fail to decrypt and look unconfigured. Match the real path.
-        config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
+        # fail to decrypt and look unconfigured. Match the real path. The
+        # fake URL already looks like a real Nodrya connector link, token
+        # embedded in the path, same as what Nodrya itself hands out.
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
         config.set("workspace", self.wsid, "nodrya_memory_category_id", category_id)
 
     # ── unconfigured workspace ───────────────────────────────────────────
@@ -93,17 +100,18 @@ class NodryaMemoryBackendTests(unittest.TestCase):
             self.backend.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
                                value="x", tags=None, safety=False)
 
-    # ── list_categories: browsing by name needs url+token but NOT a
-    #    category id yet -- that's exactly the chicken-and-egg it exists
-    #    to avoid (the operator's own report: Nodrya only shows names,
-    #    never ids, so there's no other way to find the id to type in).
-    def test_list_categories_raises_without_url_or_token(self):
+    # ── list_categories: browsing by name needs the connector URL but NOT
+    #    a category id yet -- that's exactly the chicken-and-egg it
+    #    exists to avoid (the operator's own report: Nodrya only shows
+    #    category names, never ids, so there's no other way to find the
+    #    id to type in).
+    def test_list_categories_raises_without_a_connector_url(self):
         with self.assertRaises(memory.NodryaBackendError):
             self.backend.list_categories(self.wsid)
 
     def test_list_categories_works_before_any_category_id_is_set(self):
-        config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
         # nodrya_memory_category_id deliberately left at setUp's 0 -- this
         # must still work, since picking the id is the whole point.
         with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
@@ -114,6 +122,10 @@ class NodryaMemoryBackendTests(unittest.TestCase):
             cats = self.backend.list_categories(self.wsid)
         self.assertEqual(mock_call.call_args.args[1], "list_categories")
         self.assertEqual([c["name"] for c in cats], ["Her memory", "Other notes"])
+        # No Authorization header -- the token travels in the URL path
+        # itself (Nodrya's own auth model), so there's nothing separate
+        # to send.
+        self.assertNotIn("headers", mock_call.call_args.kwargs)
 
     # ── write / recall: the core instant-read-back property ─────────────
     def test_write_then_recall_finds_it_before_any_nodrya_durability(self):
@@ -301,7 +313,6 @@ class MigrateLocalToNodryaTests(unittest.TestCase):
     def setUp(self):
         self._clean()
         config.set("workspace", self.wsid, "nodrya_mcp_url", "")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", "")
         config.set("workspace", self.wsid, "nodrya_memory_category_id", 0)
 
     def tearDown(self):
@@ -318,8 +329,8 @@ class MigrateLocalToNodryaTests(unittest.TestCase):
         store.write(lambda c: c.execute("DELETE FROM nodrya_memory WHERE user_id=?", (self.uid,)))
 
     def _configure(self):
-        config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
         config.set("workspace", self.wsid, "nodrya_memory_category_id", 42)
 
     def test_not_configured_returns_an_error_and_migrates_nothing(self):
@@ -396,6 +407,49 @@ class MigrateLocalToNodryaTests(unittest.TestCase):
         self.assertEqual(result2["migrated"], 1)
         self.assertEqual(result2["skipped"], 1)
         self.assertEqual(result2["failed"], [])
+
+
+class MemoryBackendFormTests(unittest.TestCase):
+    """Renders the real Memory backend settings page HTML against the
+    real config/store modules -- not test_nori_navigation.py's AST-
+    synthetic harness, which stubs config.get() to always return 0 and
+    so can never exercise anything gated on a real saved value. Exists
+    because of a real bug this would have caught on its own: step 2
+    (category_section) was built but never appended to the page's final
+    render (2026-10-02) -- memory_backend_admin_form silently stopped
+    after step 1 for every real, fully-configured workspace, and nothing
+    automated caught it; only live testing against a real Nodrya account
+    did."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.wsid = _WSID
+
+    def setUp(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "")
+        config.set("workspace", self.wsid, "nodrya_memory_category_id", 0)
+
+    def _render(self, **kwargs) -> str:
+        h = server.Handler.__new__(server.Handler)
+        sess = {"role": "admin", "workspace_id": self.wsid, "csrf": "test-csrf", "user_id": _UID}
+        out = []
+        h.send = lambda code, body, headers=None: out.append((code, body))
+        h.memory_backend_admin_form(sess, **kwargs)
+        self.assertEqual(out[0][0], 200)
+        return out[0][1].decode()
+
+    def test_category_section_renders_once_a_connector_is_saved(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
+        categories = [{"id": 5, "name": "Her memory", "color": "#fff", "parent_id": None, "note_count": 3}]
+        html_out = self._render(categories=categories)
+        self.assertIn("<h2>step 2", html_out)
+        self.assertIn("Her memory", html_out)
+        self.assertIn("name=nodrya_memory_category_id", html_out)
+
+    def test_category_section_absent_without_a_connector(self):
+        html_out = self._render()
+        self.assertNotIn("<h2>step 2", html_out)
 
 
 if __name__ == "__main__":

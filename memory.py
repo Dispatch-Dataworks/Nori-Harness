@@ -349,7 +349,12 @@ class NodryaMemoryBackend:
 
     Every write goes to Nodrya's write-narrow memory category through its
     MCP surface (mcp_client.py) -- never a direct database connection;
-    Nodrya is someone else's live product with other real users. A local
+    Nodrya is someone else's live product with other real users. One
+    connection value, not two: Nodrya's own connector URL already has its
+    auth token baked into the path (POST /api/mcp/<token> -- verified
+    against Nodrya's real source, not guessed), so there's no separate
+    header-carried credential to manage here, unlike every other provider
+    this app talks to. A local
     write-through cache (nodrya_memory, store.py) mirrors every write this
     backend makes, so it's instantly recallable -- independent of Nodrya's
     own async note-embedding job, which runs on its own poll cadence and
@@ -373,19 +378,18 @@ class NodryaMemoryBackend:
 
     def _connection(self, workspace_id: int, *, require_category: bool = True) -> dict | None:
         import crypto  # local: same import-cycle reasoning as mcp_client below
-        url = (config.get("workspace", workspace_id, "nodrya_mcp_url") or "").strip()
-        token_enc = (config.get("workspace", workspace_id, "nodrya_mcp_token") or "").strip()
+        url_enc = (config.get("workspace", workspace_id, "nodrya_mcp_url") or "").strip()
         category_id = int(config.get("workspace", workspace_id, "nodrya_memory_category_id") or 0)
-        if not url or not token_enc or (require_category and category_id <= 0):
+        if not url_enc or (require_category and category_id <= 0):
             return None
         try:
-            token = crypto.decrypt(token_enc)
+            url = crypto.decrypt(url_enc)
         except ValueError:
             # Wrong/rotated key file, or a stale plaintext value from before
             # this was encrypted at rest -- either way, not a usable
             # credential, so this is "not configured" rather than a crash.
             return None
-        return {"url": url, "token": token, "category_id": category_id}
+        return {"url": url, "category_id": category_id}
 
     def _require_connection(self, workspace_id: int) -> dict:
         conn = self._connection(workspace_id)
@@ -400,23 +404,28 @@ class NodryaMemoryBackend:
         ask: "Nodrya doesn't expose category IDs just names"). No category
         needs to be chosen yet to call this -- require_category=False,
         since that's exactly the chicken-and-egg this method exists to
-        avoid. Verified against Nodrya's own source (mcp.php's
-        mcp_tool_list_categories): {"count", "categories": [{"id",
-        "name", "color", "parent_id", "note_count", "created_at"}]},
-        and it never calls mcp_require_write, so a read-scope token is
-        enough -- this never needs the write-scope token the rest of
-        this backend requires for create_note/update_note."""
+        avoid: the connector URL alone is enough. Verified against
+        Nodrya's own source (mcp.php's mcp_tool_list_categories):
+        {"count", "categories": [{"id", "name", "color", "parent_id",
+        "note_count", "created_at"}]}, and it never calls
+        mcp_require_write, so a read-scope connector token works too --
+        not that it matters here, since the token isn't a separate
+        argument at all, see _connection()'s own docstring."""
         conn = self._connection(workspace_id, require_category=False)
         if conn is None:
-            raise NodryaBackendError("Nodrya's URL and token must be saved before browsing categories")
+            raise NodryaBackendError("Nodrya's connector URL must be saved before browsing categories")
         result = self._call(conn, "list_categories", {})
         return result.get("categories") or []
 
     def _call(self, conn: dict, name: str, arguments: dict) -> dict:
         import mcp_client  # local: same top-level-cycle reasoning as chat's own local imports below
         try:
-            result = mcp_client.call_tool(conn["url"], name, arguments,
-                                          headers={"Authorization": f"Bearer {conn['token']}"})
+            # No Authorization header -- conn["url"] already carries the
+            # token in its path (POST /api/mcp/<token>, Nodrya's own
+            # auth model, verified against its real source), and Nodrya
+            # reads that path token first, a header second. Nothing here
+            # has a separate credential left to send.
+            result = mcp_client.call_tool(conn["url"], name, arguments)
         except mcp_client.MCPError as exc:
             raise NodryaBackendError(f"Nodrya MCP call to {name} failed: {exc}") from exc
         content = result.get("content") or []
