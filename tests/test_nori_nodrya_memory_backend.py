@@ -93,6 +93,28 @@ class NodryaMemoryBackendTests(unittest.TestCase):
             self.backend.write(user_id=self.uid, workspace_id=self.wsid, type_="preference",
                                value="x", tags=None, safety=False)
 
+    # ── list_categories: browsing by name needs url+token but NOT a
+    #    category id yet -- that's exactly the chicken-and-egg it exists
+    #    to avoid (the operator's own report: Nodrya only shows names,
+    #    never ids, so there's no other way to find the id to type in).
+    def test_list_categories_raises_without_url_or_token(self):
+        with self.assertRaises(memory.NodryaBackendError):
+            self.backend.list_categories(self.wsid)
+
+    def test_list_categories_works_before_any_category_id_is_set(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
+        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
+        # nodrya_memory_category_id deliberately left at setUp's 0 -- this
+        # must still work, since picking the id is the whole point.
+        with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
+                {"count": 2, "categories": [
+                    {"id": 5, "name": "Her memory", "color": "#fff", "parent_id": None, "note_count": 3},
+                    {"id": 6, "name": "Other notes", "color": "#000", "parent_id": None, "note_count": 0},
+                ]})) as mock_call:
+            cats = self.backend.list_categories(self.wsid)
+        self.assertEqual(mock_call.call_args.args[1], "list_categories")
+        self.assertEqual([c["name"] for c in cats], ["Her memory", "Other notes"])
+
     # ── write / recall: the core instant-read-back property ─────────────
     def test_write_then_recall_finds_it_before_any_nodrya_durability(self):
         self._configure()

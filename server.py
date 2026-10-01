@@ -2955,6 +2955,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.homeassistant_exposure_post(sess, form)
         if path == "/admin/memorybackend/connection":
             return self.memory_backend_connection_post(sess, form)
+        if path == "/admin/memorybackend/categories":
+            return self.memory_backend_categories_post(sess, form)
         if path == "/admin/memorybackend/backend":
             return self.memory_backend_switch_post(sess, form)
         if path == "/admin/memorybackend/migrate":
@@ -4719,7 +4721,8 @@ class Handler(BaseHTTPRequestHandler):
     # app. The URL isn't encrypted -- NodryaMemoryBackend always sends
     # the token as a separate Bearer header, never embedded in the URL,
     # so the URL alone isn't a credential, just an endpoint.
-    def memory_backend_admin_form(self, sess: dict, err: str = "", info: str = ""):
+    def memory_backend_admin_form(self, sess: dict, err: str = "", info: str = "",
+                                  categories: list | None = None):
         if sess["role"] != "admin":
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
@@ -4732,6 +4735,7 @@ class Handler(BaseHTTPRequestHandler):
         token_enc = config.get("workspace", wsid, "nodrya_mcp_token") or ""
         category_id = int(config.get("workspace", wsid, "nodrya_memory_category_id") or 0)
         configured = bool(url and token_enc and category_id > 0)
+        has_credentials = bool(url and token_enc)
 
         active = ("<span class='chip active'>using Nodrya</span>" if backend == "nodrya"
                  else "<span class=chip>using local storage</span>")
@@ -4757,6 +4761,46 @@ class Handler(BaseHTTPRequestHandler):
 
         token_placeholder = "leave blank to keep the current token" if token_enc else "paste your Nodrya token"
         category_value = str(category_id) if category_id else ""
+
+        # Nodrya's API only takes a category id, same as Nori stores it --
+        # but nothing in Nodrya's own UI ever shows that id, just the
+        # category's name (the operator's own report, 2026-10-01). Rather
+        # than ask them to go dig an id out of Nodrya some other way,
+        # "browse categories" below calls Nodrya's own list_categories
+        # tool live and swaps this field for a pick-by-name <select>
+        # (still posting the real id underneath) for this one render only
+        # -- nothing about the fetched list is persisted, so a stale name
+        # can never drift from Nodrya's own current state.
+        if categories:
+            def _cat_option(c: dict) -> str:
+                cid = int(c["id"])
+                label = str(c.get("name") or "").strip() or f"category {cid}"
+                note_count = int(c.get("note_count") or 0)
+                selected = " selected" if cid == category_id else ""
+                return f"<option value={cid}{selected}>{esc(label)} ({note_count} notes)</option>"
+            opts = "".join(_cat_option(c) for c in categories)
+            category_field = (
+                "<div class=field><label>memory category</label>"
+                f"<select name=nodrya_memory_category_id>{opts}</select></div>"
+                "<p class=muted>Loaded live from Nodrya just now -- pick one, then save connection.</p>")
+        elif categories is not None:
+            category_field = (
+                "<div class=field><label>memory category id</label>"
+                f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>"
+                "<p class=muted>Nodrya reported no categories yet -- create one there first, or "
+                "enter its id directly once you have it.</p>")
+        else:
+            category_field = (
+                "<div class=field><label>memory category id</label>"
+                f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>")
+
+        browse_form = ""
+        if has_credentials:
+            browse_form = (
+                "<form method=post action='/admin/memorybackend/categories' style='margin:.4rem 0'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class=btn>browse categories by name</button></form>")
+
         conn_form = (
             "<div class=section><h2>Nodrya connection</h2>"
             f"<p>{conn_status}</p>"
@@ -4766,9 +4810,9 @@ class Handler(BaseHTTPRequestHandler):
             f"<input name=nodrya_mcp_url value='{esc(url)}' placeholder='https://...'></div>"
             "<div class=field><label>MCP token (write scope)</label>"
             f"<input type=password name=nodrya_mcp_token placeholder='{esc(token_placeholder)}'></div>"
-            "<div class=field><label>memory category id</label>"
-            f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>"
-            "<button class='btn btn-primary'>save connection</button></form></div>")
+            f"{category_field}"
+            "<button class='btn btn-primary'>save connection</button></form>"
+            f"{browse_form}</div>")
 
         migrate_form = ""
         if configured:
@@ -4805,6 +4849,15 @@ class Handler(BaseHTTPRequestHandler):
         if token:
             config.set("workspace", wsid, "nodrya_mcp_token", crypto.encrypt(token))
         return self.memory_backend_admin_form(sess, info="connection saved")
+
+    def memory_backend_categories_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            categories = memory.NodryaMemoryBackend().list_categories(sess["workspace_id"])
+        except memory.NodryaBackendError as exc:
+            return self.memory_backend_admin_form(sess, err=str(exc))
+        return self.memory_backend_admin_form(sess, categories=categories)
 
     def memory_backend_switch_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
