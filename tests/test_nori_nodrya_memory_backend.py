@@ -451,6 +451,28 @@ class MemoryBackendFormTests(unittest.TestCase):
         html_out = self._render()
         self.assertNotIn("<h2>step 2", html_out)
 
+    def test_broad_retrieval_section_renders_once_a_connector_is_saved(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
+        html_out = self._render()
+        self.assertIn("<h2>broad retrieval", html_out)
+        self.assertIn("name=nodrya_broad_retrieval", html_out)
+
+    def test_broad_retrieval_section_absent_without_a_connector(self):
+        html_out = self._render()
+        self.assertNotIn("<h2>broad retrieval", html_out)
+
+    def test_broad_retrieval_checkbox_reflects_saved_state(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        try:
+            html_out = self._render()
+            idx = html_out.index("name=nodrya_broad_retrieval")
+            self.assertIn("checked", html_out[idx:idx + 40])
+        finally:
+            config.set("workspace", self.wsid, "nodrya_broad_retrieval", False)
+
 
 if __name__ == "__main__":
     unittest.main()

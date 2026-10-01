@@ -148,6 +148,7 @@ def handler(role="admin"):
         "avatars_admin_page", "models_admin_form", "webtools_admin_form", "homeassistant_admin_form",
         "memory_backend_admin_form", "memory_backend_connection_post", "memory_backend_switch_post",
         "memory_backend_migrate_post", "memory_backend_categories_post", "memory_backend_category_post",
+        "memory_backend_broad_post",
         "context_admin_form", "persona_admin_form", "persona_admin_post", "persona_preview_get", "context_preview_get", "context_admin_action", "context_admin_post", "media_admin_form", "backups_admin_form", "integration_health_admin_form",
         "_diagnostics_html", "_peer_messages_panel", "_fmt_peer_ts", "_peer_msg_preview", "peers_approval_post"}]
     exec(compile(ast.Module(body=[cls], type_ignores=[]), "server.py", "exec"), env)

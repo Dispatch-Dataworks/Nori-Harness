@@ -903,9 +903,27 @@ def _recall(session: dict, types: list | None = None, tags: list | None = None,
     backend = _backend_for(session["workspace_id"])
     out = backend.recall(user_id=session["user_id"], types=types, tags=tags, query=query, limit=limit)
 
-    return {"memories": [{"id": d["id"], "type": d["type"], "value": d["value"],
-                          "tags": d["tags"], "pinned": bool(d["pinned"]),
-                          "safety": d["safety_tier"]} for d in out]}
+    result = {"memories": [{"id": d["id"], "type": d["type"], "value": d["value"],
+                            "tags": d["tags"], "pinned": bool(d["pinned"]),
+                            "safety": d["safety_tier"]} for d in out]}
+
+    # Broad Nodrya retrieval (opt-in, see nodrya_broad_search's own
+    # docstring) -- a second, separate list, deliberately never merged
+    # into "memories" above: these are raw notes from the operator's
+    # whole Nodrya account, not curated facts she wrote herself. No-op
+    # ([], False) when the setting is off or query is empty, so this is
+    # safe to leave in the call unconditionally.
+    notes, degraded = nodrya_broad_search(session["workspace_id"], query or "", limit=min(limit, 10))
+    if notes:
+        result["notes_from_nodrya"] = [
+            {"title": n.get("title") or "Untitled note",
+             "category": (n.get("category") or {}).get("name"),
+             "excerpt": ("(content is end-to-end encrypted -- not readable here)" if n.get("is_encrypted")
+                        else " ".join((n.get("content") or "").split())[:400]),
+             "similarity": n.get("similarity"), "url": n.get("url")} for n in notes]
+    elif degraded:
+        result["notes_from_nodrya_degraded"] = "couldn't reach Nodrya to search broadly this time"
+    return result
 
 
 # ── always-on context slice ──────────────────────────────────────────────
@@ -1246,7 +1264,10 @@ def _register_tools() -> None:
             "name": "recall",
             "description": ("Look up facts relevant to what you're doing right now, instead of "
                             "relying only on the small always-loaded slice. Filter by type "
-                            "and/or a free-text search."),
+                            "and/or a free-text search. If broad Nodrya retrieval is enabled and "
+                            "`query` is set, the result may also include a notes_from_nodrya list "
+                            "-- raw notes from across the operator's whole Nodrya account, not "
+                            "curated memory, surfaced because they matched the query."),
             "parameters": {"type": "object", "properties": {
                 "types": {"type": "array", "items": {"type": "string", "enum": list(TYPES)}},
                 "tags": {"type": "array", "items": {"type": "string"}},
@@ -1364,6 +1385,68 @@ def _format_matches(hits: list[dict]) -> list[str]:
     return lines
 
 
+# ── broad Nodrya retrieval (2026-10-02) ──────────────────────────────────
+# Deliberately a separate axis from memory_backend/NodryaMemoryBackend
+# above: those govern where HER OWN memory writes/reads land (one
+# write-narrow category, local or Nodrya). This is "let her read broadly
+# across every OTHER note in the operator's Nodrya account too" -- exactly
+# the capability NodryaMemoryBackend's own class docstring originally
+# scoped OUT ("a separate capability... not part of this seam, and not
+# built here") until the operator asked for it directly. Works
+# independently of which memory_backend is active, and needs only the
+# connector URL, never a category -- "all categories" is the whole point.
+def nodrya_broad_search(workspace_id: int, query: str, *, limit: int = 5) -> tuple[list[dict], bool]:
+    """Nodrya's own search_by_meaning tool, no category filter -- every
+    note across the operator's whole account, ranked by semantic
+    similarity to `query`. Gated on nodrya_broad_retrieval (off by
+    default: a live per-call network hit to a third party, opt-in, not
+    implied by having a connector saved). Returns ([], False) when
+    disabled, not configured, or given an empty query -- "nothing to
+    show" is the common case, not an error. Returns (matches, True) on
+    a real Nodrya-side failure -- best-effort, same (matches, degraded)
+    contract as semantic_safety_matches: never raises, never blocks a
+    turn on a Nodrya outage."""
+    if not config.get("workspace", workspace_id, "nodrya_broad_retrieval"):
+        return [], False
+    query = (query or "").strip()
+    if not query:
+        return [], False
+    nodrya = NodryaMemoryBackend()
+    conn = nodrya._connection(workspace_id, require_category=False)
+    if conn is None:
+        return [], False
+    try:
+        result = nodrya._call(conn, "search_by_meaning", {"query": query, "limit": limit})
+    except NodryaBackendError as exc:
+        print(f"memory.nodrya_broad_search: Nodrya search failed: {exc}", flush=True)
+        return [], True
+    return result.get("notes") or [], False
+
+
+def _format_note_matches(notes: list[dict]) -> list[str]:
+    """Same char-budget-truncated line-list shape as _format_matches, for
+    nodrya_broad_search results -- kept as a SEPARATE formatter rather
+    than folded into _format_matches: a raw Nodrya note was never
+    curated into her memory taxonomy (no `type` from TYPES, no
+    safety_tier), so it needs its own, clearly-labeled presentation, not
+    passed off as one of her own memory facts."""
+    lines, used = [], 0
+    for n in notes:
+        title = (n.get("title") or "").strip() or "Untitled note"
+        category = ((n.get("category") or {}).get("name") or "").strip()
+        where = f" ({category})" if category else ""
+        if n.get("is_encrypted"):
+            excerpt = "(content is end-to-end encrypted -- not readable here)"
+        else:
+            excerpt = " ".join((n.get("content") or "").split())[:200]
+        line = f'"{title}"{where}: {excerpt}' if excerpt else f'"{title}"{where}'
+        if used + len(line) > TOPIC_INJECT_CHAR_BUDGET:
+            break
+        lines.append(line)
+        used += len(line)
+    return lines
+
+
 # One entry per user: the id of the latest user message topic-activation
 # has already run for -- keeps a scheduler tick, forced check-in, or peer
 # turn from re-running (and re-injecting, re-billing an embedding call)
@@ -1384,7 +1467,13 @@ def topic_activation_line(session: dict, user_id: int) -> str | None:
     that ISN'T already a confident keyword hit, layer in the unconditional-
     for-the-safety-tier semantic pass -- measured recall numbers showed
     running keyword-first, semantic-second beats semantic-always (cost)
-    or keyword-only (the real miss that measurement found)."""
+    or keyword-only (the real miss that measurement found).
+
+    A second, independent block (2026-10-02, operator's own ask) layers
+    in nodrya_broad_search -- her own memory above is unaffected either
+    way, this never touches the `if not topics` early-exit's existing
+    behavior, it just isn't gated behind it, since a broad note search
+    runs off the raw message text, not the extracted topic list."""
     import conversation  # local: same reasoning as due_for_reflection's own import
     msg = conversation.latest_user_message_after(user_id, 0)
     if msg is None or _activated_mark.get(user_id) == msg["id"]:
@@ -1393,34 +1482,49 @@ def topic_activation_line(session: dict, user_id: int) -> str | None:
     text = (msg.get("content") or "").strip()
     if not text:
         return None
+
+    mem_block = None
     topics = topic_match.extract_topics(text)
-    if not topics:
-        return None
-    hits = _backend_for_user(user_id).topic_match(user_id=user_id, topics=topics,
-                                                  threshold=TOPIC_KEYWORD_THRESHOLD,
-                                                  limit=TOPIC_INJECT_LIMIT)
-    degraded = False
-    # Cost-gated: only pay for the semantic pass when keyword matching
-    # didn't already turn up a confident safety-tier hit -- unlike
-    # preaction_check, an ordinary turn isn't the moment the operator's
-    # refinement said must never be gated.
-    if not any(h["safety_tier"] for h in hits):
-        sem, degraded = semantic_safety_matches(user_id, text, limit=3)
-        seen = {h["id"] for h in hits}
-        hits.extend(m for m in sem if m["id"] not in seen)
-    if not hits and not degraded:
-        return None
-    hits.sort(key=lambda h: (not h["safety_tier"], -h["score"]))
-    lines = _format_matches(hits[:TOPIC_INJECT_LIMIT])
-    if not lines:
-        if degraded:
-            return ("Memory topic-match degraded: couldn't reach the embedding provider to check "
-                    "the safety/constraint tier this turn -- treat that tier as unchecked, not clear.")
-        return None
-    prefix = "Relevant memory for this message"
-    if degraded:
-        prefix += " (safety-tier semantic check degraded to keyword-only -- embedding provider unreachable)"
-    return prefix + ":\n" + "\n".join(f"- {ln}" for ln in lines)
+    if topics:
+        hits = _backend_for_user(user_id).topic_match(user_id=user_id, topics=topics,
+                                                      threshold=TOPIC_KEYWORD_THRESHOLD,
+                                                      limit=TOPIC_INJECT_LIMIT)
+        degraded = False
+        # Cost-gated: only pay for the semantic pass when keyword matching
+        # didn't already turn up a confident safety-tier hit -- unlike
+        # preaction_check, an ordinary turn isn't the moment the operator's
+        # refinement said must never be gated.
+        if not any(h["safety_tier"] for h in hits):
+            sem, degraded = semantic_safety_matches(user_id, text, limit=3)
+            seen = {h["id"] for h in hits}
+            hits.extend(m for m in sem if m["id"] not in seen)
+        if hits or degraded:
+            hits.sort(key=lambda h: (not h["safety_tier"], -h["score"]))
+            lines = _format_matches(hits[:TOPIC_INJECT_LIMIT])
+            if lines:
+                prefix = "Relevant memory for this message"
+                if degraded:
+                    prefix += " (safety-tier semantic check degraded to keyword-only -- embedding provider unreachable)"
+                mem_block = prefix + ":\n" + "\n".join(f"- {ln}" for ln in lines)
+            elif degraded:
+                mem_block = ("Memory topic-match degraded: couldn't reach the embedding provider to "
+                            "check the safety/constraint tier this turn -- treat that tier as "
+                            "unchecked, not clear.")
+
+    notes_block = None
+    notes, notes_degraded = nodrya_broad_search(session["workspace_id"], text, limit=3)
+    note_lines = _format_note_matches(notes)
+    if note_lines:
+        note_prefix = "Possibly relevant notes from the operator's Nodrya account (not her own memory)"
+        if notes_degraded:
+            note_prefix += " -- Nodrya search degraded this turn"
+        notes_block = note_prefix + ":\n" + "\n".join(f"- {ln}" for ln in note_lines)
+    elif notes_degraded:
+        notes_block = ("Broad Nodrya search degraded this turn -- couldn't reach Nodrya to check "
+                       "for related notes.")
+
+    blocks = [b for b in (mem_block, notes_block) if b]
+    return "\n\n".join(blocks) if blocks else None
 
 
 def preaction_check(session: dict, tool_name: str, args: dict) -> str | None:
@@ -1438,7 +1542,12 @@ def preaction_check(session: dict, tool_name: str, args: dict) -> str | None:
     Always prints a line, on every branch, including the empty-result
     one -- so this hook running-and-finding-nothing is distinguishable in
     the logs from this hook never having been wired up at all, the same
-    failure shape as the incident that motivated the compulsion-queue fix."""
+    failure shape as the incident that motivated the compulsion-queue fix.
+
+    Also runs nodrya_broad_search (2026-10-02, operator's own ask) over
+    the same text, independent of the memory check above -- one more
+    live call when enabled, same opt-in/best-effort posture as
+    everywhere else this is wired in."""
     user_id = session["user_id"]
     text = f"{tool_name} " + " ".join(str(v) for v in (args or {}).values())
     topics = topic_match.extract_topics(text)
@@ -1450,20 +1559,35 @@ def preaction_check(session: dict, tool_name: str, args: dict) -> str | None:
     hits.extend(m for m in sem if m["id"] not in seen)
     print(f"memory.preaction_check: tool={tool_name} matches={len(hits)} degraded={degraded}",
          flush=True)
-    if not hits and not degraded:
-        return None
-    hits.sort(key=lambda h: (not h["safety_tier"], -h["score"]))
-    lines = _format_matches(hits[:TOPIC_INJECT_LIMIT])
-    if not lines:
-        if degraded:
-            return (f"Memory check before `{tool_name}` degraded: couldn't reach the embedding "
-                    f"provider to check the safety/constraint tier -- treat that tier as unchecked, "
-                    f"not clear.")
-        return None
-    header = f"Before continuing past `{tool_name}`, memory relevant to that action"
-    if degraded:
-        header += " (safety-tier semantic check degraded to keyword-only -- embedding provider unreachable)"
-    return header + ":\n" + "\n".join(f"- {ln}" for ln in lines)
+
+    mem_block = None
+    if hits or degraded:
+        hits.sort(key=lambda h: (not h["safety_tier"], -h["score"]))
+        lines = _format_matches(hits[:TOPIC_INJECT_LIMIT])
+        if lines:
+            header = f"Before continuing past `{tool_name}`, memory relevant to that action"
+            if degraded:
+                header += " (safety-tier semantic check degraded to keyword-only -- embedding provider unreachable)"
+            mem_block = header + ":\n" + "\n".join(f"- {ln}" for ln in lines)
+        elif degraded:
+            mem_block = (f"Memory check before `{tool_name}` degraded: couldn't reach the embedding "
+                        f"provider to check the safety/constraint tier -- treat that tier as unchecked, "
+                        f"not clear.")
+
+    notes_block = None
+    notes, notes_degraded = nodrya_broad_search(session["workspace_id"], text, limit=3)
+    note_lines = _format_note_matches(notes)
+    if note_lines:
+        note_header = f"Possibly relevant Nodrya notes before `{tool_name}` (not her own memory)"
+        if notes_degraded:
+            note_header += " -- Nodrya search degraded this turn"
+        notes_block = note_header + ":\n" + "\n".join(f"- {ln}" for ln in note_lines)
+    elif notes_degraded:
+        notes_block = (f"Broad Nodrya search before `{tool_name}` degraded this turn -- couldn't "
+                       f"reach Nodrya to check for related notes.")
+
+    blocks = [b for b in (mem_block, notes_block) if b]
+    return "\n\n".join(blocks) if blocks else None
 
 
 def _register_precheck() -> None:

@@ -312,6 +312,18 @@ _SPEC: dict[str, tuple] = {
     # stored in the clear.
     "nodrya_mcp_url": ("", str, "workspace", True, "Nodrya MCP connector URL (encrypted at rest -- the token is part of it)"),
     "nodrya_memory_category_id": (0, int, "workspace", False, "Nodrya category id used for her memory"),
+    # Separate axis from memory_backend/nodrya_memory_category_id above on
+    # purpose (2026-10-02, operator's own ask): where her OWN memory
+    # writes land is one question, what she can READ for context is
+    # another. This one only needs the connector URL, never the category
+    # -- on, it lets topic-triggered context injection and her recall
+    # tool search ALL of the operator's Nodrya notes (search_by_meaning,
+    # every category), not just her own narrow write-category. Off by
+    # default: it's a live per-message network call to a third party the
+    # operator has to opt into, not something that should start firing
+    # just because a connector URL happens to be saved.
+    "nodrya_broad_retrieval": (False, bool, "workspace", False,
+                               "let her draw context from ALL of Nodrya, not just her own memory"),
     # Backups (2026-09-18, both apps -- see backup.py's own module
     # docstring for the full design). Workspace-scoped: this is instance
     # infrastructure, not a personal preference. Off by default -- needs

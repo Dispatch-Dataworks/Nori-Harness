@@ -2961,6 +2961,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.memory_backend_category_post(sess, form)
         if path == "/admin/memorybackend/backend":
             return self.memory_backend_switch_post(sess, form)
+        if path == "/admin/memorybackend/broad":
+            return self.memory_backend_broad_post(sess, form)
         if path == "/admin/memorybackend/migrate":
             return self.memory_backend_migrate_post(sess, form)
         if path == "/admin/persona":
@@ -4813,6 +4815,24 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div class=field><label>memory category</label>{category_field}</div>"
                 "<button class='btn btn-primary'>save category</button></form></div>")
 
+        broad_form = ""
+        if has_connector:
+            broad_on = bool(config.get("workspace", wsid, "nodrya_broad_retrieval"))
+            broad_form = (
+                "<div class=section><h2>broad retrieval</h2>"
+                "<p class=muted>Off, she only ever reads her own memory category above -- the "
+                "same narrow scope step 2 picks. On, she can also read ANY note across your "
+                "whole Nodrya account for context -- her recall tool, and the automatic "
+                "\"relevant facts just appeared\" pass on every message and before a "
+                "consequential tool call, all search broadly too. That's a real, live Nodrya "
+                "search added to those moments, not free or instant -- on is a deliberate "
+                "choice, not the default.</p>"
+                "<form method=post action='/admin/memorybackend/broad'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                f"<label><input type=checkbox name=nodrya_broad_retrieval{' checked' if broad_on else ''}> "
+                "let her read all of Nodrya for context</label>"
+                "<button class='btn btn-primary' style='margin-top:.6rem'>save</button></form></div>")
+
         migrate_form = ""
         if configured:
             migrate_form = (
@@ -4829,7 +4849,8 @@ class Handler(BaseHTTPRequestHandler):
                 "<button class='btn btn-primary'>migrate local memories to Nodrya</button></form></div>")
 
         self._settings_response(
-            sess, "memorybackend", e + i + backend_form + conn_form + category_section + migrate_form)
+            sess, "memorybackend",
+            e + i + backend_form + conn_form + category_section + broad_form + migrate_form)
 
     def memory_backend_connection_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4885,6 +4906,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.memory_backend_admin_form(
                     sess, err="connect to Nodrya and pick a category before switching to it")
         config.set("workspace", wsid, "memory_backend", backend)
+        return self.memory_backend_admin_form(sess, info="saved")
+
+    def memory_backend_broad_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        config.set("workspace", sess["workspace_id"], "nodrya_broad_retrieval",
+                   "nodrya_broad_retrieval" in form)
         return self.memory_backend_admin_form(sess, info="saved")
 
     def memory_backend_migrate_post(self, sess: dict, form: dict):

@@ -15,6 +15,7 @@ keyword+cost-gated-semantic behavior and its per-message collapse, and
 preaction_check's UNCONDITIONAL semantic pass (the one place a confidence
 gate must never apply) plus its degraded-provider behavior.
 """
+import json
 import os
 import sys
 import tempfile
@@ -31,7 +32,10 @@ os.environ["NORI_NO_LOGFILE"] = "1"
 
 import accounts  # noqa: E402
 import chat  # noqa: E402
+import config  # noqa: E402
 import conversation  # noqa: E402
+import crypto  # noqa: E402
+import mcp_client  # noqa: E402
 import memory  # noqa: E402
 import store  # noqa: E402
 import tools  # noqa: E402
@@ -241,6 +245,126 @@ class ChatLoopWiresThePreactionHook(unittest.TestCase):
              patch.object(memory, "preaction_check", return_value=None) as spy:
             chat.run(_SESSION, _user["id"], _user["display_name"], max_rounds=4)
         spy.assert_not_called()
+
+
+def _mcp_result(payload: dict) -> dict:
+    return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
+
+
+class BroadNodryaRetrieval(unittest.TestCase):
+    """nodrya_broad_search and its wiring into recall/topic_activation_line/
+    preaction_check (2026-10-02, operator's own ask: "any note in Nodrya
+    can surface to Nori in conversation based on context") -- a SEPARATE
+    axis from memory_backend/NodryaMemoryBackend (those govern where HER
+    OWN memory lands; this is read-broadly-across-everything-else, off by
+    default, opt-in via nodrya_broad_retrieval). Real DB, mocked network
+    boundary only (mcp_client.call_tool), same posture as every other
+    class in this file."""
+
+    def setUp(self):
+        self.user = _user
+        self.wsid = _user["workspace_id"]
+        self.session = _SESSION
+        memory._activated_mark.pop(self.user["id"], None)
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", False)
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "")
+
+    def tearDown(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", False)
+        config.set("workspace", self.wsid, "nodrya_mcp_url", "")
+
+    def _connect(self):
+        config.set("workspace", self.wsid, "nodrya_mcp_url",
+                   crypto.encrypt("https://notes.example.invalid/api/mcp/nod_mcp_testtoken"))
+
+    # ── nodrya_broad_search itself ───────────────────────────────────────
+    def test_off_by_default_even_with_a_connector_saved(self):
+        self._connect()
+        with patch.object(mcp_client, "call_tool") as mock_call:
+            notes, degraded = memory.nodrya_broad_search(self.wsid, "anything")
+        mock_call.assert_not_called()
+        self.assertEqual(notes, [])
+        self.assertFalse(degraded)
+
+    def test_enabled_but_no_connector_is_a_silent_noop(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        with patch.object(mcp_client, "call_tool") as mock_call:
+            notes, degraded = memory.nodrya_broad_search(self.wsid, "anything")
+        mock_call.assert_not_called()
+        self.assertEqual(notes, [])
+        self.assertFalse(degraded)
+
+    def test_enabled_and_connected_searches_all_categories(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        self._connect()
+        with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
+                {"count": 1, "query": "cage", "notes": [
+                    {"id": 1, "title": "Cage maintenance log", "content": "Hinge replaced in March",
+                     "category": {"id": 9, "name": "Household"}, "similarity": 0.91, "is_encrypted": False},
+                ]})) as mock_call:
+            notes, degraded = memory.nodrya_broad_search(self.wsid, "is the cage ok")
+        self.assertEqual(mock_call.call_args.args[1], "search_by_meaning")
+        self.assertNotIn("category_id", mock_call.call_args.args[2])
+        self.assertEqual(len(notes), 1)
+        self.assertFalse(degraded)
+
+    def test_nodrya_failure_degrades_rather_than_raising(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        self._connect()
+        with patch.object(mcp_client, "call_tool", side_effect=mcp_client.MCPError("timed out")):
+            notes, degraded = memory.nodrya_broad_search(self.wsid, "anything")
+        self.assertEqual(notes, [])
+        self.assertTrue(degraded)
+
+    # ── _recall tool ──────────────────────────────────────────────────────
+    def test_recall_tool_includes_notes_from_nodrya_when_enabled(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        self._connect()
+        with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
+                {"notes": [{"id": 1, "title": "Insurance policy", "content": "Renews every June",
+                           "category": {"name": "Household"}, "similarity": 0.8, "is_encrypted": False}]})):
+            result = memory._recall(self.session, query="insurance")
+        self.assertIn("notes_from_nodrya", result)
+        self.assertEqual(result["notes_from_nodrya"][0]["title"], "Insurance policy")
+
+    def test_recall_tool_has_no_nodrya_key_when_disabled(self):
+        result = memory._recall(self.session, query="insurance")
+        self.assertNotIn("notes_from_nodrya", result)
+        self.assertNotIn("notes_from_nodrya_degraded", result)
+
+    # ── automatic surfacing: the actual "based on context" behavior ───────
+    def test_topic_activation_surfaces_a_broad_note_with_no_local_memory_at_all(self):
+        # Deliberately nothing remembered locally -- this is the exact
+        # case the operator asked for: a Nodrya note surfaces purely from
+        # broad retrieval, not because it also happens to be one of her
+        # own curated facts.
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        self._connect()
+        conversation.add_message(self.user["id"], "user", "do we have a car insurance policy on file")
+        with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
+                {"notes": [{"id": 1, "title": "Car insurance", "content": "Policy renews in June",
+                           "category": {"name": "Household"}, "similarity": 0.77, "is_encrypted": False}]})):
+            line = memory.topic_activation_line(self.session, self.user["id"])
+        self.assertIsNotNone(line)
+        self.assertIn("Car insurance", line)
+        self.assertIn("Nodrya", line)
+
+    def test_topic_activation_omits_nodrya_block_when_disabled(self):
+        conversation.add_message(self.user["id"], "user", "do we have a car insurance policy on file")
+        with patch.object(mcp_client, "call_tool") as mock_call:
+            memory.topic_activation_line(self.session, self.user["id"])
+        mock_call.assert_not_called()
+
+    def test_preaction_check_includes_a_broad_notes_block(self):
+        config.set("workspace", self.wsid, "nodrya_broad_retrieval", True)
+        self._connect()
+        with patch.object(mcp_client, "call_tool", return_value=_mcp_result(
+                {"notes": [{"id": 1, "title": "Router admin password", "content": "see the sticker",
+                           "category": {"name": "Household"}, "similarity": 0.7, "is_encrypted": False}]})), \
+             patch.object(chat, "openrouter_embed", return_value={"ok": True, "vectors": [[0.0, 0.0, 0.0]]}):
+            note = memory.preaction_check(self.session, "wifi_settings_change", {"ssid": "home"})
+        self.assertIsNotNone(note)
+        self.assertIn("Router admin password", note)
 
 
 if __name__ == "__main__":
