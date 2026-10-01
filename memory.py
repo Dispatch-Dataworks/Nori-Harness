@@ -372,10 +372,18 @@ class NodryaMemoryBackend:
     partial success."""
 
     def _connection(self, workspace_id: int) -> dict | None:
+        import crypto  # local: same import-cycle reasoning as mcp_client below
         url = (config.get("workspace", workspace_id, "nodrya_mcp_url") or "").strip()
-        token = (config.get("workspace", workspace_id, "nodrya_mcp_token") or "").strip()
+        token_enc = (config.get("workspace", workspace_id, "nodrya_mcp_token") or "").strip()
         category_id = int(config.get("workspace", workspace_id, "nodrya_memory_category_id") or 0)
-        if not url or not token or category_id <= 0:
+        if not url or not token_enc or category_id <= 0:
+            return None
+        try:
+            token = crypto.decrypt(token_enc)
+        except ValueError:
+            # Wrong/rotated key file, or a stale plaintext value from before
+            # this was encrypted at rest -- either way, not a usable
+            # credential, so this is "not configured" rather than a crash.
             return None
         return {"url": url, "token": token, "category_id": category_id}
 

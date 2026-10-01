@@ -295,8 +295,18 @@ _SPEC: dict[str, tuple] = {
     # memory_backend itself (backend selection and its connection are one
     # decision). Off by construction until all three are filled in: see
     # memory.py's NodryaMemoryBackend.
+    #
+    # nodrya_mcp_token is the one real exception to this module's own
+    # "nothing in this spec is secret, real secrets live in dedicated
+    # _enc columns" rule above -- there's no dedicated providers-style
+    # table for it to live in, so the value server.py writes here is a
+    # crypto.encrypt() token, not plaintext, and NodryaMemoryBackend
+    # decrypts it on read. secret=True still matters on top of that --
+    # it's what keeps this key out of settings_tool's read-everything
+    # surface -- but don't let that flag alone imply it's stored in the
+    # clear.
     "nodrya_mcp_url": ("", str, "workspace", False, "Nodrya MCP endpoint URL"),
-    "nodrya_mcp_token": ("", str, "workspace", True, "Nodrya MCP token (write scope)"),
+    "nodrya_mcp_token": ("", str, "workspace", True, "Nodrya MCP token (write scope, encrypted at rest)"),
     "nodrya_memory_category_id": (0, int, "workspace", False, "Nodrya category id used for her memory"),
     # Backups (2026-09-18, both apps -- see backup.py's own module
     # docstring for the full design). Workspace-scoped: this is instance

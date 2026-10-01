@@ -37,6 +37,7 @@ os.environ["NORI_NO_LOGFILE"] = "1"
 
 import accounts  # noqa: E402
 import config  # noqa: E402
+import crypto  # noqa: E402
 import mcp_client  # noqa: E402
 import memory  # noqa: E402
 import store  # noqa: E402
@@ -71,8 +72,12 @@ class NodryaMemoryBackendTests(unittest.TestCase):
         config.set("workspace", self.wsid, "nodrya_memory_category_id", 0)
 
     def _configure(self, category_id=42):
+        # nodrya_mcp_token is stored encrypted at rest (server.py's
+        # memory_backend_connection_post encrypts before saving) --
+        # _connection() decrypts on read, so a plaintext value here would
+        # fail to decrypt and look unconfigured. Match the real path.
         config.set("workspace", self.wsid, "nodrya_mcp_url", "https://notes.example.invalid/mcp")
-        config.set("workspace", self.wsid, "nodrya_mcp_token", "nod_mcp_testtoken")
+        config.set("workspace", self.wsid, "nodrya_mcp_token", crypto.encrypt("nod_mcp_testtoken"))
         config.set("workspace", self.wsid, "nodrya_memory_category_id", category_id)
 
     # ── unconfigured workspace ───────────────────────────────────────────

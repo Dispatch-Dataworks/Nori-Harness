@@ -135,6 +135,7 @@ import accounts
 import capabilities
 import chat
 import config
+import crypto
 import diagnostics
 import connected_accounts
 import contacts
@@ -2723,7 +2724,8 @@ class Handler(BaseHTTPRequestHandler):
                             "/admin/mcp": "mcp", "/admin/peers": "peers", "/admin/models": "models",
                             "/admin/webtools": "webtools", "/admin/homeassistant": "homeassistant",
                             "/admin/contexttuning": "contexttuning", "/admin/persona": "persona",
-                            "/admin/media": "media", "/admin/health": "health"}
+                            "/admin/media": "media", "/admin/health": "health",
+                            "/admin/memorybackend": "memorybackend"}
         if path in settings_aliases:
             if sess["role"] != "admin":
                 return self.forbidden()
@@ -2951,6 +2953,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.homeassistant_discover_post(sess, form)
         if path == "/admin/homeassistant/exposure":
             return self.homeassistant_exposure_post(sess, form)
+        if path == "/admin/memorybackend/connection":
+            return self.memory_backend_connection_post(sess, form)
+        if path == "/admin/memorybackend/backend":
+            return self.memory_backend_switch_post(sess, form)
         if path == "/admin/persona":
             return self.persona_admin_post(sess, form, "save")
         if path.startswith("/admin/persona/") and path[len("/admin/persona/"):] in persona_admin.ACTIONS:
@@ -4696,6 +4702,109 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.webtools_admin_form(sess, err=str(exc))
         return self.webtools_admin_form(sess, info="saved")
+
+    # -- admin: memory backend (2026-10-01) -- where her typed memory
+    # actually lives: local (default) or Nodrya, via config.py's
+    # memory_backend switch and memory.py's NodryaMemoryBackend. No UI
+    # existed for this before -- the three nodrya_* keys were readable
+    # by config.get() the moment the backend class shipped, but nothing
+    # in server.py ever wrote them, so the switch was unreachable except
+    # by hand-editing the database. The token field here is the one real
+    # secret: encrypted with crypto.encrypt() before it's ever written,
+    # never echoed back once set (the form shows "set" not the value),
+    # and a blank submit leaves whatever's already stored untouched --
+    # same convention as every password-style field elsewhere in this
+    # app. The URL isn't encrypted -- NodryaMemoryBackend always sends
+    # the token as a separate Bearer header, never embedded in the URL,
+    # so the URL alone isn't a credential, just an endpoint.
+    def memory_backend_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        csrf = esc(sess["csrf"])
+        wsid = sess["workspace_id"]
+
+        backend = config.get("workspace", wsid, "memory_backend")
+        url = config.get("workspace", wsid, "nodrya_mcp_url") or ""
+        token_enc = config.get("workspace", wsid, "nodrya_mcp_token") or ""
+        category_id = int(config.get("workspace", wsid, "nodrya_memory_category_id") or 0)
+        configured = bool(url and token_enc and category_id > 0)
+
+        active = ("<span class='chip active'>using Nodrya</span>" if backend == "nodrya"
+                 else "<span class=chip>using local storage</span>")
+        conn_status = ("<span class='chip active'>connection details set</span>" if configured
+                      else "<span class=chip>not configured yet -- fill in all three fields below</span>")
+
+        backend_form = (
+            "<div class=section><h2>active backend</h2>"
+            f"<p>{active}</p>"
+            "<p class=muted>Local keeps every memory in Nori's own database, same as today. "
+            "Nodrya routes her typed memory reads/writes through your Nodrya account instead, "
+            "with a local write-through cache so recall still works instantly -- see "
+            "memory.py's NodryaMemoryBackend. Switching to Nodrya is blocked here until the "
+            "connection below is fully filled in.</p>"
+            "<form method=post action='/admin/memorybackend/backend'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><label>backend</label><select name=memory_backend>"
+            f"<option value=local{' selected' if backend == 'local' else ''}>local (default)</option>"
+            f"<option value=nodrya{' selected' if backend == 'nodrya' else ''}"
+            f"{' disabled' if not configured else ''}>nodrya</option>"
+            "</select></div>"
+            "<button class='btn btn-primary'>save</button></form></div>")
+
+        token_placeholder = "leave blank to keep the current token" if token_enc else "paste your Nodrya token"
+        category_value = str(category_id) if category_id else ""
+        conn_form = (
+            "<div class=section><h2>Nodrya connection</h2>"
+            f"<p>{conn_status}</p>"
+            "<form method=post action='/admin/memorybackend/connection'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><label>MCP endpoint URL</label>"
+            f"<input name=nodrya_mcp_url value='{esc(url)}' placeholder='https://...'></div>"
+            "<div class=field><label>MCP token (write scope)</label>"
+            f"<input type=password name=nodrya_mcp_token placeholder='{esc(token_placeholder)}'></div>"
+            "<div class=field><label>memory category id</label>"
+            f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0></div>"
+            "<button class='btn btn-primary'>save connection</button></form></div>")
+
+        self._settings_response(sess, "memorybackend", e + i + backend_form + conn_form)
+
+    def memory_backend_connection_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        url = (form.get("nodrya_mcp_url") or "").strip()
+        token = (form.get("nodrya_mcp_token") or "").strip()
+        cat_raw = (form.get("nodrya_memory_category_id") or "").strip()
+        try:
+            category_id = int(cat_raw) if cat_raw else 0
+        except ValueError:
+            return self.memory_backend_admin_form(sess, err="category id must be a whole number")
+        if category_id < 0:
+            return self.memory_backend_admin_form(sess, err="category id can't be negative")
+        config.set("workspace", wsid, "nodrya_mcp_url", url)
+        config.set("workspace", wsid, "nodrya_memory_category_id", category_id)
+        if token:
+            config.set("workspace", wsid, "nodrya_mcp_token", crypto.encrypt(token))
+        return self.memory_backend_admin_form(sess, info="connection saved")
+
+    def memory_backend_switch_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        backend = (form.get("memory_backend") or "local").strip()
+        if backend not in ("local", "nodrya"):
+            return self.memory_backend_admin_form(sess, err=f"{backend!r} isn't a known backend")
+        if backend == "nodrya":
+            url = config.get("workspace", wsid, "nodrya_mcp_url") or ""
+            token_enc = config.get("workspace", wsid, "nodrya_mcp_token") or ""
+            category_id = int(config.get("workspace", wsid, "nodrya_memory_category_id") or 0)
+            if not (url and token_enc and category_id > 0):
+                return self.memory_backend_admin_form(
+                    sess, err="fill in the Nodrya connection below before switching to it")
+        config.set("workspace", wsid, "memory_backend", backend)
+        return self.memory_backend_admin_form(sess, info="saved")
 
     # -- admin: Home Assistant (2026-09-15) -- discover from the real
     # instance, then an explicit per-entity checklist to expose. Discovery
@@ -7018,6 +7127,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
                                                ("homeassistant", "Home Assistant"),
+                                               ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
                                                ("backups", "Backups"), ("health", "Integration health"))))
         else:
@@ -7192,7 +7302,8 @@ class Handler(BaseHTTPRequestHandler):
                        "avatars": self.avatars_admin_page, "webtools": self.webtools_admin_form,
                        "homeassistant": self.homeassistant_admin_form,
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
-                       "backups": self.backups_admin_form, "health": self.integration_health_admin_form}
+                       "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
+                       "memorybackend": self.memory_backend_admin_form}
         if tab in admin_pages or tab == "household":
             if sess["role"] != "admin":
                 return self.forbidden()
