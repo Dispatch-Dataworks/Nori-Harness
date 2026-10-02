@@ -242,14 +242,14 @@ def _system_usage_mb() -> float:
     return total / (1024 * 1024)
 
 
-def _check_quota(user_id: int, added_bytes: int, *, new_entry: bool) -> str | None:
+def _check_quota(user_id: int, added_bytes: int, *, new_entry: bool, extra_entries: int = 0) -> str | None:
     added_mb = added_bytes / (1024 * 1024)
     if added_mb > MAX_FILE_MB:
         return f"that file is over the {MAX_FILE_MB:.0f} MB per-file limit"
     used_mb, count = _user_usage_mb(user_id)
     if used_mb + added_mb > MAX_USER_MB:
         return f"this would exceed your {MAX_USER_MB:.0f} MB working-folder limit"
-    if new_entry and count + 1 > MAX_USER_COUNT:
+    if (new_entry or extra_entries) and count + extra_entries + (1 if new_entry else 0) > MAX_USER_COUNT:
         return f"you're at the {MAX_USER_COUNT}-item limit for the working folder"
     if _system_usage_mb() + added_mb > MAX_TOTAL_MB:
         return ("this instance's total working-folder storage limit has been reached -- "
@@ -313,6 +313,117 @@ def resolve_for_download(session: dict, path: str) -> Path | None:
     except WorkfileError:
         return None
     return target if target.is_file() else None
+
+
+# ── in-browser preview (2026-10-02, operator's own ask: "preview documents
+# (txt, md, yml, json etc), as well as images and videos") ────────────────
+# Stored files are untrusted (see files_download's forced-attachment note
+# in server.py), so previewing is deliberately NOT "serve it inline under
+# its own content-type". Three narrow, separately-validated paths instead:
+#   - text: read here, decoded here, handed back as a plain string for the
+#     page to HTML-escape into a <pre>. Never served raw, so an .html or
+#     .svg file previews as its source text and can't execute.
+#   - image: only png/jpeg/gif/webp, and only if the REAL leading bytes
+#     say so (SVG is excluded on purpose -- it can carry script).
+#   - video: only mp4/m4v/mov/webm/ogv, and only if the real container
+#     signature matches the extension.
+# The Content-Type for image/video always comes from what was verified
+# here, never from the filename alone.
+PREVIEW_TEXT_MAX_BYTES = 512 * 1024
+
+# Cheap, name-only: decides whether the LISTING offers a preview link. The
+# preview itself re-validates against the real bytes (preview_info), and
+# will also sniff text for names not on this list.
+_TEXT_EXTS = frozenset({
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json", ".jsonl", ".ndjson",
+    ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".xml", ".svg",
+    ".html", ".htm", ".css", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".py", ".sh", ".bash", ".zsh",
+    ".ps1", ".bat", ".cmd", ".sql", ".tex", ".bib", ".java", ".c", ".h", ".cpp", ".hpp", ".cs",
+    ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".swift", ".kt", ".r", ".diff", ".patch",
+    ".gitignore", ".editorconfig", ".lock"})
+_TEXT_NAMES = frozenset({"readme", "license", "licence", "dockerfile", "makefile", "changelog",
+                         "notice", "authors", "procfile", "gemfile", "rakefile"})
+_VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+               ".webm": "video/webm", ".ogv": "video/ogg"}
+
+
+def preview_kind_for_name(name: str) -> str | None:
+    """"image" / "video" / "text" by filename alone, or None (no preview
+    link offered). A hint for the listing only -- never a security
+    decision; see preview_info."""
+    low = name.lower()
+    ext = os.path.splitext(low)[1]
+    if ext in _IMAGE_MIME:
+        return "image"
+    if ext in _VIDEO_MIME:
+        return "video"
+    # `low in _TEXT_EXTS` covers dotfiles: splitext(".gitignore") is
+    # (".gitignore", ""), i.e. no extension at all.
+    if ext in _TEXT_EXTS or low in _TEXT_EXTS or low in _TEXT_NAMES:
+        return "text"
+    return None
+
+
+def _video_signature_ok(head: bytes, ext: str) -> bool:
+    if ext in (".mp4", ".m4v", ".mov"):
+        return head[4:8] == b"ftyp"
+    if ext == ".webm":
+        return head.startswith(b"\x1a\x45\xdf\xa3")
+    if ext == ".ogv":
+        return head.startswith(b"OggS")
+    return False
+
+
+def preview_info(session: dict, path: str) -> dict:
+    """The one decision point for what a file may be previewed AS, made
+    from its real bytes. Returns {"kind": "image"|"video"|"text"|"binary",
+    "name", "path", "size", "mime", "file"} or {"error"}. "file" is the
+    already-contained, resolved Path -- the only thing the raw-serving
+    route is allowed to stream, so it can't be pointed at anything this
+    function didn't classify."""
+    user_id = session["user_id"]
+    try:
+        target = _resolve(user_id, path)
+    except WorkfileError as exc:
+        return {"error": str(exc)}
+    if not target.exists():
+        return {"error": "no such file"}
+    if not target.is_file():
+        return {"error": "that's a folder, not a file"}
+    try:
+        with open(target, "rb") as f:
+            head = f.read(8192)
+        size = target.stat().st_size
+    except OSError:
+        return {"error": "couldn't read that file"}
+    ext = os.path.splitext(target.name.lower())[1]
+    base = {"name": target.name, "path": _rel_key(user_id, target), "size": size, "file": target}
+
+    img_ext = _sniff_image_ext(head)
+    if img_ext is not None and ext in _IMAGE_MIME:
+        return {**base, "kind": "image", "mime": _IMAGE_MIME[img_ext]}
+    if ext in _VIDEO_MIME and _video_signature_ok(head, ext):
+        return {**base, "kind": "video", "mime": _VIDEO_MIME[ext]}
+    if ext in _IMAGE_MIME or ext in _VIDEO_MIME:
+        return {**base, "kind": "binary", "mime": "application/octet-stream"}  # name lies about the bytes
+    if b"\x00" in head:
+        return {**base, "kind": "binary", "mime": "application/octet-stream"}
+    return {**base, "kind": "text", "mime": "text/plain"}
+
+
+def preview_text(session: dict, path: str) -> dict:
+    """preview_info plus, for a text file, its decoded content (capped at
+    PREVIEW_TEXT_MAX_BYTES; `truncated` says plainly when it was). The
+    caller must HTML-escape it -- this returns a plain string, not
+    markup."""
+    info = preview_info(session, path)
+    if "error" in info or info["kind"] != "text":
+        return info
+    with open(info["file"], "rb") as f:
+        raw = f.read(PREVIEW_TEXT_MAX_BYTES + 1)
+    truncated = len(raw) > PREVIEW_TEXT_MAX_BYTES
+    text = raw[:PREVIEW_TEXT_MAX_BYTES].decode("utf-8-sig", errors="replace")
+    return {**info, "text": text, "truncated": truncated}
 
 
 LIST_MAX_RECURSIVE_ENTRIES = 1000  # backstop against dumping a huge tree in one call
@@ -662,7 +773,16 @@ def _write(user_id: int, rel_path: str, data: bytes, *, created_by: str, human_a
             return {"error": "a file already exists there that you didn't create -- "
                              "write to a different name, or ask them to move or delete the original first"}
     added = len(data) - (target.stat().st_size if existed else 0)
-    err = _check_quota(user_id, max(added, 0), new_entry=not existed)
+    # Parent folders this write would have to create count toward the
+    # item limit too (a folder upload makes several) -- they're entries
+    # _dir_usage already counts, so not counting them here let a bulk
+    # upload sail past MAX_USER_COUNT.
+    root = _user_root(user_id)
+    missing_dirs, anc = 0, target.parent
+    while anc != root and not anc.exists():
+        missing_dirs += 1
+        anc = anc.parent
+    err = _check_quota(user_id, max(added, 0), new_entry=not existed, extra_entries=missing_dirs)
     if err:
         return {"error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -671,7 +791,7 @@ def _write(user_id: int, rel_path: str, data: bytes, *, created_by: str, human_a
     os.replace(tmp, target)  # atomic on the same volume -- no torn/partial file visible to a reader
     rel = _rel_key(user_id, target)
     _meta_upsert(user_id, rel, created_by=created_by, source_url=source_url)
-    return {"ok": True, "path": rel, "size_bytes": len(data)}
+    return {"ok": True, "path": rel, "size_bytes": len(data), "replaced": existed}
 
 
 def validate_write_folder(path: str) -> tuple[str | None, str]:

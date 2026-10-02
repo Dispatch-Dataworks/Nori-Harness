@@ -2460,6 +2460,113 @@ def page_app(title: str, header_inner: str, main_inner: str, footer_inner: str =
     ).encode("utf-8")
 
 
+# Multi-file / whole-folder / drag-and-drop upload for the files page
+# (2026-10-02, operator's own ask). Sequential, one request per file,
+# against files_upload_post's JSON mode: each file gets its own size cap
+# and error, a quota stop ends the batch instead of hammering the server
+# with files that can't succeed, and the whole thing works on a phone
+# (no relying on a browser sending a folder's paths in the multipart
+# filename, which varies -- the relative path is its own `relpath` field).
+# Messages are set with textContent, never innerHTML: a file name is
+# untrusted text. __CFG__ is replaced with the page's own numbers
+# (csrf, current folder, size cap) as JSON.
+FILES_UPLOAD_JS = r"""<script>(function(){
+var cfg=__CFG__;
+var SKIP={'.DS_Store':1,'Thumbs.db':1,'desktop.ini':1};
+var busy=false;
+function $(id){return document.getElementById(id);}
+function say(text,isErr){var el=$('upmsg');if(!el)return;el.textContent=text;
+  el.className=isErr?'err':'info';el.style.display='block';}
+function mb(n){return (n/1048576).toFixed(0);}
+async function uploadAll(items){
+  if(busy){say('an upload is already running -- wait for it to finish.',true);return;}
+  var todo=[],sys=0,big=[];
+  items.forEach(function(it){
+    var base=it.rel.split('/').pop();
+    if(SKIP[base]){sys++;return;}
+    if(it.file.size>cfg.maxFileBytes){big.push(it.rel);return;}
+    todo.push(it);
+  });
+  if(!todo.length){
+    say('nothing to upload'+(big.length?' -- '+big.length+' file(s) are over the '+mb(cfg.maxFileBytes)+' MB per-file limit.':'.'),true);
+    return;
+  }
+  busy=true;
+  var ok=0,replaced=0,failed=[],stopped=false;
+  for(var i=0;i<todo.length;i++){
+    say('uploading '+(i+1)+' of '+todo.length+' -- '+todo[i].rel,false);
+    var fd=new FormData();
+    fd.append('csrf',cfg.csrf);fd.append('path',cfg.path);fd.append('relpath',todo[i].rel);
+    fd.append('file',todo[i].file,todo[i].file.name);
+    try{
+      var r=await fetch('/files/upload',{method:'POST',body:fd,credentials:'same-origin',
+                                         headers:{'X-Nori-Upload':'json'}});
+      var j=await r.json();
+      if(j.ok){ok++;if(j.replaced)replaced++;}
+      else{failed.push(todo[i].rel+': '+j.error);
+           if(/limit|storage|session|CSRF/i.test(j.error)){stopped=true;break;}}
+    }catch(e){failed.push(todo[i].rel+': the upload request failed');}
+  }
+  busy=false;
+  var lines=['uploaded '+ok+' of '+todo.length+' file(s)'+(replaced?' ('+replaced+' replaced an existing file of the same name)':'')+'.'];
+  if(stopped)lines.push('stopped early -- the rest were not attempted.');
+  if(sys)lines.push('skipped '+sys+' system file(s) (.DS_Store / Thumbs.db).');
+  if(big.length)lines.push('skipped '+big.length+' file(s) over the '+mb(cfg.maxFileBytes)+' MB per-file limit: '+big.slice(0,3).join(', ')+(big.length>3?', ...':''));
+  failed.slice(0,5).forEach(function(f){lines.push('failed: '+f);});
+  if(failed.length>5)lines.push('...and '+(failed.length-5)+' more failures.');
+  try{sessionStorage.setItem('noriUpload',JSON.stringify({text:lines.join('\n'),err:failed.length>0||stopped}));}catch(e){}
+  location.reload();
+}
+try{var saved=sessionStorage.getItem('noriUpload');
+  if(saved){sessionStorage.removeItem('noriUpload');var s=JSON.parse(saved);say(s.text,s.err);}}catch(e){}
+
+function fromInput(input){
+  return Array.prototype.map.call(input.files,function(f){return {file:f,rel:f.webkitRelativePath||f.name};});
+}
+var form=$('upform'),files=$('upfiles'),folder=$('upfolder'),folderBtn=$('upfolderbtn');
+if(form&&files)form.addEventListener('submit',function(e){
+  e.preventDefault();
+  if(files.files.length){uploadAll(fromInput(files));files.value='';}
+});
+if(folderBtn&&folder){
+  folderBtn.addEventListener('click',function(){folder.click();});
+  folder.addEventListener('change',function(){
+    if(folder.files.length){uploadAll(fromInput(folder));folder.value='';}
+  });
+}
+
+// Drag and drop: files, or whole folders via the entries API. Only files
+// are uploaded, so a dropped (or picked) folder's empty subfolders are not
+// recreated.
+function readAll(reader){return new Promise(function(res,rej){var out=[];
+  (function next(){reader.readEntries(function(b){
+    if(!b.length)return res(out);out=out.concat(Array.prototype.slice.call(b));next();},rej);})();});}
+function entryFiles(entry,prefix){
+  if(entry.isFile)return new Promise(function(res,rej){
+    entry.file(function(f){res([{file:f,rel:prefix+entry.name}]);},rej);});
+  if(entry.isDirectory)return readAll(entry.createReader()).then(function(es){
+    return Promise.all(es.map(function(e){return entryFiles(e,prefix+entry.name+'/');}));
+  }).then(function(a){return [].concat.apply([],a);});
+  return Promise.resolve([]);
+}
+function hasFiles(e){return e.dataTransfer&&Array.prototype.indexOf.call(e.dataTransfer.types||[],'Files')>=0;}
+document.addEventListener('dragover',function(e){if(hasFiles(e))e.preventDefault();});
+document.addEventListener('drop',function(e){
+  if(!hasFiles(e))return;
+  e.preventDefault();
+  var entries=[];  // collected synchronously -- dataTransfer is emptied after this handler returns
+  Array.prototype.forEach.call(e.dataTransfer.items||[],function(it){
+    var en=it.webkitGetAsEntry&&it.webkitGetAsEntry();if(en)entries.push(en);});
+  if(!entries.length){uploadAll(Array.prototype.map.call(e.dataTransfer.files,function(f){return {file:f,rel:f.name};}));return;}
+  say('reading the dropped items...',false);
+  Promise.all(entries.map(function(en){return entryFiles(en,'');})).then(function(a){
+    uploadAll([].concat.apply([],a));
+  }).catch(function(){say('could not read the dropped items.',true);});
+});
+window.noriUploadAll=uploadAll;  // exposed for testing
+})();</script>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Nori/0.1"
 
@@ -2734,6 +2841,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.files_page(sess, urllib.parse.parse_qs(qs).get("path", [""])[0])
         if path.startswith("/files/download/"):
             return self.files_download(sess, urllib.parse.unquote(path[len("/files/download/"):]))
+        if path == "/files/preview":
+            return self.files_preview_page(sess, urllib.parse.parse_qs(qs).get("path", [""])[0])
+        if path.startswith("/files/raw/"):
+            return self.files_raw(sess, urllib.parse.unquote(path[len("/files/raw/"):]))
         return self.not_found()
 
     # HEAD = the exact same routing/auth/handler as GET, headers only --
@@ -8169,25 +8280,50 @@ class Handler(BaseHTTPRequestHandler):
         return result
 
     def files_upload_post(self):
+        """One file per request. The files page's script uploads a
+        multi-file or whole-folder selection as a sequence of these
+        (X-Nori-Upload: json -> a JSON reply instead of a re-rendered
+        page), so each file gets its own size cap, its own error, and a
+        quota stop that doesn't half-parse a giant body. `relpath`
+        (webkitRelativePath / a dropped folder's entry path) places the
+        file at that path under the current folder -- every segment goes
+        through workfiles' own name validation, so it can't escape or
+        use a bad name. No relpath = the plain single-file form."""
+        want_json = self.headers.get("X-Nori-Upload") == "json"
         sess = accounts.get_session(self.token())
         if sess is None:
+            if want_json:
+                return self.send_json({"ok": False, "error": "your session expired -- reload and sign in"}, 401)
             return self.send(303, b"", {"Location": "/login"})
         n = int(self.headers.get("Content-Length", 0) or 0)
         cap = int((workfiles.MAX_FILE_MB + 2) * 1024 * 1024)  # small overhead for the other form fields
         if n <= 0 or n > cap:
             self.rfile.read(min(max(n, 0), cap))  # drain what we safely can so the socket isn't left mid-body
-            return self.files_page(sess, "", err=f"upload too large -- max {workfiles.MAX_FILE_MB:.0f} MB per file")
+            msg = f"upload too large -- max {workfiles.MAX_FILE_MB:.0f} MB per file"
+            if want_json:
+                return self.send_json({"ok": False, "error": msg})
+            return self.files_page(sess, "", err=msg)
         body = self.rfile.read(n)
         fields = self._parse_multipart(body, self.headers.get("Content-Type", ""))
         if not self.csrf_ok(sess, {"csrf": fields.get("csrf", "")}):
+            if want_json:
+                return self.send_json({"ok": False, "error": "bad CSRF token -- reload and try again"}, 403)
             return self.send(403, page_simple("blocked", "<p>bad CSRF token — reload and try again</p>"))
         target_dir = fields.get("path") or ""
         upload = fields.get("file")
         if not isinstance(upload, tuple) or not upload[0]:
+            if want_json:
+                return self.send_json({"ok": False, "error": "no file in that request"})
             return self.files_page(sess, target_dir, err="choose a file first")
         filename = upload[0].replace("\\", "/").rsplit("/", 1)[-1]  # strip any client-supplied directory part
-        rel = f"{target_dir}/{filename}" if target_dir else filename
+        relpath = (fields.get("relpath") or "").replace("\\", "/").strip("/") or filename
+        rel = f"{target_dir}/{relpath}" if target_dir else relpath
         result = workfiles.upload_file(sess, rel, upload[1])
+        if want_json:
+            if "error" in result:
+                return self.send_json({"ok": False, "error": result["error"]})
+            return self.send_json({"ok": True, "path": result["path"], "size": result["size_bytes"],
+                                   "replaced": bool(result.get("replaced"))})
         if "error" in result:
             return self.files_page(sess, target_dir, err=result["error"])
         return self.files_page(sess, target_dir, info=f"uploaded {esc(filename)}")
@@ -8205,6 +8341,104 @@ class Handler(BaseHTTPRequestHandler):
         name = target.name.replace('"', "")
         return self.send(200, target.read_bytes(), ctype="application/octet-stream",
                          extra={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @staticmethod
+    def _parse_range(header: str, size: int) -> tuple[int, int] | None | str:
+        """One byte range off a Range header, as (start, end) inclusive.
+        None = no usable header (serve the whole thing, a 200); "bad" =
+        syntactically a range but unsatisfiable (a 416). Multi-range
+        requests aren't supported -- treated as no range, which is a
+        legal response, rather than building multipart/byteranges."""
+        m = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", header or "")
+        if not m or (not m.group(1) and not m.group(2)):
+            return None
+        if not m.group(1):  # suffix range: the last N bytes
+            n = int(m.group(2))
+            if n == 0:
+                return "bad"
+            return max(0, size - n), size - 1
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else size - 1
+        if start >= size or end < start:
+            return "bad"
+        return start, min(end, size - 1)
+
+    def files_raw(self, sess: dict, rel_path: str):
+        """Inline bytes for the preview page's <img>/<video> ONLY -- and
+        only for what workfiles.preview_info verified from the file's real
+        bytes to be a png/jpeg/gif/webp or a real mp4/mov/webm/ogv.
+        Nothing else is ever served inline (files_download stays the
+        forced-attachment path for everything), and the Content-Type is
+        the verified one, never the filename's. nosniff is already on
+        every response by send(); the extra sandbox CSP is belt-and-
+        braces in case a browser is ever navigated straight to this URL.
+        Range support (206) is what lets a <video> seek and what Safari
+        requires to play one at all."""
+        info = workfiles.preview_info(sess, rel_path)
+        if "error" in info or info["kind"] not in ("image", "video"):
+            return self.not_found()
+        size = info["size"]
+        extra = {"Accept-Ranges": "bytes", "Content-Disposition": "inline",
+                 "Cache-Control": "private, no-cache",
+                 "Content-Security-Policy": "sandbox; default-src 'none'"}
+        rng = self._parse_range(self.headers.get("Range", ""), size)
+        if rng == "bad":
+            return self.send(416, b"", {**extra, "Content-Range": f"bytes */{size}"}, ctype=info["mime"])
+        with open(info["file"], "rb") as f:
+            if rng is None:
+                return self.send(200, f.read(), extra, ctype=info["mime"])
+            start, end = rng
+            f.seek(start)
+            chunk = f.read(end - start + 1)
+        return self.send(206, chunk, {**extra, "Content-Range": f"bytes {start}-{end}/{size}"},
+                         ctype=info["mime"])
+
+    def files_preview_page(self, sess: dict, rel_path: str):
+        """The preview "dialog" (2026-10-02, operator's own ask): a page of
+        its own rather than a modal -- works the same on a phone, and a
+        video needs room anyway. Text is escaped into a <pre> (never
+        rendered as markup), images/videos load through files_raw."""
+        info = workfiles.preview_text(sess, rel_path)
+        parent = rel_path.rsplit("/", 1)[0] if "/" in rel_path else ""
+        back = f"/files?path={urllib.parse.quote(parent)}" if parent else "/files"
+        if "error" in info:
+            return self.files_page(sess, parent, err=info["error"])
+        qp = urllib.parse.quote(info["path"])
+        size_txt = (f"{info['size'] / 1_048_576:.1f} MB" if info["size"] >= 1_048_576
+                    else f"{max(1, info['size'] // 1024)} KB" if info["size"] >= 1024
+                    else f"{info['size']} bytes")
+        head = (f"<div class=section><p class=muted><a href='{back}'>‹ back to the folder</a></p>"
+                f"<h2 class=wrap>{esc(info['name'])}</h2>"
+                f"<p class=muted>{esc(size_txt)} · "
+                f"<a href='/files/download/{qp}'>download</a></p>")
+        kind = info["kind"]
+        if kind == "image":
+            body = (f"<img src='/files/raw/{qp}' alt='{esc(info['name'])}' "
+                    "style='max-width:100%;height:auto;border-radius:8px'>")
+        elif kind == "video":
+            body = (f"<video controls preload=metadata playsinline src='/files/raw/{qp}' "
+                    "style='max-width:100%;border-radius:8px;background:#000'>"
+                    "your browser can't play this video -- use download instead.</video>")
+        elif kind == "text":
+            text, note = info["text"], ""
+            if info["name"].lower().endswith(".json") and not info["truncated"]:
+                try:
+                    text = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+                    note = "<p class=muted>pretty-printed -- the file itself is unchanged.</p>"
+                except ValueError:
+                    pass
+            if info["truncated"]:
+                note += (f"<p class=muted>showing the first {workfiles.PREVIEW_TEXT_MAX_BYTES // 1024} KB "
+                         f"of {esc(size_txt)} -- download for the rest.</p>")
+            body = (f"{note}<pre style='white-space:pre-wrap;word-break:break-word;overflow:auto;"
+                    "max-height:70vh;margin:0;padding:.8rem;border-radius:8px;"
+                    "background:var(--surface-2);border:1px solid var(--border);"
+                    "font:.85rem/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace'>"
+                    f"{esc(text)}</pre>")
+        else:
+            body = ("<p class=muted>no inline preview for this kind of file -- use download.</p>")
+        self.send(200, page_app("files", self._app_header(sess, self._hdr_back("Files")),
+                                head + body + "</div>"))
 
     def image_get(self, sess: dict, file_id: str):
         """A generated image (generate_image_selfie/imagine_image) OR a
@@ -8552,8 +8786,11 @@ class Handler(BaseHTTPRequestHandler):
                         f"<input type=text name=folder placeholder='folder (default: {esc(self._DRIVE_DEFAULT_FOLDER)})' "
                         "style='flex:1;min-width:9em'>"
                         "<button class=btn>go</button></form></details>")
-                rows.append(f"<div class=list-row><div class=list-icon>📄</div>"
-                           f"<div class=list-meta><b>{esc(e['name'])}</b>"
+                kind_icon = {"image": "🖼", "video": "🎞"}.get(workfiles.preview_kind_for_name(e["name"]), "📄")
+                name_html = (f"<a href='/files/preview?path={qp}'>{esc(e['name'])}</a>"
+                             if workfiles.preview_kind_for_name(e["name"]) else esc(e["name"]))
+                rows.append(f"<div class=list-row><div class=list-icon>{kind_icon}</div>"
+                           f"<div class=list-meta><b>{name_html}</b>"
                            f"<small>{esc(e['created_by'] or 'user')} · {size_kb} KB</small>"
                            f"{drive_html}{onedrive_html}{sharepoint_html}</div>"
                            f"<div class=list-actions>"
@@ -8568,6 +8805,7 @@ class Handler(BaseHTTPRequestHandler):
         i_html = f"<p class=info>{esc(info)}</p>" if info else ""
         main = (
             f"{e_html}{i_html}"
+            "<p id=upmsg style='display:none;white-space:pre-line'></p>"
             f"<div class=section><p class=muted>{' / '.join(crumbs)}</p>"
             f"<p class=muted>{listing['usage_mb']:.1f} / {listing['limit_mb']:.0f} MB · "
             f"{listing['item_count']} / {listing['limit_count']} items</p>"
@@ -8587,13 +8825,20 @@ class Handler(BaseHTTPRequestHandler):
             "<button class=btn>save</button></form></div>"
         )
         footer = (
-            "<form method=post action='/files/upload' enctype='multipart/form-data' style='display:contents'>"
+            "<form id=upform method=post action='/files/upload' enctype='multipart/form-data' "
+            "style='display:contents'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             f"<input type=hidden name=path value='{esc(cur)}'>"
-            "<input type=file name=file required style='flex:1'>"
+            "<input id=upfiles type=file name=file multiple required style='flex:1;min-width:0'>"
             "<button class='btn btn-primary'>upload</button></form>"
+            "<button type=button id=upfolderbtn class=btn>folder…</button>"
+            "<input id=upfolder type=file webkitdirectory hidden>"
         )
-        self.send(200, page_app("files", self._app_header(sess, self._hdr_back("Files")), main, footer))
+        upload_cfg = json.dumps({"csrf": sess["csrf"], "path": cur,
+                                 "maxFileBytes": int(workfiles.MAX_FILE_MB * 1024 * 1024)}
+                                ).replace("<", "\\u003c")
+        self.send(200, page_app("files", self._app_header(sess, self._hdr_back("Files")), main, footer,
+                                extra_js=FILES_UPLOAD_JS.replace("__CFG__", upload_cfg)))
 
     # -- avatars --
     @staticmethod
