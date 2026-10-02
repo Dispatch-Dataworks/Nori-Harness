@@ -164,9 +164,26 @@ _XAI_DEVICE_CODE_URL = "https://auth.x.ai/oauth2/device/code"
 _XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token"
 _XAI_SCOPE = ("openid profile email offline_access grok-cli:access api:access "
              "conversations:read conversations:write")
-_XAI_CLIENT_VERSION = "0.2.101"
+# The subscription proxy gates on this version label and rejects anything it
+# doesn't admit -- "Grok CLI is outdated: installed 0.2.101, required 1.0.13
+# or later" (2026-10-02, the operator's own report; the reference client,
+# pi-grok, bumped to 1.0.46 for the same reason the day before). It's a label
+# we have to keep current, not a version of anything Nori runs, so it's
+# overridable without a code change or rebuild: set NORI_XAI_CLIENT_VERSION in
+# .env and restart. The floor will keep moving.
+_XAI_CLIENT_VERSION = (os.environ.get("NORI_XAI_CLIENT_VERSION") or "").strip() or "1.0.46"
 _XAI_DEVICE_HEADERS = {"Content-Type": "application/x-www-form-urlencoded",
                        "x-grok-client-version": _XAI_CLIENT_VERSION, "x-grok-client-surface": "cli"}
+
+
+def _xai_platform_label() -> str:
+    """The `(os; arch)` suffix the reference client puts in its User-Agent
+    ("macos; aarch64", "windows; x86_64") -- mapped the same way, so ours
+    reads like a native client's rather than a bare name/version."""
+    import platform
+    system = {"darwin": "macos", "windows": "windows"}.get(platform.system().lower(), platform.system().lower())
+    arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(platform.machine().lower(), platform.machine().lower())
+    return f"{system}; {arch}"
 # The subscription (not pay-per-token) inference path -- a plain
 # api.x.ai API key does NOT ride this; it hits api.x.ai directly instead
 # (see xai_api_key/XAI_API_KEY_URL below). Responses-API-shaped
@@ -176,7 +193,8 @@ XAI_API_KEY_URL = "https://api.x.ai/v1/chat/completions"
 
 
 def _xai_proxy_headers(model_id: str | None = None) -> dict:
-    headers = {"User-Agent": f"grok-shell/{_XAI_CLIENT_VERSION}", "x-grok-client-identifier": "grok-shell",
+    headers = {"User-Agent": f"grok-shell/{_XAI_CLIENT_VERSION} ({_xai_platform_label()})",
+              "x-grok-client-identifier": "grok-shell",
               "x-grok-client-version": _XAI_CLIENT_VERSION, "x-grok-client-mode": "interactive",
               "X-XAI-Token-Auth": "xai-grok-cli", "x-authenticateresponse": "authenticate-response"}
     if model_id:
