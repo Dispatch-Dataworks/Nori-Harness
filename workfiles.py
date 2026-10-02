@@ -674,11 +674,56 @@ def _write(user_id: int, rel_path: str, data: bytes, *, created_by: str, human_a
     return {"ok": True, "path": rel, "size_bytes": len(data)}
 
 
+def _next_version_path(user_id: int, target: Path) -> Path | None:
+    """notes.txt -> notes.v2.txt, then notes.v3.txt, ... -- the first
+    name that doesn't already exist, so a version is NEVER overwritten
+    either (an earlier job's v2 stays put; the next write is v3). Returns
+    None if a valid name can't be built (e.g. the base name is already at
+    the length limit), leaving the caller to fall back to _write's own
+    refusal."""
+    for n in range(2, 1000):
+        name = f"{target.stem}.v{n}{target.suffix}"
+        try:
+            _validate_name(name)
+        except WorkfileError:
+            return None
+        if _existing_case(target.parent, name) == name and not (target.parent / name).exists():
+            return target.parent / name
+    return None
+
+
 def write_file(session: dict, path: str, content: str) -> dict:
     """Tool-facing: she writes a text file. Always attributed to her --
     the provenance rule (write_file can't overwrite a user's file) is
-    enforced inside _write for every non-human caller."""
-    return _write(session["user_id"], path, (content or "").encode("utf-8"), created_by="nori")
+    enforced inside _write for every non-human caller.
+
+    session["_versioned_writes"] (2026-10-02, operator's own ask; set only
+    by jobs.py for a sub-agent job, never from anything the model can
+    supply -- tool args can't reach the session) changes what happens on
+    that refusal: instead of an error, the write lands next to the
+    original as name.v2.ext (v3, v4... -- never overwriting an earlier
+    version either) and the result says so. Her own live-turn write_file
+    is unchanged: it still refuses, with the same error as before."""
+    user_id = session["user_id"]
+    data = (content or "").encode("utf-8")
+    if session.get("_versioned_writes"):
+        try:
+            target = _resolve(user_id, path)
+        except WorkfileError as exc:
+            return {"error": str(exc)}
+        if target.is_file():
+            row = _meta_row(user_id, _rel_key(user_id, target))
+            if not row or row["created_by"] != "nori":
+                versioned = _next_version_path(user_id, target)
+                if versioned is not None:
+                    result = _write(user_id, _rel_key(user_id, versioned), data, created_by="nori")
+                    if result.get("ok"):
+                        result["versioned_from"] = _rel_key(user_id, target)
+                        result["note"] = (f"{result['versioned_from']} already exists and wasn't created by "
+                                          f"you, so this was saved as {result['path']} instead -- the "
+                                          f"original is untouched.")
+                    return result
+    return _write(user_id, path, data, created_by="nori")
 
 
 def upload_file(session: dict, path: str, data: bytes) -> dict:
@@ -808,7 +853,9 @@ def _register_tools() -> None:
         {"type": "function", "function": {
             "name": "write_file",
             "description": ("Create a text file in the user's working folder, or overwrite one you "
-                            "created yourself. Can't overwrite a file the user placed there."),
+                            "created yourself. Can't overwrite a file the user placed there "
+                            "(in some contexts that's saved automatically as name.v2.ext "
+                            "beside it instead -- the result says when it was)."),
             "parameters": {"type": "object", "properties": {
                 "path": {"type": "string"}, "content": {"type": "string"}},
                 "required": ["path", "content"]}}},

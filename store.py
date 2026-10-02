@@ -1634,6 +1634,13 @@ _MIGRATIONS: list[str] = [
     # just by upgrading.
     "ALTER TABLE sub_agents ADD COLUMN tool_call_limit INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sub_agents ADD COLUMN tool_byte_limit INTEGER NOT NULL DEFAULT 2000000",
+    # Per-agent file-write and web access (2026-10-02, operator's own ask:
+    # "read only vs read write... another checkbox for search/fetch
+    # access") -- both 0 on every existing row, so nothing already
+    # configured gains a capability just by upgrading. See jobs.py's
+    # allowed_tool_names().
+    "ALTER TABLE sub_agents ADD COLUMN file_write INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE sub_agents ADD COLUMN web_access INTEGER NOT NULL DEFAULT 0",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

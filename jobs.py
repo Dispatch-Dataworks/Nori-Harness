@@ -31,14 +31,17 @@ what it always meant, no code path change, same request shape as before
 instead: a real tool-calling loop, but scoped hard in every direction
 that matters:
 
-  - Tools offered are a hardcoded allowlist (_SUBAGENT_TOOL_NAMES) --
-    list_files, read_file, and search_files ONLY. Never active_schemas
+  - Tools offered are a fixed allowlist (allowed_tool_names) --
+    list_files, read_file, and search_files by default. Never active_schemas
     (session), which would hand a sub-agent everything the DISPATCHING
-    user's own session can do, including admin-only tools. Read-only on
-    purpose: the "hand analysis back to Nori" need is already served by
-    `jobs.result` (check_job) -- write access would be new risk for no
-    capability the task actually needs. If that changes later, it's a
-    one-line addition to the allowlist, not a redesign.
+    user's own session can do, including admin-only tools. Read-only by
+    default: the "hand analysis back to Nori" need is already served by
+    `jobs.result` (check_job). As of 2026-10-02 (operator's own ask) an
+    admin can widen that per agent -- file_write adds write_file/
+    create_folder, web_access adds web_search/web_fetch -- each its own
+    checkbox on the roster entry, off unless set. That is the one-line
+    allowlist addition this paragraph used to say it would be, still not a
+    redesign: nothing else about the sandbox changed.
   - Every tool call runs through tools.dispatch(name, args, session) --
     the same single enforcement point every other tool call in this app
     goes through (containment, rate-limiting, the works) -- never a
@@ -116,27 +119,55 @@ import usertime
 DEFAULT_TIMEOUT_S = int(os.environ.get("NORI_SUBAGENT_TIMEOUT_S", "120"))
 MAX_TASK_CHARS = 8000
 
-# Read-only, working-folder-only, and nothing else -- see module docstring.
-# search_files added 2026-09-14 alongside the rest of this file's own
-# access-improvement work -- same read-only, working-folder-only scope as
-# the other two, registered normally (tools._REGISTRY), so this list is
-# just naming which already-general tools a sub-agent gets.
-_SUBAGENT_TOOL_NAMES = ("list_files", "read_file", "search_files")
+# Every sub-agent gets the read-only set; file_write and web_access
+# (sub_agents columns, 2026-10-02, operator's own ask) each add one more
+# fixed group, per agent, off by default. Never a free-form list -- an
+# admin picks a checkbox, not tool names. search_files was added
+# 2026-09-14 alongside the rest of this file's own access-improvement work.
+#
+# Write is write_file + create_folder only, deliberately NOT move_file or
+# delete_file: write_file already refuses to overwrite anything she didn't
+# create herself (workfiles._write's provenance rule -- a sub-agent
+# dispatches under the SAME session, so it inherits that for free), and
+# move_file has no such protection, so a sub-agent could relocate a file
+# the operator placed. Web is web_search + web_fetch, which keep their own
+# gating (the web_*_enabled settings, the write-mode/allow-list rules for
+# any non-GET fetch) -- nothing here widens that.
+_READ_TOOL_NAMES = ("list_files", "read_file", "search_files")
+_WRITE_TOOL_NAMES = ("write_file", "create_folder")
+_WEB_TOOL_NAMES = ("web_search", "web_fetch")
+_SUBAGENT_TOOL_NAMES = _READ_TOOL_NAMES  # the default every agent has
+
+
+def allowed_tool_names(agent: dict) -> tuple[str, ...]:
+    """The one place a sub-agent's tool allowlist is decided -- used both
+    to build the schema it's offered and to refuse anything outside it
+    before dispatch, so the two can never drift apart."""
+    names = list(_READ_TOOL_NAMES)
+    if agent.get("file_write"):
+        names += _WRITE_TOOL_NAMES
+    if agent.get("web_access"):
+        names += _WEB_TOOL_NAMES
+    return tuple(names)
+
 
 # What a sub-agent job actually can't do, built FROM the real constants
 # above (2026-09-15) rather than restated as separate hand-written prose --
-# if DEFAULT_TIMEOUT_S/MAX_TASK_CHARS/_SUBAGENT_TOOL_NAMES ever change,
-# this sentence changes with them instead of quietly going stale. The
+# if DEFAULT_TIMEOUT_S/MAX_TASK_CHARS/the tool groups ever change, this
+# sentence changes with them instead of quietly going stale. The
 # raw_file_access exception is described here too since it's the one
-# documented, deliberate way this default set of limits can widen.
+# documented, deliberate way this default set of limits can widen per job.
 SUBAGENT_LIMITS_EXPLAIN = (
-    f"A sub-agent job runs read-only by default -- only {', '.join(_SUBAGENT_TOOL_NAMES)} are "
-    f"available (no writes, no web, no other tool), a task description is capped at "
-    f"{MAX_TASK_CHARS} characters, and the whole job has one hard wall-clock deadline of "
-    f"{DEFAULT_TIMEOUT_S} seconds with no retry or resumption past it. raw_file_access, when "
-    f"explicitly granted per job, adds one exception: reading a file's real content directly "
-    f"rather than the summary-only containment read_file normally applies -- still no write "
-    f"access, still scoped to the working folder like everything else here."
+    f"A sub-agent job runs read-only by default -- only {', '.join(_READ_TOOL_NAMES)} are "
+    f"available, a task description is capped at {MAX_TASK_CHARS} characters, and the whole job "
+    f"has one hard wall-clock deadline of {DEFAULT_TIMEOUT_S} seconds with no retry or "
+    f"resumption past it. Each roster entry can ALSO be configured by the admin (see "
+    f"configured_roster) with file_write ({', '.join(_WRITE_TOOL_NAMES)} -- still can't overwrite "
+    f"a file someone else placed; a would-be overwrite is saved beside it as name.v2.ext instead) and/or web_access ({', '.join(_WEB_TOOL_NAMES)}); neither is on "
+    f"unless that entry says so, and both need a nonzero tool_call_limit to do anything. "
+    f"raw_file_access, when explicitly granted per job, adds one more exception: reading a "
+    f"file's real content directly rather than the summary-only containment read_file normally "
+    f"applies."
 )
 
 # ── the deliberate hole (2026-09-14, operator's own ask) ─────────────────
@@ -224,9 +255,9 @@ def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int) -> No
         _update(job_id, status="failed", error=str(exc)[:500], finished_ts=time.time())
 
 
-def _subagent_tools_schema(raw_file_access: bool) -> list[dict]:
+def _subagent_tools_schema(agent: dict, raw_file_access: bool) -> list[dict]:
     import tools
-    schema = [s for s in (tools.schema_for(n) for n in _SUBAGENT_TOOL_NAMES) if s is not None]
+    schema = [s for s in (tools.schema_for(n) for n in allowed_tool_names(agent)) if s is not None]
     if raw_file_access:
         schema.append(_RAW_READ_SCHEMA)
     return schema
@@ -243,13 +274,20 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                         raw_file_access: bool = False) -> None:
     """See module docstring for the full reasoning -- this is the same
     dispatch a normal turn's tool round uses (tools.dispatch), scoped to a
-    hardcoded read-only allowlist, with the caller's own session threaded
-    through untouched."""
+    fixed allowlist (read-only unless this agent's file_write/web_access
+    say otherwise -- see allowed_tool_names), with the caller's own
+    session threaded through untouched."""
     import tools  # local: same reasoning as every other subsystem module
 
+    # Sub-agent writes version instead of failing when they'd hit a file
+    # someone else placed -- see workfiles.write_file. On a copy, so the
+    # flag can't leak into the dispatching session's own later use (the
+    # completion-trigger turn in _run_job builds its own session anyway).
+    session = {**session, "_versioned_writes": True}
     _update(job_id, status="running", started_ts=time.time())
     deadline = time.time() + timeout_s
-    tool_schema = _subagent_tools_schema(raw_file_access)
+    tool_schema = _subagent_tools_schema(agent, raw_file_access)
+    allowed = allowed_tool_names(agent)
     messages = [{"role": "user", "content": task}]
     call_limit = agent["tool_call_limit"]
     byte_limit = agent["tool_byte_limit"]
@@ -308,7 +346,7 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                     result = workfiles.read_file(session, call_args.get("path", ""), preserve_content=True)
                     calls_used += 1
                     bytes_used += _result_bytes(result)
-                elif name not in _SUBAGENT_TOOL_NAMES:
+                elif name not in allowed:
                     result = {"error": f"tool {name!r} is not available to sub-agents"}
                 else:
                     result = tools.dispatch(name, call_args, session)

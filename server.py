@@ -3931,9 +3931,14 @@ class Handler(BaseHTTPRequestHandler):
         model_by_id = {m["id"]: m for m in models.list_all()}
         job_counts = sub_agents.job_counts()
         def _row(a: dict) -> str:
-            tools_desc = ("no tools" if a["tool_call_limit"] == 0 else
-                         f"up to {a['tool_call_limit']} tool call(s), "
-                         f"{a['tool_byte_limit']:,} bytes/job")
+            if a["tool_call_limit"] == 0:
+                tools_desc = "no tools"
+            else:
+                access = ["read-write files" if a["file_write"] else "read-only files"]
+                if a["web_access"]:
+                    access.append("web")
+                tools_desc = (f"up to {a['tool_call_limit']} tool call(s), "
+                             f"{a['tool_byte_limit']:,} bytes/job, {' + '.join(access)}")
             m = model_by_id.get(a["model_id"])
             model_desc = m["alias"] if m else "(no model configured)"
             jc = job_counts.get(a["id"], 0)
@@ -3955,7 +3960,11 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=number name=tool_byte_limit min={sub_agents.TOOL_BYTE_LIMIT_MIN} "
                 f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={a['tool_byte_limit']} "
                 f"style='width:8em;margin-left:.3em'></label>"
-                f"<button class='btn'>save limits</button></form></div>"
+                f"<label style='font-size:.85em'><input type=checkbox name=file_write"
+                f"{' checked' if a['file_write'] else ''}> can write files</label>"
+                f"<label style='font-size:.85em'><input type=checkbox name=web_access"
+                f"{' checked' if a['web_access'] else ''}> web search/fetch</label>"
+                f"<button class='btn'>save</button></form></div>"
                 f"<div class=list-actions><form method=post action='/admin/subagents/{a['id']}/toggle'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<button class='btn'>{'disable' if a['enabled'] else 'enable'}</button></form>"
@@ -4008,8 +4017,17 @@ class Handler(BaseHTTPRequestHandler):
             f"<option value='{m['id']}'>{esc(m['alias'])}</option>" for m in models.list_enabled())
         call_limit_tip = info_tip(
             "0 means no tools at all -- a plain completion, same as every sub-agent before this "
-            "existed. Above 0, it can read (not write) your own working folder via list_files/"
-            "read_file, up to this many calls, one job at a time.")
+            "existed, and the two checkboxes below do nothing. Above 0, it can read your own working "
+            "folder via list_files/read_file/search_files, up to this many calls, one job at a time.")
+        file_write_tip = info_tip(
+            "Adds write_file and create_folder in your working folder. It still can't overwrite or "
+            "replace a file you placed yourself -- only ones Nori (or a sub-agent) created -- and "
+            "can't move or delete anything. Off = read-only.")
+        web_access_tip = info_tip(
+            "Adds web_search and web_fetch, still subject to the Web search/fetch settings tab (on/off, "
+            "write mode, allow/deny rules). Worth knowing: an agent that can both read your files and "
+            "fetch URLs can in principle be talked into sending file content out in a request, "
+            "especially if it reads something untrusted -- turn this on only for agents that need it.")
         byte_limit_tip = info_tip(
             "Cumulative cap across every tool result in one job -- only matters when tool calls are "
             "allowed above. 100 calls each returning a large file costs very differently than 100 "
@@ -4025,6 +4043,10 @@ class Handler(BaseHTTPRequestHandler):
             f"<div class=field><label>bytes read per job {byte_limit_tip}</label>"
             f"<input type=number name=tool_byte_limit min={sub_agents.TOOL_BYTE_LIMIT_MIN} "
             f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={sub_agents.TOOL_BYTE_LIMIT_DEFAULT}></div>"
+            f"<div class=field><label><input type=checkbox name=file_write> can write files "
+            f"{file_write_tip}</label></div>"
+            f"<div class=field><label><input type=checkbox name=web_access> web search/fetch "
+            f"{web_access_tip}</label></div>"
             "<button class='btn btn-primary btn-block'>add</button></form>"
         ) if model_opts else (
             "<p class=muted>no enabled models yet -- add one in "
@@ -4086,7 +4108,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.subagents_admin_form(sess, "tool limits and model must be valid")
         ok, result = sub_agents.create(
-            sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit)
+            sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit,
+            file_write="file_write" in form, web_access="web_access" in form)
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -4164,6 +4187,7 @@ class Handler(BaseHTTPRequestHandler):
         err = sub_agents.set_limits(sid, call_limit, byte_limit)
         if err:
             return self.subagents_admin_form(sess, err)
+        sub_agents.set_access(sid, "file_write" in form, "web_access" in form)
         return self.subagents_admin_form(sess)
 
     # -- admin: Providers + model roster + primary/fallback chain. Controls
