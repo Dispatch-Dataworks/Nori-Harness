@@ -8276,9 +8276,13 @@ class Handler(BaseHTTPRequestHandler):
     def files_delete_post(self, sess: dict, form: dict):
         rel = form.get("path") or ""
         target_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
-        result = workfiles.delete_file_ui(sess, rel)
+        result = workfiles.delete_file_ui(sess, rel, recursive=bool(form.get("recursive")))
         if "error" in result:
             return self.files_page(sess, target_dir, err=result["error"])
+        if result.get("files") or result.get("folders"):
+            return self.files_page(sess, target_dir, info=(
+                f"deleted the folder and everything in it ({result['files']} file(s), "
+                f"{result['folders']} subfolder(s))"))
         return self.files_page(sess, target_dir, info="deleted")
 
     def files_vision_post(self, sess: dict, form: dict):
@@ -8475,12 +8479,30 @@ class Handler(BaseHTTPRequestHandler):
         for e in listing["entries"]:
             qp = urllib.parse.quote(e["path"])
             if e["kind"] == "folder":
+                # Recursive delete (2026-10-02, operator's own ask): the
+                # form always sends recursive=1, but only a non-empty
+                # folder gets a confirm -- and that one says exactly what's
+                # inside, since it can't be undone. An empty folder
+                # deletes as it always did.
+                st = workfiles.folder_stats(sess, e["path"])
+                n_items = st["files"] + st["folders"]
+                if n_items:
+                    size_txt = (f"{st['bytes'] / 1_048_576:.1f} MB" if st["bytes"] >= 1_048_576
+                                else f"{max(1, st['bytes'] // 1024)} KB")
+                    confirm_msg = (f"Delete the folder {e['name']!r} and EVERYTHING inside it -- "
+                                   f"{st['files']} file(s), {st['folders']} subfolder(s), {size_txt}? "
+                                   f"This can't be undone.")
+                    confirm_attr = f" data-confirm=\"{esc(confirm_msg)}\""
+                    meta_txt = f"folder · {st['files']} file(s), {st['folders']} subfolder(s)"
+                else:
+                    confirm_attr, meta_txt = "", "folder · empty"
                 rows.append(f"<div class=list-row><div class=list-icon>📁</div>"
                            f"<div class=list-meta><b><a href='/files?path={qp}'>{esc(e['name'])}</a></b>"
-                           f"<small>folder</small></div>"
-                           f"<div class=list-actions><form method=post action='/files/delete'>"
+                           f"<small>{meta_txt}</small></div>"
+                           f"<div class=list-actions><form method=post action='/files/delete'{confirm_attr}>"
                            f"<input type=hidden name=csrf value='{csrf}'>"
                            f"<input type=hidden name=path value='{esc(e['path'])}'>"
+                           f"<input type=hidden name=recursive value=1>"
                            f"<button class=icon-action aria-label=Delete>✕</button></form></div></div>")
             else:
                 size_kb = max(1, e["size_bytes"] // 1024)

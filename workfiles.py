@@ -805,16 +805,60 @@ def create_folder(session: dict, path: str) -> dict:
     return {"ok": True, "path": _rel_key(user_id, target)}
 
 
-def _delete(user_id: int, rel_path: str, *, human_action: bool = False) -> dict:
+def _meta_delete_tree(user_id: int, rel: str) -> None:
+    """Every work_files row under a deleted folder. substr comparison
+    rather than LIKE: a folder name can legitimately contain % or _, and
+    those would act as wildcards in a LIKE pattern."""
+    prefix = rel + "/"
+    store.write(lambda c: c.execute(
+        "DELETE FROM work_files WHERE user_id=? AND substr(rel_path, 1, ?) = ?",
+        (user_id, len(prefix), prefix)))
+
+
+def folder_stats(session: dict, path: str) -> dict:
+    """{"files", "folders", "bytes"} under a folder (not counting the
+    folder itself) -- for the files page's delete confirmation, so it can
+    say exactly what a recursive delete is about to remove. Never part of
+    any model-facing tool."""
+    try:
+        target = _resolve(session["user_id"], path)
+    except WorkfileError:
+        return {"files": 0, "folders": 0, "bytes": 0}
+    files = folders = size = 0
+    if target.is_dir():
+        for dirpath, dirnames, filenames in os.walk(target):
+            folders += len(dirnames)
+            files += len(filenames)
+            for f in filenames:
+                try:
+                    size += (Path(dirpath) / f).stat().st_size
+                except OSError:
+                    pass
+    return {"files": files, "folders": folders, "bytes": size}
+
+
+def _delete(user_id: int, rel_path: str, *, human_action: bool = False, recursive: bool = False) -> dict:
     try:
         target = _resolve(user_id, rel_path)
     except WorkfileError as exc:
         return {"error": str(exc)}
+    if target == _user_root(user_id):
+        return {"error": "can't delete the working folder itself"}
     if not target.exists():
         return {"error": "no such file or folder"}
     if target.is_dir():
         if any(target.iterdir()):
-            return {"error": "that folder isn't empty"}
+            # Recursive delete is a human-only act (the files page's own
+            # confirmed button): human_action AND recursive must both be
+            # set, so no model-facing tool -- delete_file passes neither --
+            # can ever reach the rmtree below, whatever it's asked for.
+            if not (human_action and recursive):
+                return {"error": "that folder isn't empty"}
+            stats = folder_stats({"user_id": user_id}, rel_path)
+            rel = _rel_key(user_id, target)
+            shutil.rmtree(target)  # symlinks inside are unlinked, never followed
+            _meta_delete_tree(user_id, rel)
+            return {"ok": True, **stats}
         target.rmdir()
         return {"ok": True}
     rel = _rel_key(user_id, target)
@@ -832,8 +876,12 @@ def delete_file(session: dict, path: str) -> dict:
     return _delete(session["user_id"], path)
 
 
-def delete_file_ui(session: dict, path: str) -> dict:
-    return _delete(session["user_id"], path, human_action=True)
+def delete_file_ui(session: dict, path: str, *, recursive: bool = False) -> dict:
+    """The files page's own delete -- human_action skips the provenance
+    check. recursive=True (2026-10-02, operator's own ask) additionally
+    allows removing a non-empty folder and everything in it; the page
+    only sends it from a confirm-dialog'd form that states what's inside."""
+    return _delete(session["user_id"], path, human_action=True, recursive=recursive)
 
 
 def move_file(session: dict, from_path: str, to_path: str) -> dict:
