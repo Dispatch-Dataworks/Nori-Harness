@@ -38,6 +38,7 @@ import mimetypes
 import os
 import re
 import socket
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9794,6 +9795,14 @@ def main() -> int:
     swept = jobs.sweep_orphaned()
     peers.start()
     scheduler.start()
+    if swept:
+        # A restart killed these mid-flight (every deploy does) -- tell him,
+        # in the background and after a short settle, instead of leaving
+        # them to vanish from the conversation with no word.
+        def _announce_swept():
+            time.sleep(8)
+            jobs.announce_interrupted(swept)
+        threading.Thread(target=_announce_swept, daemon=True, name="announce-interrupted-jobs").start()
     print(f"nori on http://{BIND_HOST}:{PORT}  (secure-cookie={SECURE_COOKIE})  "
          f"({n} generated tool(s), {m} MCP server(s), {p} peer(s) loaded, "
          f"{len(swept)} orphaned job(s) swept)", flush=True)

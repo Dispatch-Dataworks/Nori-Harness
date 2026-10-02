@@ -876,21 +876,13 @@ def _message_user_impl(session: dict, text: str) -> dict:
     # export exactly as asked. See conversation.render_for_model() for
     # where this actually reaches her on a later turn.
     #
-    # kind/meta branch on WHICH kind of self-initiated turn this is
-    # (2026-09-14, generalized for jobs.py's sub-agent-completion trigger
-    # -- see that module's _trigger_turn_for_job): a peer-motivated turn
-    # keeps its own established shape (kind='peer_proactive', meta.peer
-    # set) exactly as before; a job-completion turn is a genuinely
-    # different situation (no peer involved) and gets its own kind
-    # ('job_proactive') and its own meta key (job_agent) instead of a
-    # meaningless meta.peer=None sitting next to it.
-    if session.get("_job_context"):
-        meta = {"job_agent": session.get("_job_context"), "reason": session.get("_turn_reason")}
-        kind = "job_proactive"
-    else:
-        meta = {"peer": session.get("_peer_context"), "reason": session.get("_turn_reason")}
-        kind = "peer_proactive"
-    conversation.add_message(user_id, "assistant", text, kind=kind,
+    # (A sub-agent job's completion used to be a third kind of caller here,
+    # with its own 'job_proactive' branch. As of 2026-10-02 it isn't: those
+    # turns persist their reply directly and always speak -- see
+    # jobs._trigger_turn_for_job -- so message_user is never offered in
+    # one, and there is exactly one message, not two.)
+    meta = {"peer": session.get("_peer_context"), "reason": session.get("_turn_reason")}
+    conversation.add_message(user_id, "assistant", text, kind="peer_proactive",
                              emotion=emotion.get_state(user_id), meta=meta)
     return {"ok": True}
 
@@ -904,8 +896,8 @@ def _register_message_user_tool() -> None:
                             "way a turn like this can reach him at all; otherwise it stays entirely "
                             "private, which is the normal, correct outcome most of the time. "
                             "Whether this particular thing is worth it is explained just above, "
-                            "alongside whatever prompted this turn (a peer's message, a finished "
-                            "job) -- read that, not this, before deciding."),
+                            "alongside whatever prompted this turn (a peer's message, a scheduled "
+                            "task) -- read that, not this, before deciding."),
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "What to actually tell him, in your own "
                         "words -- not a copy of the peer's message or the raw job result."}},
@@ -913,17 +905,15 @@ def _register_message_user_tool() -> None:
         _message_user_impl, min_role="member", data_scope="self", risk_tier="B",
         consequential=True,
         # Visible only during a turn some self-initiated trigger built for
-        # this purpose -- a peer exchange (_run_prompted_turn), a finished
-        # sub-agent job (jobs._trigger_turn_for_job), or a scheduled task
-        # that reports elsewhere by default (scheduler._fire_schedule,
+        # this purpose -- a peer exchange (_run_prompted_turn) or a
+        # scheduled task that reports elsewhere by default (scheduler._fire_schedule,
         # 2026-09-15 -- deliver_to='peer'/'none'; a deliver_to='user'/'both'
         # schedule already speaks to him via its own persisted reply, same
         # as scheduler._send_proactive, so this is its exception valve, not
         # its normal channel). An ordinary live chat turn never sets any of
         # these flags, so it never sees this tool at all -- it already has
         # its own, better way to reach him: replying normally.
-        owner_check=lambda session: bool(session.get("_peer_context") or session.get("_job_context")
-                                         or session.get("_schedule_context"))))
+        owner_check=lambda session: bool(session.get("_peer_context") or session.get("_schedule_context"))))
 
 
 _register_message_user_tool()

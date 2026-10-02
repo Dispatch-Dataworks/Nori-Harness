@@ -545,54 +545,82 @@ def _run_job(job_id: int, agent: dict, task: str, timeout_s: int, session: dict,
                              row["status"], row["result"], row["error"])
 
 
-# ── waking her up for a finished job (2026-09-14, operator's own ask) ────
+# ── waking her up when a job ends, and TELLING him (2026-09-14, reworked 2026-10-02) ──
 # check_job/list_jobs used to be the ONLY way a finished job ever reached
 # her -- exactly the "invisible until polled" gap passive delivery closed
 # for peer messages (the PACI specification §6/§9.4/§13), just never closed here.
-# This closes it the same way: completion triggers a real turn through
-# turns.run() (never a fourth path around the per-user lock), with the
-# job's own result already sitting in that turn's own prompt -- not a
-# pending-content mechanism the model has to be shown exists and reach
-# for, since a job only ever finishes once, unlike a peer channel that
-# keeps producing new content indefinitely. An ambient
-# pending-messages-style layer (context.py's own include_peer_pending
-# flag) would be the wrong tool for a single, one-time event.
+# 2026-09-14 closed the first half: completion triggers a real turn through
+# turns.run() (never a fourth path around the per-user lock), with the job's
+# own result already sitting in that turn's own prompt.
 #
-# Deliberately bypasses scheduler.py's ping_window/ping_min_gap_min (and
-# does not check ping_enabled at all) -- the operator's own instruction:
-# those gate whether a HOUSEHOLD-SIGNAL ping is a good time to speak, a
-# question that doesn't apply to "your own dispatched work just
-# finished." Scoped to this one trigger alone -- nothing here touches
-# scheduler.py, so an ordinary proactive ping's own timing is completely
-# unaffected. Quiet HOURS are untouched on purpose, not merely
-# unmentioned: notify_quiet_start/end gates only the browser's own local
-# push notification (server.py's client-side inQuiet()/notify()), keyed
-# off message kind/role/tab-hidden state uniformly -- never whether a
-# turn runs or a message gets persisted. Confirmed directly before
-# writing this: a message_user call made during this turn at 3am is
-# already silently un-notified until quiet hours end, the same as any
-# other message kind already is -- nothing to change there, nothing to
-# bypass.
+# 2026-10-02 (operator's own report: "she sits quietly and waits for me to
+# ask about a job status"): that turn was SILENT by design -- her reply was
+# thrown away and the prompt told her most results didn't need to interrupt
+# him, leaving message_user as an optional valve she mostly didn't use. The
+# result was a job finishing, failing or timing out and nobody hearing about
+# it. Now the turn speaks, scheduler._send_proactive-shaped: her reply IS a
+# message to him (kind='job_proactive'), written as a brief status update,
+# every time, for every way a job can end -- done, incomplete, failed,
+# timed_out, and interrupted by a restart (announce_interrupted, at startup).
+# message_user is no longer offered in these turns, so there's exactly one
+# message, not two.
 #
-# Fires on EVERY terminal status -- done, failed, AND timed_out -- not
-# successful jobs alone. Chosen deliberately: a job that failed or hung
-# and nobody ever finds out is the exact same "invisible until polled"
-# failure this feature exists to close, arguably worse than a successful
-# one going unnoticed. Whether that outcome is worth actually telling
-# him about is a separate decision, made below by the model itself
-# (message_user), not by this trigger.
+# Three ways the update used to be lost, each closed:
+#   - The user was mid-conversation: turns.run() returns {"queued": True} for
+#     a user whose lock is held, and the old code ignored that -- with
+#     woken_ts already stamped, the completion was gone for good. Now it
+#     retries until the live turn finishes (a background thread, so waiting
+#     is free), up to WAKE_RETRY_WINDOW_S.
+#   - The model call failed, or she replied with nothing. Now a plain,
+#     harness-written status line is posted instead -- facts only, never the
+#     sub-agent's own text (conversation history is fed back to her later,
+#     so unscreened sub-agent output must not be written into it).
+#   - The turn raised unexpectedly. Same fallback.
 #
-# Silent by default -- peer-turn-shaped, not proactive-ping-shaped. The
-# model's own final reply text is NOT persisted as a message to him
-# (mirroring peers._run_prompted_turn's own silence-by-default, not
-# scheduler._send_proactive's always-speaks shape): a job finishing at
-# 3am with an unremarkable result shouldn't default to interrupting him.
-# Real tool calls still log unconditionally (kind='tool', regardless of
-# what triggered the turn, same as ever). message_user -- now open to
-# this trigger too, see peers.py's generalized owner_check -- is the one
-# deliberate way this turn reaches him, decided by the model, framed by
-# the actual result sitting right there in the prompt, not by this
-# function's own judgment.
+# Still deliberately bypasses scheduler.py's ping_window/ping_min_gap_min and
+# ping_enabled -- those gate whether a HOUSEHOLD-SIGNAL ping is a good time to
+# speak, which doesn't apply to "your own dispatched work just ended." Quiet
+# HOURS only gate the browser's own local push notification (server.py's
+# client-side inQuiet()/notify()), never whether a turn runs or a message is
+# persisted, so a 3am update is stored and shown, just not pushed until
+# quiet hours end -- the same as every other message kind.
+WAKE_RETRY_INTERVAL_S = 5
+WAKE_RETRY_WINDOW_S = 15 * 60
+
+_STATUS_WORDS = {
+    "done": "finished",
+    "incomplete": "finished but is INCOMPLETE",
+    "failed": "FAILED",
+    "timed_out": "TIMED OUT",
+    "interrupted": "was INTERRUPTED by a server restart",
+}
+
+
+def _post_status_fallback(user_id: int, job_id: int, agent_label: str, status: str,
+                          error: str | None, note: str) -> None:
+    """The guaranteed floor: a plain, harness-voiced status message, posted
+    when the model turn couldn't (or didn't) say anything. Only harness
+    facts -- status, the harness's own check, and the error text (which is
+    the system's or the provider's, not the sub-agent's words) -- never
+    the sub-agent's result: this lands in conversation history, which is
+    rendered back to her on later turns, so unscreened sub-agent output
+    must not be written there."""
+    import conversation
+    import emotion
+
+    parts = [f"Sub-agent job #{job_id} ({agent_label}) {_STATUS_WORDS.get(status, status)}."]
+    if status != "done" and error:
+        parts.append(f"Details: {error[:300]}")
+    if note and note not in " ".join(parts):
+        parts.append(f"Harness check: {note[:400]}")
+    if status in ("done", "incomplete"):
+        parts.append(f"The result is waiting -- ask me and I'll read job #{job_id} out.")
+    conversation.add_message(user_id, "assistant", " ".join(parts), kind="job_proactive",
+                             emotion=emotion.get_state(user_id),
+                             meta={"job_agent": agent_label, "job_id": job_id, "fallback": True,
+                                   "reason": f"sub-agent job #{job_id} ({agent_label}) {_STATUS_WORDS.get(status, status)}"})
+
+
 def _trigger_turn_for_job(job_id: int, user_id: int, agent_label: str, task: str,
                           status: str, result: str | None, error: str | None) -> None:
     # Local imports: jobs.py is reachable from context.py (jobs.digest_line),
@@ -615,12 +643,10 @@ def _trigger_turn_for_job(job_id: int, user_id: int, agent_label: str, task: str
     _update(job_id, woken_ts=time.time())  # stamped before running -- see module comment: belt-and-
                                            # suspenders against ever waking her twice for the same completion
 
-    if status == "done":
-        outcome = "finished successfully"
-    elif status == "incomplete":
-        outcome = "finished, but the harness's own check says it is INCOMPLETE"
-    else:
-        outcome = f"did not finish cleanly ({status})"
+    outcome = {"done": "finished successfully",
+               "incomplete": "finished, but the harness's own check says it is INCOMPLETE",
+               "interrupted": "was interrupted by a server restart and never finished"
+               }.get(status, f"did not finish cleanly ({status})")
     # Screened before it ever reaches her prompt (2026-09-14, operator's
     # own ask) -- a sub-agent's own final text is model output, not raw
     # file bytes, but it can still QUOTE raw content it read (more so now
@@ -642,24 +668,44 @@ def _trigger_turn_for_job(job_id: int, user_id: int, agent_label: str, task: str
     note = completion_note(dict(job_row)) if job_row is not None else ""
     harness = (f"\n\nHARNESS CHECK (computed by the harness from what it observed, not reported by "
                f"the sub-agent): {note}") if note else ""
+    # The error text is the system's own (a provider failure, a timeout, the
+    # restart reason), not the sub-agent's -- so it can be stated plainly,
+    # unlike the screened result above.
+    failure = (f"\n\nWhat went wrong: {error[:600]}" if error and status in ("failed", "timed_out", "interrupted")
+               else "")
     prompt = (f"A sub-agent job you dispatched ({agent_label}) has just {outcome}. This is why "
-             f"you're getting a turn right now, regardless of the time or your usual check-in "
-             f"schedule -- completion, not a signal you had to notice on your own.\n\n"
-             f"Task you gave it: {task[:2000]}\n\nResult:\n{body}{flag}{harness}\n\n"
-             f"Decide for yourself whether this is worth telling him about now (message_user) or "
-             f"can simply wait until he next asks or looks on his own -- most job results don't "
-             f"need to interrupt him, especially outside normal hours.")
+             f"you're getting a turn right now, regardless of the time -- the job's end, not "
+             f"something you had to notice on your own.\n\n"
+             f"Task you gave it: {task[:2000]}\n\nResult:\n{body}{flag}{harness}{failure}\n\n"
+             f"Tell him now, as a brief status update in your own voice -- every job gets one, "
+             f"whether it went well or not. Say which job it was, how it ended (finished, "
+             f"incomplete, failed, timed out, interrupted), the specific finding or the specific "
+             f"problem, and what you'll do or suggest next. Don't soften a failure or an "
+             f"incomplete job into a success, and don't quote the result at length. Your reply "
+             f"is the message he'll see -- there's no separate tool to send it.")
 
     def _run():
         session = {"user_id": user_id, "workspace_id": user["workspace_id"], "role": user["role"],
-                  "_job_context": agent_label, "_turn_reason": reason}
+                  "_turn_reason": reason}
         extra = {"role": "system", "content": prompt}
         turn = timing.start(session["workspace_id"], "job_proactive")
         try:
-            chat.run(session, user_id, user["display_name"], extra_message=extra,
-                    max_rounds=config.get("user", user_id, "tool_rounds_proactive"), timing_turn=turn)
+            res = chat.run(session, user_id, user["display_name"], extra_message=extra,
+                          max_rounds=config.get("user", user_id, "tool_rounds_proactive"), timing_turn=turn)
         except chat.ModelError:
-            pass
+            turn.finish()
+            _post_status_fallback(user_id, job_id, agent_label, status, error, note)
+            return {"ok": True, "fallback": True}
+        text = (res.get("text") or "").strip()
+        if not text:
+            turn.finish()
+            _post_status_fallback(user_id, job_id, agent_label, status, error, note)
+            return {"ok": True, "fallback": True}
+        with turn.stage("persist_reply"):
+            conversation.add_message(user_id, "assistant", text, kind="job_proactive",
+                                     emotion=emotion.get_state(user_id),
+                                     meta={"job_agent": agent_label, "job_id": job_id, "reason": reason,
+                                           **conversation.cost_meta(res["usage"])})
         turn.finish()
         return {"ok": True}
 
@@ -692,7 +738,45 @@ def _trigger_turn_for_job(job_id: int, user_id: int, agent_label: str, task: str
     # one's usually called from a live request handler, where blocking
     # would delay an HTTP response). turns.run() is still the real
     # correctness guarantee against a live turn for this user either way.
-    turns.run(user_id, _run, _sweep)
+    #
+    # {"queued": True} means this user is mid-turn RIGHT NOW (he's talking to
+    # her). That used to silently drop the update -- see the block comment
+    # above. Wait for his turn to finish, then run; and if it somehow never
+    # frees up, say it with the plain fallback rather than not at all.
+    deadline = time.time() + WAKE_RETRY_WINDOW_S
+    try:
+        while True:
+            outcome_run = turns.run(user_id, _run, _sweep)
+            if not outcome_run.get("queued"):
+                return
+            if time.time() >= deadline:
+                _post_status_fallback(user_id, job_id, agent_label, status, error, note)
+                return
+            time.sleep(WAKE_RETRY_INTERVAL_S)
+    except Exception as exc:  # noqa: BLE001 -- a job's end must never go unannounced because of a bug here
+        print(f"jobs._trigger_turn_for_job: job #{job_id} announcement failed ({type(exc).__name__}: {exc}); "
+              f"posting the plain status instead", flush=True)
+        try:
+            _post_status_fallback(user_id, job_id, agent_label, status, error, note)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def announce_interrupted(swept: list[dict]) -> None:
+    """Tell him about jobs a restart killed (2026-10-02). sweep_orphaned()
+    deliberately never fired the completion turn -- nothing FINISHED, so it
+    shouldn't read as though it did -- but the other half of that was a
+    job vanishing from a conversation with no word at all, on every deploy.
+    This is the same update, worded as what it is (interrupted, no result
+    captured), one per job. Run from a background thread after startup."""
+    for r in swept:
+        row = store.read(lambda c: c.execute(
+            "SELECT j.id, j.user_id, j.task, j.error, a.label FROM jobs j "
+            "JOIN sub_agents a ON a.id = j.sub_agent_id WHERE j.id=?", (r["id"],)).fetchone())
+        if row is None:
+            continue
+        _trigger_turn_for_job(row["id"], row["user_id"], row["label"], row["task"],
+                              "interrupted", None, row["error"])
 
 
 MAX_EXPECTED_OUTPUTS = 50
