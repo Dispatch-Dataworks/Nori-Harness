@@ -1641,6 +1641,12 @@ _MIGRATIONS: list[str] = [
     # allowed_tool_names().
     "ALTER TABLE sub_agents ADD COLUMN file_write INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE sub_agents ADD COLUMN web_access INTEGER NOT NULL DEFAULT 0",
+    # Per-agent write scope (2026-10-02, operator's own ask: "let an agent
+    # write only inside a designated manuscript/output folder") -- a path
+    # relative to the dispatching user's working folder. '' (every existing
+    # row) means unscoped, exactly as before. Only meaningful with
+    # file_write on.
+    "ALTER TABLE sub_agents ADD COLUMN write_folder TEXT NOT NULL DEFAULT ''",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

@@ -243,6 +243,116 @@ class JobLoopEnforcesPerAgentAccess(unittest.TestCase):
         self.assertTrue(results2[0].get("ok"), results2)
 
 
+class WriteFolderScope(unittest.TestCase):
+    """Per-agent write_folder (2026-10-02, operator's own ask: "let an
+    agent write only inside a designated manuscript/output folder").
+    Enforced in workfiles._check_write_scope, so these go through the real
+    job loop AND real tools.dispatch -- not just the helper."""
+
+    def _root(self):
+        return workfiles.WORKFILES_DIR / str(_user["id"])
+
+    def _write_round(self, calls):
+        return [{"content": "", "tool_calls": [
+                    _tc("write_file", {"path": p, "content": c}, str(i)) for i, (p, c) in enumerate(calls)],
+                 "usage": {}},
+                {"content": "done", "tool_calls": [], "usage": {}}]
+
+    def test_write_inside_the_folder_works_and_creates_it(self):
+        a = _agent(file_write=True, write_folder="manuscript/revised")
+        _, results, _ = _run(a, self._write_round([("manuscript/revised/ch10.md", "new")]))
+        self.assertTrue(results[0].get("ok"), results)
+        self.assertEqual((self._root() / "manuscript/revised/ch10.md").read_bytes(), b"new")
+
+    def test_write_outside_the_folder_is_refused_and_names_the_folder(self):
+        a = _agent(file_write=True, write_folder="manuscript/revised")
+        _, results, _ = _run(a, self._write_round([("elsewhere.md", "x")]))
+        self.assertIn("manuscript/revised/", results[0]["error"])
+        self.assertEqual(results[0]["write_folder"], "manuscript/revised")
+        self.assertFalse((self._root() / "elsewhere.md").exists())
+
+    def test_users_original_outside_the_folder_is_refused_not_versioned(self):
+        workfiles.upload_file(_SESSION, "manuscript/ch11.md", b"original")
+        a = _agent(file_write=True, write_folder="manuscript/revised")
+        _, results, _ = _run(a, self._write_round([("manuscript/ch11.md", "edit")]))
+        self.assertIn("error", results[0])
+        self.assertFalse((self._root() / "manuscript/ch11.v2.md").exists())
+        self.assertEqual((self._root() / "manuscript/ch11.md").read_bytes(), b"original")
+
+    def test_versioning_still_applies_to_a_users_file_inside_the_folder(self):
+        workfiles.upload_file(_SESSION, "scoped/placed.md", b"original")
+        a = _agent(file_write=True, write_folder="scoped")
+        _, results, _ = _run(a, self._write_round([("scoped/placed.md", "edit")]))
+        self.assertEqual(results[0]["path"], "scoped/placed.v2.md")
+        self.assertEqual((self._root() / "scoped/placed.md").read_bytes(), b"original")
+
+    def test_dot_dot_traversal_out_of_the_folder_is_refused(self):
+        a = _agent(file_write=True, write_folder="manuscript/revised")
+        _, results, _ = _run(a, self._write_round([("manuscript/revised/../../escape.md", "x")]))
+        self.assertIn("error", results[0])
+        self.assertFalse((self._root() / "escape.md").exists())
+
+    def test_create_folder_is_scoped_too(self):
+        a = _agent(file_write=True, write_folder="manuscript/revised")
+        rounds = [{"content": "", "tool_calls": [
+                      _tc("create_folder", {"path": "manuscript/revised/drafts"}, "1"),
+                      _tc("create_folder", {"path": "other"}, "2")], "usage": {}},
+                  {"content": "done", "tool_calls": [], "usage": {}}]
+        _, results, _ = _run(a, rounds)
+        self.assertTrue(results[0].get("ok"), results)
+        self.assertIn("error", results[1])
+        self.assertFalse((self._root() / "other").exists())
+
+    def test_folder_casing_does_not_cause_a_false_refusal(self):
+        a = _agent(file_write=True, write_folder="Casey/Out")
+        _, results, _ = _run(a, self._write_round([("casey/out/x.md", "x")]))
+        self.assertTrue(results[0].get("ok"), results)
+
+    def test_unscoped_agent_still_writes_anywhere_and_nori_is_unaffected(self):
+        a = _agent(file_write=True)
+        _, results, _ = _run(a, self._write_round([("anywhere.md", "x")]))
+        self.assertTrue(results[0].get("ok"), results)
+        self.assertTrue(workfiles.write_file(_SESSION, "nori-own.md", "x").get("ok"))
+
+    def test_the_scope_cannot_be_set_through_tool_args(self):
+        with self.assertRaises(TypeError):
+            workfiles.write_file(_SESSION, "x.md", "x", _write_root="somewhere")
+
+
+class WriteFolderConfig(unittest.TestCase):
+    def test_validate_normalizes_and_rejects_unsafe_paths(self):
+        v = workfiles.validate_write_folder
+        self.assertEqual(v(""), ("", ""))
+        self.assertEqual(v("  "), ("", ""))
+        self.assertEqual(v(r"a\b/"), ("a/b", ""))
+        self.assertEqual(v("./a//b"), ("a/b", ""))
+        for bad in ("/abs", "C:/x", "a/../b", "a/b?c", "a/CON"):
+            self.assertIsNone(v(bad)[0], bad)
+            self.assertTrue(v(bad)[1], bad)
+
+    def test_create_rejects_a_bad_folder_and_stores_a_good_one_normalized(self):
+        ok, msg = sub_agents.create(_user["id"], "bad-folder-agent", None, tool_call_limit=5,
+                                    file_write=True, write_folder="../up")
+        self.assertFalse(ok)
+        ok, sid = sub_agents.create(_user["id"], "good-folder-agent", None, tool_call_limit=5,
+                                    file_write=True, write_folder=r"m\out/")
+        self.assertTrue(ok, sid)
+        self.assertEqual(sub_agents.get(sid)["write_folder"], "m/out")
+
+    def test_set_access_validates_and_saves_nothing_on_error(self):
+        a = _agent(file_write=True, write_folder="keep")
+        err = sub_agents.set_access(a["id"], True, True, "/abs")
+        self.assertTrue(err)
+        after = sub_agents.get(a["id"])
+        self.assertEqual((after["write_folder"], after["web_access"]), ("keep", 0))
+        self.assertIsNone(sub_agents.set_access(a["id"], True, False, "new/spot"))
+        self.assertEqual(sub_agents.get(a["id"])["write_folder"], "new/spot")
+        self.assertEqual(sub_agents.list_all()[-1]["write_folder"], sub_agents.get(sub_agents.list_all()[-1]["id"])["write_folder"])
+
+    def test_default_is_unscoped(self):
+        self.assertEqual(_agent()["write_folder"], "")
+
+
 class ExplainTextMentionsPerAgentAccess(unittest.TestCase):
     def test_explain_text_is_no_longer_an_unconditional_no_writes_claim(self):
         self.assertNotIn("no writes, no web", jobs.SUBAGENT_LIMITS_EXPLAIN)

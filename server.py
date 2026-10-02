@@ -3934,7 +3934,11 @@ class Handler(BaseHTTPRequestHandler):
             if a["tool_call_limit"] == 0:
                 tools_desc = "no tools"
             else:
-                access = ["read-write files" if a["file_write"] else "read-only files"]
+                if a["file_write"]:
+                    access = [f"read-write files, writes only in {a['write_folder']}/"
+                              if a["write_folder"] else "read-write files"]
+                else:
+                    access = ["read-only files"]
                 if a["web_access"]:
                     access.append("web")
                 tools_desc = (f"up to {a['tool_call_limit']} tool call(s), "
@@ -3962,6 +3966,9 @@ class Handler(BaseHTTPRequestHandler):
                 f"style='width:8em;margin-left:.3em'></label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=file_write"
                 f"{' checked' if a['file_write'] else ''}> can write files</label>"
+                f"<label style='font-size:.85em'>only inside folder"
+                f"<input type=text name=write_folder value='{esc(a['write_folder'])}' "
+                f"placeholder='(anywhere)' style='width:11em;margin-left:.3em'></label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=web_access"
                 f"{' checked' if a['web_access'] else ''}> web search/fetch</label>"
                 f"<button class='btn'>save</button></form></div>"
@@ -4020,9 +4027,11 @@ class Handler(BaseHTTPRequestHandler):
             "existed, and the two checkboxes below do nothing. Above 0, it can read your own working "
             "folder via list_files/read_file/search_files, up to this many calls, one job at a time.")
         file_write_tip = info_tip(
-            "Adds write_file and create_folder in your working folder. It still can't overwrite or "
-            "replace a file you placed yourself -- only ones Nori (or a sub-agent) created -- and "
-            "can't move or delete anything. Off = read-only.")
+            "Adds write_file and create_folder in your working folder. It can't overwrite a file you "
+            "placed yourself -- a would-be overwrite is saved beside it as name.v2.ext instead -- and "
+            "can't move or delete anything. Off = read-only. Optionally confine it to one folder "
+            "(relative to your working folder, e.g. manuscript/revised): every write outside it is "
+            "refused, even a versioned copy. Reading stays unrestricted.")
         web_access_tip = info_tip(
             "Adds web_search and web_fetch, still subject to the Web search/fetch settings tab (on/off, "
             "write mode, allow/deny rules). Worth knowing: an agent that can both read your files and "
@@ -4045,6 +4054,8 @@ class Handler(BaseHTTPRequestHandler):
             f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={sub_agents.TOOL_BYTE_LIMIT_DEFAULT}></div>"
             f"<div class=field><label><input type=checkbox name=file_write> can write files "
             f"{file_write_tip}</label></div>"
+            "<div class=field><label>only write inside folder (optional)</label>"
+            "<input type=text name=write_folder placeholder='e.g. manuscript/revised -- blank = anywhere'></div>"
             f"<div class=field><label><input type=checkbox name=web_access> web search/fetch "
             f"{web_access_tip}</label></div>"
             "<button class='btn btn-primary btn-block'>add</button></form>"
@@ -4109,7 +4120,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.subagents_admin_form(sess, "tool limits and model must be valid")
         ok, result = sub_agents.create(
             sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit,
-            file_write="file_write" in form, web_access="web_access" in form)
+            file_write="file_write" in form, web_access="web_access" in form,
+            write_folder=form.get("write_folder") or "")
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -4187,7 +4199,10 @@ class Handler(BaseHTTPRequestHandler):
         err = sub_agents.set_limits(sid, call_limit, byte_limit)
         if err:
             return self.subagents_admin_form(sess, err)
-        sub_agents.set_access(sid, "file_write" in form, "web_access" in form)
+        err = sub_agents.set_access(sid, "file_write" in form, "web_access" in form,
+                                    form.get("write_folder") or "")
+        if err:
+            return self.subagents_admin_form(sess, err)
         return self.subagents_admin_form(sess)
 
     # -- admin: Providers + model roster + primary/fallback chain. Controls

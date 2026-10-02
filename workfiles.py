@@ -674,6 +674,51 @@ def _write(user_id: int, rel_path: str, data: bytes, *, created_by: str, human_a
     return {"ok": True, "path": rel, "size_bytes": len(data)}
 
 
+def validate_write_folder(path: str) -> tuple[str | None, str]:
+    """Normalize + syntax-check a per-agent write scope (a folder path
+    relative to a user's working folder). Returns (normalized, "") or
+    (None, error). Purely syntactic -- the folder is relative to whichever
+    user dispatches the job, so there's no single real directory to check
+    it against when an admin saves it; containment is enforced for real,
+    per write, by _check_write_scope. "" (no scope) is valid and means
+    anywhere in the working folder."""
+    raw = (path or "").strip().replace("\\", "/")
+    if not raw.strip("/"):
+        return "", ""
+    if os.path.isabs(raw) or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None, "write folder must be a relative path inside the working folder"
+    parts = [p for p in raw.split("/") if p not in ("", ".")]
+    if ".." in parts:
+        return None, "write folder can't contain .."
+    try:
+        for part in parts:
+            _validate_name(part)
+    except WorkfileError as exc:
+        return None, f"write folder: {exc}"
+    return "/".join(parts), ""
+
+
+def _check_write_scope(session: dict, target: Path) -> dict | None:
+    """session["_write_root"] (set only by jobs.py from a sub-agent's own
+    write_folder, never from anything the model can supply) confines
+    writes and new folders to that folder. Enforced here, at the same
+    chokepoint every write already goes through, rather than in the job
+    loop -- a check in only one caller is a check the next caller forgets.
+    Returns an error dict to hand straight back to the model, or None."""
+    scope = session.get("_write_root")
+    if not scope:
+        return None
+    try:
+        root = _resolve(session["user_id"], scope)
+    except WorkfileError as exc:
+        return {"error": str(exc)}
+    if target == root or root in target.parents:
+        return None
+    return {"error": f"this sub-agent can only write inside {scope}/ -- that path is outside it; "
+                     f"save the file under {scope}/ instead",
+            "write_folder": scope}
+
+
 def _next_version_path(user_id: int, target: Path) -> Path | None:
     """notes.txt -> notes.v2.txt, then notes.v3.txt, ... -- the first
     name that doesn't already exist, so a version is NEVER overwritten
@@ -706,6 +751,14 @@ def write_file(session: dict, path: str, content: str) -> dict:
     is unchanged: it still refuses, with the same error as before."""
     user_id = session["user_id"]
     data = (content or "").encode("utf-8")
+    if session.get("_write_root"):
+        try:
+            scoped_target = _resolve(user_id, path)
+        except WorkfileError as exc:
+            return {"error": str(exc)}
+        refused = _check_write_scope(session, scoped_target)
+        if refused:
+            return refused
     if session.get("_versioned_writes"):
         try:
             target = _resolve(user_id, path)
@@ -738,6 +791,9 @@ def create_folder(session: dict, path: str) -> dict:
         target = _resolve(user_id, path)
     except WorkfileError as exc:
         return {"error": str(exc)}
+    refused = _check_write_scope(session, target)
+    if refused:
+        return refused
     if target.is_file():
         return {"error": "a file already exists there"}
     if target.is_dir():

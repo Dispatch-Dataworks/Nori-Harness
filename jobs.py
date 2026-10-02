@@ -163,7 +163,7 @@ SUBAGENT_LIMITS_EXPLAIN = (
     f"has one hard wall-clock deadline of {DEFAULT_TIMEOUT_S} seconds with no retry or "
     f"resumption past it. Each roster entry can ALSO be configured by the admin (see "
     f"configured_roster) with file_write ({', '.join(_WRITE_TOOL_NAMES)} -- still can't overwrite "
-    f"a file someone else placed; a would-be overwrite is saved beside it as name.v2.ext instead) and/or web_access ({', '.join(_WEB_TOOL_NAMES)}); neither is on "
+    f"a file someone else placed; a would-be overwrite is saved beside it as name.v2.ext instead; an entry may also be confined to one write_folder, outside of which every write is refused) and/or web_access ({', '.join(_WEB_TOOL_NAMES)}); neither is on "
     f"unless that entry says so, and both need a nonzero tool_call_limit to do anything. "
     f"raw_file_access, when explicitly granted per job, adds one more exception: reading a "
     f"file's real content directly rather than the summary-only containment read_file normally "
@@ -284,6 +284,11 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
     # flag can't leak into the dispatching session's own later use (the
     # completion-trigger turn in _run_job builds its own session anyway).
     session = {**session, "_versioned_writes": True}
+    # Write scope (2026-10-02): set only from the roster row's own
+    # write_folder, never from anything the model supplies -- enforced in
+    # workfiles._check_write_scope, not here.
+    if agent.get("write_folder"):
+        session["_write_root"] = agent["write_folder"]
     _update(job_id, status="running", started_ts=time.time())
     deadline = time.time() + timeout_s
     tool_schema = _subagent_tools_schema(agent, raw_file_access)

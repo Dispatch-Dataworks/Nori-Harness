@@ -135,7 +135,8 @@ def _sub_agents_summary() -> dict:
     roster = [{"label": a["label"], "model": model_alias_by_id.get(a["model_id"], "(none configured)"),
               "enabled": bool(a["enabled"]),
               "tool_call_limit": a["tool_call_limit"], "tool_byte_limit": a["tool_byte_limit"],
-              "file_write": bool(a["file_write"]), "web_access": bool(a["web_access"])}
+              "file_write": bool(a["file_write"]), "web_access": bool(a["web_access"]),
+              "write_folder": a["write_folder"] or "(anywhere in the working folder)"}
              for a in sub_agents.list_all()]
     return {"what_they_can_do": jobs.SUBAGENT_LIMITS_EXPLAIN, "configured_roster": roster}
 
