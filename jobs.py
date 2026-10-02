@@ -116,7 +116,14 @@ import store
 import sub_agents
 import usertime
 
-DEFAULT_TIMEOUT_S = int(os.environ.get("NORI_SUBAGENT_TIMEOUT_S", "120"))
+# 600s (2026-10-02, was 120): a real review job -- paged exact reads of long chapters,
+# many rounds against a reasoning model -- takes 67-112 seconds when it goes WELL, so a
+# 120-second wall clock meant 20 of 44 jobs hit it. Per-agent overrides on the roster
+# (sub_agents.timeout_s); this is only the default for an agent that sets none.
+DEFAULT_TIMEOUT_S = int(os.environ.get("NORI_SUBAGENT_TIMEOUT_S", "600"))
+# At most this many jobs run at once; the rest stay queued with their clock not yet running
+# (2026-10-02) -- see _JOB_SLOTS. Also sizes chat.py's job model-call pool.
+MAX_CONCURRENT_JOBS = int(os.environ.get("NORI_SUBAGENT_MAX_CONCURRENT", "4"))
 MAX_TASK_CHARS = 8000
 
 # Every sub-agent gets the read-only set; file_write and web_access
@@ -160,8 +167,9 @@ def allowed_tool_names(agent: dict) -> tuple[str, ...]:
 SUBAGENT_LIMITS_EXPLAIN = (
     f"A sub-agent job runs read-only by default -- only {', '.join(_READ_TOOL_NAMES)} are "
     f"available, a task description is capped at {MAX_TASK_CHARS} characters, and the whole job "
-    f"has one hard wall-clock deadline of {DEFAULT_TIMEOUT_S} seconds with no retry or "
-    f"resumption past it. Each roster entry can ALSO be configured by the admin (see "
+    f"has one hard wall-clock deadline of {DEFAULT_TIMEOUT_S} seconds by default (a roster entry can "
+    f"set its own) with no retry or resumption past it, and at most {MAX_CONCURRENT_JOBS} jobs run at "
+    f"once -- the rest wait queued, with their clock not yet running. Each roster entry can ALSO be configured by the admin (see "
     f"configured_roster) with file_write ({', '.join(_WRITE_TOOL_NAMES)} -- still can't overwrite "
     f"a file someone else placed; a would-be overwrite is saved beside it as name.v2.ext instead; an entry may also be confined to one write_folder, outside of which every write is refused) and/or web_access ({', '.join(_WEB_TOOL_NAMES)}); neither is on "
     f"unless that entry says so, and both need a nonzero tool_call_limit to do anything. "
@@ -321,7 +329,8 @@ def _summary_warning(raw_file_access: bool) -> dict:
     return {"access": "summary_only", "warning": msg}
 
 
-def access_preamble(agent: dict, raw_file_access: bool, expected_outputs: list[str]) -> str:
+def access_preamble(agent: dict, raw_file_access: bool, expected_outputs: list[str],
+                    timeout_s: int | None = None) -> str:
     """The job's real access, stated by the harness as the first lines of the
     sub-agent's task (2026-10-02) -- computed from the roster row and the
     dispatch, never from anything the dispatching model wrote, so what the
@@ -342,6 +351,9 @@ def access_preamble(agent: dict, raw_file_access: bool, expected_outputs: list[s
              f"- Exact file text: {text}",
              f"- Writes: {writes}",
              f"- Web search/fetch: {'yes' if agent.get('web_access') else 'no'}"]
+    if timeout_s:
+        lines.append(f"- Time limit: {timeout_s} seconds for the whole job, then it is stopped. Pace "
+                     f"yourself: do the most important work first, and write results as you go.")
     if expected_outputs:
         lines.append("- Required outputs: " + ", ".join(expected_outputs)
                      + ". The job is marked incomplete if any of them was not written.")
@@ -376,21 +388,189 @@ def _call(agent: dict, messages: list[dict], tool_schema: list[dict] | None, tim
     return chat.call_for_model(entry, messages, tools=tool_schema, timeout=timeout_s)
 
 
-def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int) -> None:
-    """Unchanged from before tool access existed -- tool_call_limit=0 (the
-    default for every agent nobody has touched) still gets exactly this:
-    one plain completion, no `tools` in the request, nothing else."""
+# ── what the harness observed while a job ran (2026-10-02) ───────────────
+# Why this exists: 19 of 45 jobs "failed" and the harness kept an error of
+# `xAI /responses call failed: ` (blank), no usage, no round, no log line -- the
+# cause (a 120-second wall clock cutting a slow model call, plus search results
+# that took 17-32 seconds to screen) had to be reconstructed from unrelated log
+# lines. Now every job leaves a bounded, harness-observed trace -- model-call
+# time, how long a call waited for a worker, each tool's name/duration/size --
+# and every non-"done" ending records WHERE it stopped, in the error text, in
+# the container log, and in check_job. Nothing in it comes from the sub-agent.
+_TRACE_MAX_EVENTS = 120
+_TRACE_MAX_CHARS = 24_000
+
+
+class _Trace:
+    def __init__(self, timeout_s: int):
+        self.t0 = time.time()
+        self.timeout_s = timeout_s
+        self.events: list[dict] = []
+        self.stage = "starting"
+        self.rounds = 0
+
+    def elapsed(self) -> float:
+        return time.time() - self.t0
+
+    def queued(self, ms: int) -> None:
+        if ms > 0:
+            self.events.append({"k": "queued", "ms": ms})
+
+    def model_call(self, rnd: int, ms: int, *, stats: dict, pt=None, ct=None, tool_calls: int = 0,
+                   error: str | None = None) -> None:
+        ev = {"k": "model", "r": rnd, "t": round(self.elapsed(), 1), "ms": ms,
+              "queue_ms": stats.get("queue_ms"), "pool": stats.get("pool"),
+              "pt": pt, "ct": ct, "calls": tool_calls}
+        if error:
+            ev["err"] = error[:200]
+        self.events.append(ev)
+
+    def tool(self, rnd: int, name: str, ms: int, nbytes: int, *, error: str | None = None) -> None:
+        ev = {"k": "tool", "r": rnd, "t": round(self.elapsed(), 1), "name": name, "ms": ms, "bytes": nbytes}
+        if error:
+            ev["err"] = str(error)[:160]
+        self.events.append(ev)
+
+    def to_json(self) -> str:
+        ev = self.events
+        if len(ev) > _TRACE_MAX_EVENTS:
+            keep_tail = _TRACE_MAX_EVENTS - 11
+            ev = ev[:10] + [{"k": "gap", "dropped": len(ev) - 10 - keep_tail}] + ev[-keep_tail:]
+        out = json.dumps({"timeout_s": self.timeout_s, "stage": self.stage, "events": ev},
+                         separators=(",", ":"))
+        while len(out) > _TRACE_MAX_CHARS and len(ev) > 12:
+            ev = ev[:5] + [{"k": "gap", "dropped": "many"}] + ev[-(len(ev) // 2):]
+            out = json.dumps({"timeout_s": self.timeout_s, "stage": self.stage, "events": ev},
+                             separators=(",", ":"))
+        return out
+
+
+def _trace_numbers(events: list[dict]) -> dict:
+    models = [e for e in events if e.get("k") == "model"]
+    tool_events = [e for e in events if e.get("k") == "tool"]
+    slow_tool = max(tool_events, key=lambda e: e.get("ms", 0), default=None)
+    slow_model = max(models, key=lambda e: e.get("ms", 0), default=None)
+    queued = [e.get("queue_ms") or 0 for e in models]
+    return {"model_s": sum(e.get("ms", 0) for e in models) / 1000,
+            "tool_s": sum(e.get("ms", 0) for e in tool_events) / 1000,
+            "slowest_model_call_ms": slow_model["ms"] if slow_model else 0,
+            "slowest_tool": ({"name": slow_tool["name"], "ms": slow_tool["ms"]} if slow_tool else None),
+            "worker_queue_wait_ms_max": max(queued, default=0),
+            "queued_for_slot_ms": sum(e.get("ms", 0) for e in events if e.get("k") == "queued")}
+
+
+def diagnostics(row: dict) -> dict:
+    """A compact account of how a finished job spent its time, from the stored
+    trace and counters -- what check_job and the Sub-agents page show for a
+    job that didn't simply finish. Empty for a job with no trace (one that
+    ran before this existed)."""
+    try:
+        tr = json.loads(row.get("trace") or "null")
+    except (TypeError, ValueError):
+        tr = None
+    if not tr:
+        return {}
+    n = _trace_numbers(tr.get("events") or [])
+    started, finished = row.get("started_ts"), row.get("finished_ts")
+    out = {"elapsed_s": round(finished - started) if started and finished else None,
+           "time_limit_s": tr.get("timeout_s") or row.get("timeout_s"),
+           "rounds": max((e.get("r", 0) for e in tr.get("events") or []), default=0),
+           "tool_calls": row.get("tool_calls_used"),
+           "model_time_s": round(n["model_s"]), "tool_time_s": round(n["tool_s"]),
+           "slowest_model_call_ms": n["slowest_model_call_ms"],
+           "slowest_tool": n["slowest_tool"],
+           "stopped_during": tr.get("stage"),
+           "tokens": {"prompt": row.get("prompt_tokens"), "completion": row.get("completion_tokens")},
+           "cost_usd": row.get("cost_usd")}
+    if n["worker_queue_wait_ms_max"] > 1000:
+        out["worker_queue_wait_ms_max"] = n["worker_queue_wait_ms_max"]
+    if n["queued_for_slot_ms"] > 1000:
+        out["waited_for_a_job_slot_ms"] = n["queued_for_slot_ms"]
+    return out
+
+
+def recent_problems(limit: int = 15) -> list[dict]:
+    """The latest jobs that failed, timed out or came back incomplete, each with
+    its diagnostics -- for the Sub-agents page, so "why did that fail" doesn't
+    need a database query."""
+    rows = store.read(lambda c: c.execute(
+        "SELECT j.*, a.label FROM jobs j JOIN sub_agents a ON a.id = j.sub_agent_id "
+        "WHERE j.status IN ('failed','timed_out','incomplete') ORDER BY j.id DESC LIMIT ?",
+        (limit,)).fetchall())
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["diagnostics"] = diagnostics(d)
+        out.append(d)
+    return out
+
+
+def _failure_text(exc: BaseException, trace: "_Trace", calls_used: int) -> str:
+    """An error that says what happened and where -- never blank, never just a
+    class name's worth of nothing."""
+    detail = str(exc).strip() or "(the exception carried no message)"
+    return (f"{type(exc).__name__}: {detail} -- during {trace.stage}; {trace.elapsed():.0f}s of the "
+            f"{trace.timeout_s}s limit had elapsed, {calls_used} tool call(s) made")[:1200]
+
+
+def _log_job_end(job_id: int, label: str, status: str, error: str | None, trace: "_Trace",
+                 calls_used: int, exc: BaseException | None = None) -> None:
+    """One line per job into the container log (and a traceback for an
+    unexpected exception) -- before this, a failed sub-agent left NOTHING in
+    `docker compose logs`."""
+    n = _trace_numbers(trace.events)
+    line = (f"jobs: job #{job_id} ({label}) {status} after {trace.elapsed():.0f}s of {trace.timeout_s}s, "
+            f"{trace.rounds} round(s), {calls_used} tool call(s), model {n['model_s']:.0f}s / tools "
+            f"{n['tool_s']:.0f}s")
+    if n["queued_for_slot_ms"] > 1000:
+        line += f", waited {n['queued_for_slot_ms'] / 1000:.0f}s for a job slot"
+    if n["slowest_tool"] and n["slowest_tool"]["ms"] > 5000:
+        line += f", slowest tool {n['slowest_tool']['name']} {n['slowest_tool']['ms'] / 1000:.0f}s"
+    if status != "done" and error:
+        line += f" -- {error[:400]}"
+    print(line, flush=True)
+    if exc is not None and status == "failed" and not isinstance(exc, TimeoutError):
+        import traceback
+        print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip(), flush=True)
+
+
+def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int, queued_ms: int = 0) -> None:
+    """Unchanged in behavior from before tool access existed -- tool_call_limit=0
+    (the default for every agent nobody has touched) still gets exactly this:
+    one plain completion, no `tools` in the request, nothing else. (It now also
+    records a trace, usage, and a specific error, like every other job.)"""
+    import chat
     _update(job_id, status="running", started_ts=time.time())
+    trace = _Trace(timeout_s)
+    trace.queued(queued_ms)
+    trace.rounds = 1
+    trace.stage = "model call (round 1)"
+    t = time.time()
     try:
         data = _call(agent, [{"role": "user", "content": task}], None, timeout_s)
-        usage = data.get("usage") or {}
-        _update(job_id, status="done", result=data.get("content", ""), finished_ts=time.time(),
-               cost_usd=usage.get("cost"), cost_unavailable=1 if usage.get("cost") is None else 0,
-               prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0))
-    except TimeoutError:
-        _update(job_id, status="timed_out", error="timed out waiting for the sub-agent", finished_ts=time.time())
+    except TimeoutError as exc:
+        trace.model_call(1, round((time.time() - t) * 1000), stats=chat.last_call_stats(),
+                         error=f"{type(exc).__name__}: {exc}")
+        err = _failure_text(exc, trace, 0)
+        _update(job_id, status="timed_out", error=err, finished_ts=time.time(), trace=trace.to_json())
+        _log_job_end(job_id, agent["label"], "timed_out", err, trace, 0)
+        return
     except Exception as exc:  # noqa: BLE001 -- any failure here must still resolve the job, never hang it
-        _update(job_id, status="failed", error=str(exc)[:500], finished_ts=time.time())
+        trace.model_call(1, round((time.time() - t) * 1000), stats=chat.last_call_stats(),
+                         error=f"{type(exc).__name__}: {exc}")
+        err = _failure_text(exc, trace, 0)
+        _update(job_id, status="failed", error=err, finished_ts=time.time(), trace=trace.to_json())
+        _log_job_end(job_id, agent["label"], "failed", err, trace, 0, exc)
+        return
+    usage = data.get("usage") or {}
+    trace.model_call(1, round((time.time() - t) * 1000), stats=chat.last_call_stats(),
+                     pt=usage.get("prompt_tokens"), ct=usage.get("completion_tokens"))
+    trace.stage = "finished"
+    _update(job_id, status="done", result=data.get("content", ""), finished_ts=time.time(),
+            cost_usd=usage.get("cost"), cost_unavailable=1 if usage.get("cost") is None else 0,
+            prompt_tokens=usage.get("prompt_tokens", 0), completion_tokens=usage.get("completion_tokens", 0),
+            trace=trace.to_json())
+    _log_job_end(job_id, agent["label"], "done", None, trace, 0)
 
 
 def _subagent_tools_schema(agent: dict, raw_file_access: bool) -> list[dict]:
@@ -409,12 +589,19 @@ def _result_bytes(result: dict) -> int:
 
 
 def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, session: dict,
-                        raw_file_access: bool = False, expected_outputs: list[str] | None = None) -> None:
+                        raw_file_access: bool = False, expected_outputs: list[str] | None = None,
+                        queued_ms: int = 0) -> None:
     """See module docstring for the full reasoning -- this is the same
     dispatch a normal turn's tool round uses (tools.dispatch), scoped to a
     fixed allowlist (read-only unless this agent's file_write/web_access
     say otherwise -- see allowed_tool_names), with the caller's own
-    session threaded through untouched."""
+    session threaded through untouched.
+
+    Every ending goes through finish(): usage/cost, the harness's own
+    completion counters and the trace are saved on EVERY terminal status --
+    failures used to record none of it (0 tokens after 20 tool calls) --
+    and a one-line summary reaches the container log."""
+    import chat
     import tools  # local: same reasoning as every other subsystem module
 
     # Sub-agent writes version instead of failing when they'd hit a file
@@ -427,13 +614,17 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
     # workfiles._check_write_scope, not here.
     if agent.get("write_folder"):
         session["_write_root"] = agent["write_folder"]
-    _update(job_id, status="running", started_ts=time.time())
-    deadline = time.time() + timeout_s
+    started = time.time()
+    _update(job_id, status="running", started_ts=started)
+    deadline = started + timeout_s
+    trace = _Trace(timeout_s)
+    trace.queued(queued_ms)
     tool_schema = _subagent_tools_schema(agent, raw_file_access)
     allowed = allowed_tool_names(agent)
     tracker = _JobTracker(expected_outputs or [], raw_file_access)
     messages = [{"role": "user", "content":
-                 access_preamble(agent, raw_file_access, expected_outputs or []) + chr(10) * 2 + task}]
+                 access_preamble(agent, raw_file_access, expected_outputs or [], timeout_s)
+                 + chr(10) * 2 + task}]
     call_limit = agent["tool_call_limit"]
     byte_limit = agent["tool_byte_limit"]
     calls_used = bytes_used = 0
@@ -446,42 +637,64 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
     # backstop for a runaway job; this just guarantees a finite bound.
     max_rounds = max(_MAX_ROUNDS_SAFETY, call_limit + 10)
 
+    def finish(status: str, *, error: str | None = None, result: str | None = None,
+               exc: BaseException | None = None) -> None:
+        if status == "done":
+            trace.stage = "finished"
+        _update(job_id, status=status, error=error, result=result, finished_ts=time.time(),
+                tool_calls_used=calls_used, tool_bytes_used=bytes_used,
+                partial_reads=len(tracker.partial_files()), summary_reads=tracker.summary_reads,
+                cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                trace=trace.to_json())
+        _log_job_end(job_id, agent["label"], status, error, trace, calls_used, exc)
+
     try:
-        for _round in range(max_rounds):
+        for rnd in range(1, max_rounds + 1):
+            trace.rounds = rnd
             remaining = deadline - time.time()
             if remaining <= 0:
-                _update(job_id, status="timed_out", error="timed out waiting for the sub-agent",
-                       finished_ts=time.time(), tool_calls_used=calls_used, tool_bytes_used=bytes_used,
-                       cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
-                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+                trace.stage = f"waiting between rounds (before round {rnd})"
+                finish("timed_out", error=(
+                    f"job time limit reached: {timeout_s}s elapsed before round {rnd} could start "
+                    f"({calls_used} tool call(s) made, {len(tracker.partial_files())} file(s) only partly "
+                    f"read) -- the sub-agent hadn't finished; the trace shows where the time went"))
                 return
-            data = _call(agent, messages, tool_schema if tools_offered else None, remaining)
+            trace.stage = f"model call (round {rnd})"
+            t_model = time.time()
+            try:
+                data = _call(agent, messages, tool_schema if tools_offered else None, remaining)
+            except BaseException as exc:
+                trace.model_call(rnd, round((time.time() - t_model) * 1000), stats=chat.last_call_stats(),
+                                 error=f"{type(exc).__name__}: {exc}")
+                raise
             usage = data.get("usage") or {}
-            prompt_tokens += usage.get("prompt_tokens", 0)
-            completion_tokens += usage.get("completion_tokens", 0)
+            prompt_tokens += usage.get("prompt_tokens") or 0
+            completion_tokens += usage.get("completion_tokens") or 0
             if usage.get("cost") is None:
                 cost_unavailable = True
             else:
                 cost_total += usage["cost"]
-
             tool_calls = data.get("tool_calls") or []
+            trace.model_call(rnd, round((time.time() - t_model) * 1000), stats=chat.last_call_stats(),
+                             pt=usage.get("prompt_tokens"), ct=usage.get("completion_tokens"),
+                             tool_calls=len(tool_calls))
+
             if not tool_calls or not tools_offered:
                 # "The sub-agent returned" is not "the work was done": check
                 # what the harness itself saw against what was asked for.
+                trace.stage = "finishing"
                 problems = tracker.problems()
-                _update(job_id, status="incomplete" if problems else "done",
-                       error="; ".join(problems) if problems else None,
-                       result=data.get("content", ""), finished_ts=time.time(),
-                       tool_calls_used=calls_used, tool_bytes_used=bytes_used,
-                       partial_reads=len(tracker.partial_files()), summary_reads=tracker.summary_reads,
-                       cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
-                       prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+                finish("incomplete" if problems else "done", error="; ".join(problems) if problems else None,
+                       result=data.get("content", ""))
                 return
 
             messages.append({"role": "assistant", "content": data.get("content"), "tool_calls": tool_calls})
             budget_hit = False
             for tc in tool_calls:
                 name = (tc.get("function") or {}).get("name")
+                trace.stage = f"tool {name} (round {rnd})"
+                t_tool = time.time()
                 try:
                     call_args = json.loads((tc.get("function") or {}).get("arguments") or "{}")
                 except (ValueError, TypeError):
@@ -513,6 +726,8 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                         tracker.saw_write(result)
                     calls_used += 1
                     bytes_used += _result_bytes(result)
+                trace.tool(rnd, str(name), round((time.time() - t_tool) * 1000), _result_bytes(result),
+                           error=result.get("error") if isinstance(result, dict) else None)
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(result)})
             if budget_hit:
                 # One more round to let it answer with what it already has,
@@ -520,24 +735,36 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                 tools_offered = False
         # Ran out of rounds without a final answer -- return what usage was
         # recorded rather than leaving the job stuck at "running" forever.
-        _update(job_id, status="failed", error="sub-agent didn't stop calling tools -- round limit reached",
-               finished_ts=time.time(), tool_calls_used=calls_used, tool_bytes_used=bytes_used,
-               cost_usd=cost_total, cost_unavailable=1 if cost_unavailable else 0,
-               prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-    except TimeoutError:
-        _update(job_id, status="timed_out", error="timed out waiting for the sub-agent", finished_ts=time.time(),
-               tool_calls_used=calls_used, tool_bytes_used=bytes_used)
+        finish("failed", error=f"sub-agent didn't stop calling tools -- round limit reached ({max_rounds} rounds)")
+    except TimeoutError as exc:
+        finish("timed_out", error=_failure_text(exc, trace, calls_used), exc=exc)
     except Exception as exc:  # noqa: BLE001 -- any failure here must still resolve the job, never hang it
-        _update(job_id, status="failed", error=str(exc)[:500], finished_ts=time.time(),
-               tool_calls_used=calls_used, tool_bytes_used=bytes_used)
+        finish("failed", error=_failure_text(exc, trace, calls_used), exc=exc)
+
+
+# Jobs run concurrently, but not unboundedly (2026-10-02): a burst of 16
+# simultaneous jobs shared one 8-thread model-call pool with her live turns and
+# every screening call, and half of them failed. At most MAX_CONCURRENT_JOBS
+# run at once; the rest stay 'queued' -- with their time limit NOT yet
+# running -- until a slot frees. Per process; NORI_SUBAGENT_MAX_CONCURRENT.
+_JOB_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 
 
 def _run_job(job_id: int, agent: dict, task: str, timeout_s: int, session: dict,
             raw_file_access: bool = False, expected_outputs: list[str] | None = None) -> None:
-    if agent["tool_call_limit"] > 0:
-        _run_job_with_tools(job_id, agent, task, timeout_s, session, raw_file_access, expected_outputs)
-    else:
-        _run_job_no_tools(job_id, agent, task, timeout_s)
+    import chat
+    chat.use_job_pool(True)  # this worker thread's model calls go to the job pool, not the live one
+    t_wait = time.time()
+    with _JOB_SLOTS:
+        queued_ms = round((time.time() - t_wait) * 1000)
+        if agent["tool_call_limit"] > 0:
+            _run_job_with_tools(job_id, agent, task, timeout_s, session, raw_file_access, expected_outputs,
+                                queued_ms=queued_ms)
+        else:
+            _run_job_no_tools(job_id, agent, task, timeout_s, queued_ms=queued_ms)
+    # The slot is released above, BEFORE announcing: the announcement can wait
+    # minutes for a busy user (see _trigger_turn_for_job) and must not hold up
+    # the next job.
     row = store.read(lambda c: c.execute(
         "SELECT status, result, error FROM jobs WHERE id=?", (job_id,)).fetchone())
     if row is not None:
@@ -837,17 +1064,20 @@ def _dispatch_impl(session: dict, agent_label: str, task: str, raw_file_access: 
     if err:
         return {"error": err}
     now = time.time()
+    timeout_s = int(agent.get("timeout_s") or 0) or DEFAULT_TIMEOUT_S
+    running_now = store.read(lambda c: c.execute(
+        "SELECT COUNT(*) AS n FROM jobs WHERE status='running'").fetchone())["n"]
     job_id = store.write(lambda c: c.execute(
         "INSERT INTO jobs(user_id, sub_agent_id, task, status, created_ts, timeout_s, raw_file_access, "
         "expected_outputs) VALUES (?,?,?,'queued',?,?,?,?)",
-        (session["user_id"], agent["id"], task, now, DEFAULT_TIMEOUT_S, 1 if raw_file_access else 0,
+        (session["user_id"], agent["id"], task, now, timeout_s, 1 if raw_file_access else 0,
          json.dumps(expected) if expected else None)).lastrowid)
     # The dispatching session, captured now -- passed through unchanged to
     # every tool call the sub-agent's own round makes, never re-derived
     # from anything the sub-agent's output could supply. See module
     # docstring.
     threading.Thread(target=_run_job,
-                    args=(job_id, agent, task, DEFAULT_TIMEOUT_S, dict(session), raw_file_access, expected),
+                    args=(job_id, agent, task, timeout_s, dict(session), raw_file_access, expected),
                     daemon=True).start()
     can_use_tools = agent["tool_call_limit"] > 0
     writes = ("none (read-only)" if not (agent.get("file_write") and can_use_tools) else
@@ -861,7 +1091,14 @@ def _dispatch_impl(session: dict, agent_label: str, task: str, raw_file_access: 
               "originals": ("protected: a write to a file Nori didn't create is saved beside it as "
                             "name.v2.ext" if writes != "none (read-only)" else "read-only"),
               "web": bool(agent.get("web_access")) and can_use_tools,
-              "tool_call_limit": agent["tool_call_limit"]}
+              "tool_call_limit": agent["tool_call_limit"],
+              "time_limit_s": timeout_s,
+              "time_limit_source": "this sub-agent's own limit" if agent.get("timeout_s") else "the default"}
+    if running_now >= MAX_CONCURRENT_JOBS:
+        # Said at dispatch, so a wait isn't mistaken for a hang: it is queued, its
+        # time limit hasn't started, and it begins when a slot frees.
+        access["queue"] = (f"{running_now} job(s) already running (at most {MAX_CONCURRENT_JOBS} run at "
+                           f"once) -- this one waits its turn; its {timeout_s}s limit starts when it begins")
     if not can_use_tools:
         access["note"] = "this sub-agent's tool-call limit is 0: it has no file access of any kind"
     return {"ok": True, "job_id": job_id, "status": "queued", "raw_file_access": raw_file_access,
@@ -903,7 +1140,7 @@ def completion_note(row: dict) -> str:
     return "; ".join(parts)
 
 
-def _check_job_impl(session: dict, job_id: int) -> dict:
+def _check_job_impl(session: dict, job_id: int, verbose: bool = False) -> dict:
     row = store.read(lambda c: c.execute(
         "SELECT * FROM jobs WHERE id=? AND user_id=?", (job_id, session["user_id"])).fetchone())
     if row is None:
@@ -911,6 +1148,16 @@ def _check_job_impl(session: dict, job_id: int) -> dict:
     if row["status"] in _TERMINAL_STATUSES:
         _update(job_id, seen=1)
     out = {"id": row["id"], "status": row["status"], "result": row["result"], "error": row["error"]}
+    # How the job spent its time -- the answer to "why did it fail / take so long" -- for every
+    # job that didn't simply finish; verbose=True adds the full round-by-round trace.
+    diag = diagnostics(dict(row))
+    if diag and (row["status"] != "done" or verbose):
+        out["diagnostics"] = diag
+    if verbose and row["trace"]:
+        try:
+            out["trace"] = json.loads(row["trace"])
+        except (TypeError, ValueError):
+            pass
     note = completion_note(dict(row))
     if note:
         out["harness_check"] = note
@@ -1110,9 +1357,14 @@ def _register_tools() -> None:
         "check_job",
         {"type": "function", "function": {
             "name": "check_job",
-            "description": "Read one of your own sub-agent job's result or error by id.",
+            "description": ("Read one of your own sub-agent job's result or error by id. A job that "
+                            "failed, timed out or came back incomplete includes `diagnostics` -- where "
+                            "it stopped, how long it ran against its limit, and where the time went -- so "
+                            "say WHY it ended, not just that it did. verbose=true adds the full trace."),
             "parameters": {"type": "object", "properties": {
-                "job_id": {"type": "integer"}}, "required": ["job_id"]}}},
+                "job_id": {"type": "integer"},
+                "verbose": {"type": "boolean", "description": "include the round-by-round trace"}},
+                "required": ["job_id"]}}},
         _check_job_impl, min_role="member", data_scope="self", risk_tier="A"))
 
 

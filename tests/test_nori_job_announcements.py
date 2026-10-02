@@ -378,7 +378,9 @@ class WholePathFromAFinishingJob(_Base):
         self.assertEqual(store.read(lambda c: c.execute(
             "SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone())["status"], "failed")
         self.assertEqual(len(_announcements(job_id)), 1)
-        self.assertIn("What went wrong: provider rejected the request", self.prompts[0])
+        # The error now says what kind of failure it was and where the job stopped.
+        self.assertIn("What went wrong: ModelError: provider rejected the request", self.prompts[0])
+        self.assertIn("during model call (round 1)", self.prompts[0])
 
     def test_a_timed_out_job_announces_itself(self):
         agent = self._agent_row()

@@ -108,6 +108,7 @@ _PRESERVE_SCREEN_HINT = (
 )
 
 PRESERVE_CAP = 4000
+MAX_SCREEN_CHARS = 60_000
 
 
 def _truncate_at_word_boundary(text: str, cap: int) -> str:
@@ -147,6 +148,15 @@ def summarize_untrusted(content: str, *, kind: str = "email", preserve_content: 
     anything about budgets or ledgers itself. None (the default, every
     existing caller) changes nothing."""
     hint = _PRESERVE_SCREEN_HINT if preserve_content else _SCHEMA_HINT
+    # A hard ceiling on what any caller can send the screening model
+    # (2026-10-02): an uncapped search_files blob reached 4.7 million tokens,
+    # which the provider rejects -- after 17-32 seconds -- and left callers
+    # with "could not be read safely". Nothing here returns more than
+    # PRESERVE_CAP characters of the input anyway, and a gist/flag doesn't
+    # need more than this much to judge, so no caller should be able to
+    # make this call enormous. Callers with their own deterministic page
+    # (workfiles' paged reads, search results) stay far below it.
+    content = content[:MAX_SCREEN_CHARS]
     rule = _PACI_INGEST_RULE if kind.startswith("PACI ") else _INGEST_RULE
     system = f"{rule}\n\n{hint}"
     messages = [

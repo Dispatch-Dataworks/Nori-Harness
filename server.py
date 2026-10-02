@@ -4055,7 +4055,8 @@ class Handler(BaseHTTPRequestHandler):
                     access.append("web")
                 access.append("exact file text by default" if a["raw_file_access"] else "file gists by default")
                 tools_desc = (f"up to {a['tool_call_limit']} tool call(s), "
-                             f"{a['tool_byte_limit']:,} bytes/job, {' + '.join(access)}")
+                             f"{a['tool_byte_limit']:,} bytes/job, "
+                             f"{a['timeout_s'] or jobs.DEFAULT_TIMEOUT_S}s limit, {' + '.join(access)}")
             m = model_by_id.get(a["model_id"])
             model_desc = m["alias"] if m else "(no model configured)"
             jc = job_counts.get(a["id"], 0)
@@ -4077,6 +4078,10 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=number name=tool_byte_limit min={sub_agents.TOOL_BYTE_LIMIT_MIN} "
                 f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={a['tool_byte_limit']} "
                 f"style='width:8em;margin-left:.3em'></label>"
+                f"<label style='font-size:.85em'>time limit (s)"
+                f"<input type=number name=timeout_s min=0 max={sub_agents.TIMEOUT_MAX} "
+                f"value={a['timeout_s'] or ''} placeholder='{jobs.DEFAULT_TIMEOUT_S}' "
+                f"style='width:6em;margin-left:.3em'></label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=file_write"
                 f"{' checked' if a['file_write'] else ''}> can write files</label>"
                 f"<label style='font-size:.85em'>only inside folder"
@@ -4135,6 +4140,36 @@ class Handler(BaseHTTPRequestHandler):
             f"{''.join(_interrupted_row(j) for j in interrupted)}</div>"
         ) if interrupted else ""
 
+        def _problem_row(j: dict) -> str:
+            d = j["diagnostics"] or {}
+            bits = []
+            if d.get("elapsed_s") is not None:
+                bits.append(f"{d['elapsed_s']}s of {d.get('time_limit_s')}s limit")
+            if d.get("rounds"):
+                bits.append(f"{d['rounds']} round(s)")
+            if d.get("tool_calls") is not None:
+                bits.append(f"{d['tool_calls']} tool call(s)")
+            if d.get("model_time_s") is not None:
+                bits.append(f"model {d['model_time_s']}s / tools {d.get('tool_time_s', 0)}s")
+            if d.get("slowest_tool"):
+                bits.append(f"slowest tool {d['slowest_tool']['name']} {d['slowest_tool']['ms'] / 1000:.0f}s")
+            if d.get("waited_for_a_job_slot_ms"):
+                bits.append(f"waited {d['waited_for_a_job_slot_ms'] / 1000:.0f}s for a slot")
+            if d.get("stopped_during"):
+                bits.append(f"stopped during: {d['stopped_during']}")
+            when = time.strftime("%b %d, %H:%M", time.localtime(j["finished_ts"] or j["created_ts"]))
+            return (f"<div class=list-row><div class=list-icon>⚠️</div>"
+                    f"<div class=list-meta><b>job #{j['id']} · {esc(j['label'])} · {esc(j['status'])}</b>"
+                    f"<small>{esc(when)} · {esc(' · '.join(bits) or 'no trace recorded (ran before tracing existed)')}</small>"
+                    f"<small class=wrap>{esc((j['error'] or '')[:500])}</small></div></div>")
+        problems = jobs.recent_problems()
+        problems_section = (
+            "<div class=section><h2>recent job problems</h2>"
+            "<p class=muted style='margin:0 0 .6rem'>The latest jobs that failed, timed out or came back "
+            "incomplete, with where each one stopped and where its time went. Nori sees the same detail "
+            "in check_job.</p>"
+            f"{''.join(_problem_row(j) for j in problems)}</div>") if problems else ""
+
         model_opts = "".join(
             f"<option value='{m['id']}'>{esc(m['alias'])}</option>" for m in models.list_enabled())
         call_limit_tip = info_tip(
@@ -4156,6 +4191,12 @@ class Handler(BaseHTTPRequestHandler):
             "Cumulative cap across every tool result in one job -- only matters when tool calls are "
             "allowed above. 100 calls each returning a large file costs very differently than 100 "
             "small ones, so this is capped independently of the call count.")
+        timeout_tip = info_tip(
+            f"The whole job's wall-clock limit, from when it starts running (time spent queued behind "
+            f"other jobs doesn't count). Blank uses the default, {jobs.DEFAULT_TIMEOUT_S}s. Paged exact "
+            f"reads of long files take many rounds against a slow model -- a job that goes well can "
+            f"still need a couple of minutes, so don't set this tight. At most {jobs.MAX_CONCURRENT_JOBS} "
+            f"jobs run at once; the rest wait.")
         raw_access_tip = info_tip(
             "Off, a job reads files as ~400-character gists -- fine for triage, useless for reviewing, "
             "editing or quoting a document. On, it reads the real text, a page at a time (one page "
@@ -4173,6 +4214,9 @@ class Handler(BaseHTTPRequestHandler):
             f"<div class=field><label>bytes read per job {byte_limit_tip}</label>"
             f"<input type=number name=tool_byte_limit min={sub_agents.TOOL_BYTE_LIMIT_MIN} "
             f"max={sub_agents.TOOL_BYTE_LIMIT_MAX} value={sub_agents.TOOL_BYTE_LIMIT_DEFAULT}></div>"
+            f"<div class=field><label>time limit per job, seconds {timeout_tip}</label>"
+            f"<input type=number name=timeout_s min=0 max={sub_agents.TIMEOUT_MAX} "
+            f"placeholder='blank = default ({jobs.DEFAULT_TIMEOUT_S})'></div>"
             f"<div class=field><label><input type=checkbox name=file_write> can write files "
             f"{file_write_tip}</label></div>"
             "<div class=field><label>only write inside folder (optional)</label>"
@@ -4227,6 +4271,7 @@ class Handler(BaseHTTPRequestHandler):
             "<a href='/settings?tab=models'>Model Config</a>.</p>"
             f"<div class=section>{add_form}</div>"
             f"<div class=section><h2>roster</h2>{rows}</div>"
+            f"{problems_section}"
             f"<div class=section><h2>test a sub-agent</h2>{test_form}</div>"
             f"{test_result_html}"
         )
@@ -4239,13 +4284,15 @@ class Handler(BaseHTTPRequestHandler):
             call_limit = int(form.get("tool_call_limit") or 0)
             byte_limit = int(form.get("tool_byte_limit") or sub_agents.TOOL_BYTE_LIMIT_DEFAULT)
             model_id = int(form.get("model_id") or 0)
+            timeout_s = int(form.get("timeout_s") or 0)
         except ValueError:
-            return self.subagents_admin_form(sess, "tool limits and model must be valid")
+            return self.subagents_admin_form(sess, "tool limits, time limit and model must be valid")
         ok, result = sub_agents.create(
             sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit,
             file_write="file_write" in form, web_access="web_access" in form,
             write_folder=form.get("write_folder") or "",
-            raw_file_access="raw_file_access" in form)
+            raw_file_access="raw_file_access" in form,
+            timeout_s=timeout_s)
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -4316,11 +4363,12 @@ class Handler(BaseHTTPRequestHandler):
             sid = int(sub_agent_id)
             call_limit = int(form.get("tool_call_limit") or 0)
             byte_limit = int(form.get("tool_byte_limit") or sub_agents.TOOL_BYTE_LIMIT_DEFAULT)
+            timeout_s = int(form.get("timeout_s") or 0)
         except ValueError:
-            return self.subagents_admin_form(sess, "bad id or tool limits")
+            return self.subagents_admin_form(sess, "bad id, tool limits or time limit")
         if sub_agents.get(sid) is None:
             return self.subagents_admin_form(sess, "no such sub-agent")
-        err = sub_agents.set_limits(sid, call_limit, byte_limit)
+        err = sub_agents.set_limits(sid, call_limit, byte_limit, timeout_s)
         if err:
             return self.subagents_admin_form(sess, err)
         err = sub_agents.set_access(sid, "file_write" in form, "web_access" in form,

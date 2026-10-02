@@ -104,8 +104,9 @@ def handler(role="admin"):
                # something.
                sub_agents=SimpleNamespace(list_all=lambda: [], job_counts=lambda: {}, TOOL_CALL_LIMIT_MAX=1000,
                                           TOOL_BYTE_LIMIT_MIN=10_000, TOOL_BYTE_LIMIT_MAX=50_000_000,
-                                          TOOL_BYTE_LIMIT_DEFAULT=2_000_000),
-               jobs=SimpleNamespace(running_jobs=lambda: [], recently_interrupted=lambda: []),
+                                          TOOL_BYTE_LIMIT_DEFAULT=2_000_000, TIMEOUT_MAX=3600),
+               jobs=SimpleNamespace(running_jobs=lambda: [], recently_interrupted=lambda: [],
+                                    recent_problems=lambda: [], DEFAULT_TIMEOUT_S=600, MAX_CONCURRENT_JOBS=4),
                models=SimpleNamespace(list_enabled=lambda: [], list_all=lambda: []),
                providers=SimpleNamespace(list_all=lambda _: [], TYPES={}),
                mcp_servers=SimpleNamespace(list_servers=lambda _: []),

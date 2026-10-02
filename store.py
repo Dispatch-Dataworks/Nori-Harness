@@ -1661,6 +1661,14 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE jobs ADD COLUMN expected_outputs TEXT",
     "ALTER TABLE jobs ADD COLUMN partial_reads INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN summary_reads INTEGER NOT NULL DEFAULT 0",
+    # Per-agent time limit and the job trace (2026-10-02, after 20 of 44 jobs hit
+    # the old fixed 120-second wall clock and the failures couldn't be told apart).
+    # sub_agents.timeout_s 0 = use the global default (jobs.DEFAULT_TIMEOUT_S).
+    # jobs.trace is a bounded JSON list of what the harness observed, round by
+    # round (model time, queue wait, tool names/durations/sizes) -- see
+    # jobs._Trace.
+    "ALTER TABLE sub_agents ADD COLUMN timeout_s INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE jobs ADD COLUMN trace TEXT",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

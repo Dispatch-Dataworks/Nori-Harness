@@ -20,6 +20,7 @@ import concurrent.futures
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -57,7 +58,89 @@ API_RETRIES = int(os.environ.get("NORI_API_RETRIES", "2"))
 # of what the abandoned worker thread does afterward -- never cancelled
 # (Python threads can't be), just left to finish or fail on its own,
 # harmlessly, since nothing waits on it once its deadline has passed.
-_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="model-call")
+#
+# Two pools, not one (2026-10-02): everything used to share 8 worker threads
+# -- live chat turns, every screening call, vision, and every sub-agent job's
+# model calls -- so a burst of sub-agent jobs (16 at once, in the real
+# incident) queued behind each other and behind her live turns, and a
+# call's timeout clock ran while it was still WAITING for a worker. Now
+# sub-agent job threads use their own pool (see use_job_pool/_run_call),
+# sized for the job concurrency cap, and the clock starts when a worker
+# actually begins the request.
+_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=12, thread_name_prefix="model-call")
+JOB_POOL_WORKERS = int(os.environ.get("NORI_SUBAGENT_MAX_CONCURRENT", "4")) + 4
+_JOB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=JOB_POOL_WORKERS,
+                                                      thread_name_prefix="job-model-call")
+# How long a call may wait for a free worker before giving up (capped by
+# the call's own timeout). Waiting here is NOT counted against the
+# request's timeout, but it isn't unbounded either.
+QUEUE_WAIT_S = int(os.environ.get("NORI_MODEL_QUEUE_WAIT_S", "120"))
+_pool_ctx = threading.local()
+
+
+def use_job_pool(on: bool = True) -> None:
+    """Mark the CURRENT thread as a sub-agent job worker: its model calls go
+    to the job pool. Thread-local, so it can't leak onto a live turn."""
+    _pool_ctx.job = on
+
+
+def last_call_stats() -> dict:
+    """{"queue_ms", "http_ms", "pool"} for the most recent model call made on
+    this thread (empty if none) -- jobs.py records it in the job trace, so a
+    slow job can be told apart: waiting for a worker, or waiting on the
+    provider."""
+    return dict(getattr(_pool_ctx, "stats", {}) or {})
+
+
+def _run_call(fn, req, timeout: int, *, what: str):
+    """Run one blocking HTTP call (fn(req, timeout)) on this thread's pool.
+    The timeout is measured from when a worker actually STARTS the request,
+    not from submission -- queue wait is bounded separately by QUEUE_WAIT_S
+    and reported as its own kind of failure. Raises ModelTimeout (a
+    ModelError AND a TimeoutError, with a message that says what timed out
+    and for how long) on either; any other exception from the call
+    propagates unchanged."""
+    pool, pool_name = (_JOB_EXECUTOR, "job") if getattr(_pool_ctx, "job", False) else (_CALL_EXECUTOR, "live")
+    started = threading.Event()
+    marks = {}
+    t_submit = time.monotonic()
+
+    def _wrapped():
+        marks["start"] = time.monotonic()
+        started.set()
+        return fn(req, timeout)
+
+    fut = pool.submit(_wrapped)
+    if not started.wait(min(timeout, QUEUE_WAIT_S)):
+        if fut.cancel():  # still queued: pulling it out means it never runs
+            raise ModelTimeout(f"{what}: no model-call worker became free within "
+                               f"{min(timeout, QUEUE_WAIT_S)}s (the {pool_name} pool is saturated)",
+                               kind="pool_saturated")
+        started.wait(5)  # it started in the instant since the check; carry on
+    queue_ms = round((marks.get("start", time.monotonic()) - t_submit) * 1000)
+    try:
+        data = fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise ModelTimeout(f"{what}: no response from the provider within {timeout}s "
+                           f"(request sent {round(time.monotonic() - marks['start'])}s ago)",
+                           kind="blocked_upstream")
+    finally:
+        _pool_ctx.stats = {"queue_ms": queue_ms, "pool": pool_name,
+                           "http_ms": round((time.monotonic() - marks.get("start", t_submit)) * 1000)}
+    return data
+
+
+def _net_error(label: str, exc: Exception) -> ModelError:
+    """Turn a network-level exception into a ModelError whose message is
+    never blank (2026-10-02): str(TimeoutError()) is "", which is how a
+    deadline-cut Grok request ended up recorded as "xAI /responses call
+    failed: ". The exception's type name always leads, and a timeout stays
+    a ModelTimeout so callers can tell it from a provider error."""
+    detail = str(exc).strip()
+    desc = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+    if isinstance(exc, TimeoutError):
+        return ModelTimeout(f"{label} call timed out ({desc})", kind="blocked_upstream")
+    return ModelError(f"{label} call failed: {desc}")
 
 
 def _urlopen_json(req, socket_timeout: int) -> dict:
@@ -183,6 +266,17 @@ class ModelError(Exception):
         # on to do with this -- show it in the UI, retry, ignore -- the
         # fact that it happened has already reached docker compose logs.
         print(f"chat.ModelError: {msg}", flush=True)
+
+
+class ModelTimeout(ModelError, TimeoutError):
+    """A model call that ran out of time -- the provider never answered
+    within its timeout, or no worker was free to even send it. BOTH a
+    ModelError (so every model-chain/fallback path that catches ModelError
+    handles it unchanged) AND a TimeoutError (so jobs.py reports a sub-agent
+    job as timed_out rather than failed). Added 2026-10-02: a timeout used
+    to arrive as ModelError("... call failed: ") -- str(TimeoutError()) is
+    an empty string -- so 17 of 19 failed jobs had a blank error and the
+    wrong status."""
 
 
 def _key() -> str:
@@ -449,12 +543,7 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
         try:
             req = urllib.request.Request(
                 url, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
-            try:
-                data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
-            except concurrent.futures.TimeoutError:
-                raise ModelError(
-                    f"model call exceeded the {to}s ceiling with no response from the provider",
-                    kind="blocked_upstream", transient=False)
+            data = _run_call(_urlopen_json, req, to, what="model call")
             _check(data)
             ch0 = (data.get("choices") or [{}])[0]
             msg = ch0.get("message") or {}
@@ -509,7 +598,8 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
     # not the hardcoded API_RETRIES+1: a non-transient failure breaks on
     # its first try, and the old message overstated the attempt count
     # regardless of how many actually happened.
-    raise ModelError(f"model call failed after {attempt + 1} attempt(s): {last}", kind=getattr(last, "kind", None))
+    err_cls = ModelTimeout if isinstance(last, TimeoutError) else ModelError
+    raise err_cls(f"model call failed after {attempt + 1} attempt(s): {last}", kind=getattr(last, "kind", None))
 
 
 def vision(instruction: str, images: list[tuple[bytes, str]], *, model: str | None = None,
@@ -834,12 +924,14 @@ def _plain_responses_call(url: str, headers: dict, model_name: str, messages: li
     to = timeout or API_TIMEOUT_S
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
     try:
-        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+        data = _run_call(_urlopen_json, req, to, what=f"{vendor} /responses call")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         raise ModelError(f"{vendor} /responses call failed ({exc.code}): {detail}", transient=exc.code >= 500)
-    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
-        raise ModelError(f"{vendor} /responses call failed: {exc}")
+    except ModelTimeout:
+        raise
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise _net_error(f"{vendor} /responses", exc)
     if data.get("error"):
         raise ModelError(f"{vendor} /responses api error: {str(data['error'])[:300]}", transient=True)
     text, tool_calls = _parse_responses_output(data)
@@ -985,12 +1077,14 @@ def _anthropic_messages_request(model_name: str, messages: list[dict], tools: li
     req = urllib.request.Request(providers.ANTHROPIC_MESSAGES_URL, data=json.dumps(body).encode("utf-8"),
                                  method="POST", headers=headers)
     try:
-        data = _CALL_EXECUTOR.submit(_urlopen_json, req, to).result(timeout=to)
+        data = _run_call(_urlopen_json, req, to, what="Anthropic call")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         raise ModelError(f"Anthropic call failed ({exc.code}): {detail}", transient=exc.code >= 500)
-    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
-        raise ModelError(f"Anthropic call failed: {exc}")
+    except ModelTimeout:
+        raise
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise _net_error("Anthropic", exc)
     if data.get("error"):
         raise ModelError(f"Anthropic api error: {str(data['error'])[:300]}", transient=True)
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
@@ -1139,12 +1233,14 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     req = urllib.request.Request(providers.OPENAI_CODEX_URL, data=json.dumps(body).encode("utf-8"),
                                  method="POST", headers=headers)
     try:
-        data = _CALL_EXECUTOR.submit(_urlopen_sse_final_response, req, to).result(timeout=to)
+        data = _run_call(_urlopen_sse_final_response, req, to, what="OpenAI OAuth call")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         raise ModelError(f"OpenAI OAuth call failed ({exc.code}): {detail}", transient=exc.code >= 500)
-    except (urllib.error.URLError, TimeoutError, concurrent.futures.TimeoutError, json.JSONDecodeError) as exc:
-        raise ModelError(f"OpenAI OAuth call failed: {exc}")
+    except ModelTimeout:
+        raise
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise _net_error("OpenAI OAuth", exc)
     if data.get("error"):
         raise ModelError(f"OpenAI OAuth api error: {str(data['error'])[:300]}", transient=True)
     text_parts, tool_calls = [], []

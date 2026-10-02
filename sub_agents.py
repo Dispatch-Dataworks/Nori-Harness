@@ -29,6 +29,18 @@ TOOL_BYTE_LIMIT_MAX = 50_000_000   # 50 MB
 TOOL_BYTE_LIMIT_DEFAULT = 2_000_000  # 2 MB -- roughly ten average-sized file reads
 
 
+# A job's wall-clock limit (2026-10-02): 0 means "use the global default"
+# (jobs.DEFAULT_TIMEOUT_S); otherwise a per-agent value within these bounds.
+TIMEOUT_MIN = 30
+TIMEOUT_MAX = 3600
+
+
+def _validate_timeout(timeout_s: int) -> str | None:
+    if timeout_s != 0 and not (TIMEOUT_MIN <= timeout_s <= TIMEOUT_MAX):
+        return f"time limit must be 0 (use the default) or between {TIMEOUT_MIN} and {TIMEOUT_MAX} seconds"
+    return None
+
+
 def _validate_limits(tool_call_limit: int, tool_byte_limit: int) -> str | None:
     if tool_call_limit < 0 or tool_call_limit > TOOL_CALL_LIMIT_MAX:
         return f"tool-call limit must be between 0 and {TOOL_CALL_LIMIT_MAX}"
@@ -41,7 +53,8 @@ def _validate_limits(tool_call_limit: int, tool_byte_limit: int) -> str | None:
 def create(created_by: int, label: str, model_id: int | None,
           tool_call_limit: int = 0, tool_byte_limit: int = TOOL_BYTE_LIMIT_DEFAULT,
           file_write: bool = False, web_access: bool = False,
-          write_folder: str = "", raw_file_access: bool = False) -> tuple[bool, str | int]:
+          write_folder: str = "", raw_file_access: bool = False,
+          timeout_s: int = 0) -> tuple[bool, str | int]:
     """model_id (2026-09-30, see models.py/providers.py) -- a sub-agent
     now picks a roster Model (alias -> provider -> real model name)
     instead of free-typing its own model/base_url/api key; jobs.py
@@ -64,7 +77,7 @@ def create(created_by: int, label: str, model_id: int | None,
         return False, "a label is required"
     if get_by_label(label) is not None:
         return False, f"a sub-agent named {label!r} already exists"
-    err = _validate_limits(tool_call_limit, tool_byte_limit)
+    err = _validate_limits(tool_call_limit, tool_byte_limit) or _validate_timeout(timeout_s)
     if err:
         return False, err
     import workfiles  # local: same reasoning as every other subsystem module
@@ -79,22 +92,28 @@ def create(created_by: int, label: str, model_id: int | None,
     sid = store.write(lambda c: c.execute(
         "INSERT INTO sub_agents(label, model, base_url, api_key_enc, enabled, "
         "tool_call_limit, tool_byte_limit, created_ts, created_by, model_id, file_write, web_access, "
-        "write_folder, raw_file_access) VALUES (?,'','','',1,?,?,?,?,?,?,?,?,?)",
+        "write_folder, raw_file_access, timeout_s) VALUES (?,'','','',1,?,?,?,?,?,?,?,?,?,?)",
         (label, tool_call_limit, tool_byte_limit, now, created_by, model_id or None,
          1 if file_write else 0, 1 if web_access else 0, write_folder,
-         1 if raw_file_access else 0)).lastrowid)
+         1 if raw_file_access else 0, timeout_s)).lastrowid)
     return True, sid
 
 
-def set_limits(sub_agent_id: int, tool_call_limit: int, tool_byte_limit: int) -> str | None:
+def set_limits(sub_agent_id: int, tool_call_limit: int, tool_byte_limit: int,
+               timeout_s: int | None = None) -> str | None:
     """Returns an error string, or None on success -- same shape as
-    create()'s own validation, reused rather than re-implemented."""
+    create()'s own validation, reused rather than re-implemented.
+    timeout_s None leaves the stored time limit alone."""
     err = _validate_limits(tool_call_limit, tool_byte_limit)
+    if not err and timeout_s is not None:
+        err = _validate_timeout(timeout_s)
     if err:
         return err
     store.write(lambda c: c.execute(
         "UPDATE sub_agents SET tool_call_limit=?, tool_byte_limit=? WHERE id=?",
         (tool_call_limit, tool_byte_limit, sub_agent_id)))
+    if timeout_s is not None:
+        store.write(lambda c: c.execute("UPDATE sub_agents SET timeout_s=? WHERE id=?", (timeout_s, sub_agent_id)))
     return None
 
 
@@ -117,7 +136,7 @@ def set_access(sub_agent_id: int, file_write: bool, web_access: bool,
 def list_all() -> list[dict]:
     rows = store.read(lambda c: c.execute(
         "SELECT id, label, model_id, enabled, tool_call_limit, "
-        "tool_byte_limit, file_write, web_access, write_folder, raw_file_access, created_ts "
+        "tool_byte_limit, file_write, web_access, write_folder, raw_file_access, timeout_s, created_ts "
         "FROM sub_agents ORDER BY id").fetchall())
     return [dict(r) for r in rows]
 

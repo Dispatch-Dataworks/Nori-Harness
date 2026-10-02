@@ -618,6 +618,28 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False, offse
 # case; `truncated` says plainly when it didn't.
 SEARCH_MAX_MATCHES = 12
 SEARCH_CONTEXT_LINES = 2
+# Size caps (2026-10-02). Matched lines used to be handed to the screening
+# model whole, and manuscript paragraphs are single lines tens of thousands of
+# characters long: a broad search assembled a 4.7-million-token prompt, the
+# model call 400'd after 17-32 SECONDS (26 such searches ate 482 of the 517
+# total search-seconds in the real incident, inside 120-second jobs), and the
+# agent got "could not be read safely" for its trouble. Now a matching line is
+# a window around the match, context lines are cut short, and the whole result
+# is bounded -- so a search is fast, always fits, and says so when it dropped
+# something.
+SEARCH_LINE_CHARS = 240
+SEARCH_CONTEXT_LINE_CHARS = 120
+SEARCH_MAX_BLOB_CHARS = 6000
+
+
+def _clip_around(line: str, start: int, width: int) -> str:
+    """A `width`-char window of `line` that contains position `start`,
+    marked with an ellipsis on each side that was cut."""
+    if len(line) <= width:
+        return line
+    lo = max(0, min(start - 80, len(line) - width))
+    hi = lo + width
+    return ("…" if lo > 0 else "") + line[lo:hi] + ("…" if hi < len(line) else "")
 SEARCH_MAX_FILES_SCANNED = 2000  # backstop; MAX_USER_COUNT already keeps real usage well under
 
 
@@ -658,9 +680,18 @@ def search_files(session: dict, pattern: str, path: str = "") -> dict:
             for i, line in enumerate(lines):
                 if len(raw_matches) >= SEARCH_MAX_MATCHES:
                     break
-                if rx.search(line):
+                m = rx.search(line)
+                if m:
                     lo, hi = max(0, i - SEARCH_CONTEXT_LINES), min(len(lines), i + SEARCH_CONTEXT_LINES + 1)
-                    raw_matches.append((_rel_key(user_id, fp), i + 1, "\n".join(lines[lo:hi])))
+                    shown = []
+                    for j in range(lo, hi):
+                        if j == i:
+                            shown.append(_clip_around(line, m.start(), SEARCH_LINE_CHARS))
+                        else:
+                            ctx = lines[j]
+                            shown.append(ctx if len(ctx) <= SEARCH_CONTEXT_LINE_CHARS
+                                         else ctx[:SEARCH_CONTEXT_LINE_CHARS] + "…")
+                    raw_matches.append((_rel_key(user_id, fp), i + 1, "\n".join(shown)))
         if len(raw_matches) >= SEARCH_MAX_MATCHES or files_scanned >= SEARCH_MAX_FILES_SCANNED:
             break
 
@@ -668,13 +699,28 @@ def search_files(session: dict, pattern: str, path: str = "") -> dict:
         return {"kind": "search", "match_count": 0, "hit_cap": False, "suspicious": False,
                 "content": "no matches"}
 
-    blob = "\n---\n".join(f"{p}:{ln}\n{snippet}" for p, ln, snippet in raw_matches)
+    pieces, used = [], 0
+    for p, ln, snippet in raw_matches:
+        piece = f"{p}:{ln}\n{snippet}"
+        if pieces and used + len(piece) + 5 > SEARCH_MAX_BLOB_CHARS:
+            break
+        pieces.append(piece[:SEARCH_MAX_BLOB_CHARS])
+        used += len(piece) + 5
+    blob = "\n---\n".join(pieces)
     ingested = ingest.summarize_untrusted(blob, kind="file search results", preserve_content=True)
-    return {"kind": "search", "match_count": len(raw_matches),
+    if ingested.get("screening_failed"):
+        return {"error": "couldn't screen these search results right now -- retry the same search"}
+    dropped = len(raw_matches) - len(pieces)
+    # The content is the matched text itself, built above, never the screener's
+    # words: the screening call only decides `suspicious`.
+    return {"kind": "search", "match_count": len(raw_matches), "shown": len(pieces),
             "hit_cap": len(raw_matches) >= SEARCH_MAX_MATCHES,
             "suspicious": ingested.get("suspicious", False),
-            "truncated": ingested.get("truncated", False),
-            "content": ingested.get("content") or ingested.get("summary") or "(screening returned nothing)"}
+            "truncated": dropped > 0,
+            "note": ("long lines are shown as a window around the match; "
+                     + (f"{dropped} more match(es) didn't fit -- narrow the pattern or path." if dropped
+                        else "narrow the pattern or read the file for more.")),
+            "content": blob}
 
 
 def read_image_bytes(session: dict, path: str) -> dict:
