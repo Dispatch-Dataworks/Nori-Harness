@@ -41,7 +41,7 @@ def _validate_limits(tool_call_limit: int, tool_byte_limit: int) -> str | None:
 def create(created_by: int, label: str, model_id: int | None,
           tool_call_limit: int = 0, tool_byte_limit: int = TOOL_BYTE_LIMIT_DEFAULT,
           file_write: bool = False, web_access: bool = False,
-          write_folder: str = "") -> tuple[bool, str | int]:
+          write_folder: str = "", raw_file_access: bool = False) -> tuple[bool, str | int]:
     """model_id (2026-09-30, see models.py/providers.py) -- a sub-agent
     now picks a roster Model (alias -> provider -> real model name)
     instead of free-typing its own model/base_url/api key; jobs.py
@@ -79,9 +79,10 @@ def create(created_by: int, label: str, model_id: int | None,
     sid = store.write(lambda c: c.execute(
         "INSERT INTO sub_agents(label, model, base_url, api_key_enc, enabled, "
         "tool_call_limit, tool_byte_limit, created_ts, created_by, model_id, file_write, web_access, "
-        "write_folder) VALUES (?,'','','',1,?,?,?,?,?,?,?,?)",
+        "write_folder, raw_file_access) VALUES (?,'','','',1,?,?,?,?,?,?,?,?,?)",
         (label, tool_call_limit, tool_byte_limit, now, created_by, model_id or None,
-         1 if file_write else 0, 1 if web_access else 0, write_folder)).lastrowid)
+         1 if file_write else 0, 1 if web_access else 0, write_folder,
+         1 if raw_file_access else 0)).lastrowid)
     return True, sid
 
 
@@ -98,7 +99,7 @@ def set_limits(sub_agent_id: int, tool_call_limit: int, tool_byte_limit: int) ->
 
 
 def set_access(sub_agent_id: int, file_write: bool, web_access: bool,
-              write_folder: str = "") -> str | None:
+              write_folder: str = "", raw_file_access: bool = False) -> str | None:
     """Returns an error string, or None on success (same shape as
     set_limits). write_folder is validated and normalized first; nothing
     is saved if it's invalid."""
@@ -107,15 +108,17 @@ def set_access(sub_agent_id: int, file_write: bool, web_access: bool,
     if ferr:
         return ferr
     store.write(lambda c: c.execute(
-        "UPDATE sub_agents SET file_write=?, web_access=?, write_folder=? WHERE id=?",
-        (1 if file_write else 0, 1 if web_access else 0, write_folder, sub_agent_id)))
+        "UPDATE sub_agents SET file_write=?, web_access=?, write_folder=?, raw_file_access=? WHERE id=?",
+        (1 if file_write else 0, 1 if web_access else 0, write_folder,
+         1 if raw_file_access else 0, sub_agent_id)))
     return None
 
 
 def list_all() -> list[dict]:
     rows = store.read(lambda c: c.execute(
         "SELECT id, label, model_id, enabled, tool_call_limit, "
-        "tool_byte_limit, file_write, web_access, write_folder, created_ts FROM sub_agents ORDER BY id").fetchall())
+        "tool_byte_limit, file_write, web_access, write_folder, raw_file_access, created_ts "
+        "FROM sub_agents ORDER BY id").fetchall())
     return [dict(r) for r in rows]
 
 

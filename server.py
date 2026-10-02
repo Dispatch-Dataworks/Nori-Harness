@@ -4052,6 +4052,7 @@ class Handler(BaseHTTPRequestHandler):
                     access = ["read-only files"]
                 if a["web_access"]:
                     access.append("web")
+                access.append("exact file text by default" if a["raw_file_access"] else "file gists by default")
                 tools_desc = (f"up to {a['tool_call_limit']} tool call(s), "
                              f"{a['tool_byte_limit']:,} bytes/job, {' + '.join(access)}")
             m = model_by_id.get(a["model_id"])
@@ -4082,6 +4083,8 @@ class Handler(BaseHTTPRequestHandler):
                 f"placeholder='(anywhere)' style='width:11em;margin-left:.3em'></label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=web_access"
                 f"{' checked' if a['web_access'] else ''}> web search/fetch</label>"
+                f"<label style='font-size:.85em'><input type=checkbox name=raw_file_access"
+                f"{' checked' if a['raw_file_access'] else ''}> exact file text by default</label>"
                 f"<button class='btn'>save</button></form></div>"
                 f"<div class=list-actions><form method=post action='/admin/subagents/{a['id']}/toggle'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
@@ -4152,6 +4155,12 @@ class Handler(BaseHTTPRequestHandler):
             "Cumulative cap across every tool result in one job -- only matters when tool calls are "
             "allowed above. 100 calls each returning a large file costs very differently than 100 "
             "small ones, so this is capped independently of the call count.")
+        raw_access_tip = info_tip(
+            "Off, a job reads files as ~400-character gists -- fine for triage, useless for reviewing, "
+            "editing or quoting a document. On, it reads the real text, a page at a time (one page "
+            "per tool call, so a long chapter takes several calls -- raise the tool-call limit to "
+            "match). Nori can still override this for a single job either way; this is just what "
+            "happens when she doesn't say.")
         add_form = (
             "<form method=post action='/admin/subagents'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
@@ -4169,6 +4178,8 @@ class Handler(BaseHTTPRequestHandler):
             "<input type=text name=write_folder placeholder='e.g. manuscript/revised -- blank = anywhere'></div>"
             f"<div class=field><label><input type=checkbox name=web_access> web search/fetch "
             f"{web_access_tip}</label></div>"
+            f"<div class=field><label><input type=checkbox name=raw_file_access> exact file text by default "
+            f"{raw_access_tip}</label></div>"
             "<button class='btn btn-primary btn-block'>add</button></form>"
         ) if model_opts else (
             "<p class=muted>no enabled models yet -- add one in "
@@ -4232,7 +4243,8 @@ class Handler(BaseHTTPRequestHandler):
         ok, result = sub_agents.create(
             sess["user_id"], form.get("label") or "", model_id, call_limit, byte_limit,
             file_write="file_write" in form, web_access="web_access" in form,
-            write_folder=form.get("write_folder") or "")
+            write_folder=form.get("write_folder") or "",
+            raw_file_access="raw_file_access" in form)
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -4311,7 +4323,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.subagents_admin_form(sess, err)
         err = sub_agents.set_access(sid, "file_write" in form, "web_access" in form,
-                                    form.get("write_folder") or "")
+                                    form.get("write_folder") or "", "raw_file_access" in form)
         if err:
             return self.subagents_admin_form(sess, err)
         return self.subagents_admin_form(sess)

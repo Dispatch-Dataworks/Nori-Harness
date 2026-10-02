@@ -199,7 +199,11 @@ def summarize_untrusted(content: str, *, kind: str = "email", preserve_content: 
 
 
 def _fallback(preserve_content: bool = False) -> dict:
-    out = {"category": "suspicious", "priority": "normal", "suggested_action": "", "suspicious": True}
+    out = {"category": "suspicious", "priority": "normal", "suggested_action": "", "suspicious": True,
+           # So a caller can tell "the screening call failed" apart from
+           # real content that merely looked suspicious -- a paged reader
+           # must retry that page, never count it as read.
+           "screening_failed": True}
     msg = "(could not be read safely -- review the original directly)"
     if preserve_content:
         out["content"] = msg

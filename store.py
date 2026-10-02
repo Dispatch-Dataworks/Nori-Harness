@@ -1647,6 +1647,20 @@ _MIGRATIONS: list[str] = [
     # row) means unscoped, exactly as before. Only meaningful with
     # file_write on.
     "ALTER TABLE sub_agents ADD COLUMN write_folder TEXT NOT NULL DEFAULT ''",
+    # Per-agent default for jobs' raw_file_access (2026-10-02): the exact-
+    # text exception used to be a per-call flag Nori had to remember, and
+    # forgetting it is how a manuscript review ran on 200-character gists.
+    # 0 (every existing row) = unchanged. A dispatch can still override
+    # either way for one job.
+    "ALTER TABLE sub_agents ADD COLUMN raw_file_access INTEGER NOT NULL DEFAULT 0",
+    # Completion checks (2026-10-02) -- see jobs._evaluate_completion.
+    # expected_outputs is a JSON list of paths the job was dispatched to
+    # produce; partial_reads / summary_reads are what the harness counted
+    # while it ran. A job that ends with a requirement unmet is 'incomplete'
+    # (error holds the specific reasons), not 'done'.
+    "ALTER TABLE jobs ADD COLUMN expected_outputs TEXT",
+    "ALTER TABLE jobs ADD COLUMN partial_reads INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE jobs ADD COLUMN summary_reads INTEGER NOT NULL DEFAULT 0",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

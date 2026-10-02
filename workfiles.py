@@ -142,7 +142,15 @@ def _sniff_image_ext(head: bytes) -> str | None:
             return ext
     return None
 
-READ_TEXT_MAX_CHARS = 200_000  # capped before the ingest pass ever sees it
+READ_TEXT_MAX_CHARS = 200_000  # capped before the ingest pass ever sees it (summary mode only -- see read_file)
+# One page of a raw read (2026-10-02). Raw reads used to stop dead at the
+# first 4,000 characters of a file with no way to continue -- a sub-agent
+# "granted exact access" to a chapter saw its first screenful and nothing
+# else. Now an offset walks the whole file; this is how much one call
+# returns. Bigger than ingest.PRESERVE_CAP on purpose (that cap exists for
+# a different caller's single-shot reads): fewer calls per file, against a
+# per-job tool-call budget. Each page is screened on its own.
+RAW_PAGE_CHARS = int(os.environ.get("NORI_RAW_PAGE_CHARS", "8000"))
 
 
 class WorkfileError(Exception):
@@ -487,7 +495,21 @@ def list_files(session: dict, path: str = "", *, recursive: bool = False) -> dic
     return {**base, "entries": entries, "recursive": True, "hit_cap": hit_cap}
 
 
-def read_file(session: dict, path: str, *, preserve_content: bool = False) -> dict:
+def _raw_page_end(text: str, start: int) -> int:
+    """Where the page beginning at `start` ends: RAW_PAGE_CHARS later, pulled
+    back to the last whitespace in its final fifth so a page doesn't end
+    mid-word, never shorter than that fifth. Contiguous by construction --
+    the next page starts exactly where this one ends, with nothing
+    trimmed or skipped between them."""
+    hard = min(len(text), start + RAW_PAGE_CHARS)
+    if hard >= len(text):
+        return len(text)
+    floor = start + (RAW_PAGE_CHARS * 4) // 5
+    cut = max(text.rfind(chr(10), floor, hard), text.rfind(" ", floor, hard))
+    return cut + 1 if cut >= floor else hard
+
+
+def read_file(session: dict, path: str, *, preserve_content: bool = False, offset: int = 0) -> dict:
     """preserve_content=False (the default, and the ONLY mode the
     registered `read_file` tool below ever calls this with) is the
     documented promise that tool's schema makes: "you get back a summary,
@@ -495,6 +517,15 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False) -> di
     boundary, not an oversight -- read_file's content is untrusted the
     same way an email is, and a live turn has real tools (peer_send,
     email, the works) an injected instruction could try to reach through.
+
+    offset (2026-10-02) only means anything with preserve_content=True: the
+    character position to start the page at. The result carries
+    total_chars, offset and next_offset (None on the last page), and
+    `truncated` is True exactly when there is more after this page -- so
+    a caller walks a file by passing next_offset back until it's None.
+    offset == total_chars is a valid empty final page; past it is an
+    error. A page whose screening call failed is an error too, not
+    "content": it must be retried, and never counted as read.
 
     preserve_content=True is the deliberate, narrow exception (2026-09-14,
     operator's own ask, after a security-review sub-agent kept stalling
@@ -537,9 +568,32 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False) -> di
     except UnicodeDecodeError:
         return {"kind": "binary", "message": "no text extraction available for this file type yet "
                                              "-- download it to view it"}
-    ingested = ingest.summarize_untrusted(text[:READ_TEXT_MAX_CHARS], kind="file",
-                                          preserve_content=preserve_content)
-    return {"kind": "text", **ingested}
+    if not preserve_content:
+        ingested = ingest.summarize_untrusted(text[:READ_TEXT_MAX_CHARS], kind="file")
+        return {"kind": "text", "path": rel, "total_chars": len(text), **ingested}
+
+    total = len(text)
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return {"error": "offset must be a whole number of characters"}
+    if offset < 0:
+        return {"error": "offset can't be negative"}
+    if offset > total:
+        return {"error": f"offset {offset} is past the end of the file ({total} characters)"}
+    end = _raw_page_end(text, offset)
+    page = text[offset:end]
+    # Only the page goes to the screening model (the old path sent up to
+    # 200K characters through it to return 4,000). The content returned is
+    # that page verbatim, deterministically -- never the model's words.
+    ingested = ingest.summarize_untrusted(page, kind="file", preserve_content=True) if page else {
+        "category": "informational", "priority": "normal", "suggested_action": "", "suspicious": False}
+    if ingested.get("screening_failed"):
+        return {"error": "couldn't screen this page right now -- retry the same offset",
+                "offset": offset, "total_chars": total}
+    more = end < total
+    return {"kind": "text", **ingested, "content": page, "path": rel, "offset": offset, "total_chars": total,
+            "next_offset": end if more else None, "truncated": more}
 
 
 # ── search (2026-09-14, operator's own ask) ──────────────────────────────
