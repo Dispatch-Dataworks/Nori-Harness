@@ -15,14 +15,46 @@ services:
       - "127.0.0.1:8877:8877"
     env_file:
       - .env   # copy .env.example to .env and fill in your own values
+    environment:
+      # Where the code sandbox's socket lives (see the `sandbox` service
+      # below). Always set; the feature itself stays OFF until an admin
+      # turns on "Code sandbox" in settings.
+      NORI_SANDBOX_SOCKET: /run/sandbox/runner.sock
     volumes:
       - nori-data:/app/data          # nori.db, workfiles, secret.key, backups
       - nori-prompts:/app/prompts    # persona.md, tool-usage.md, edit history
       - nori-static:/app/static      # avatar/voice uploads (shipped defaults
                                       # copy into this volume on first run)
+      - sandbox-sock:/run/sandbox    # the ONLY thing shared with the sandbox
+    restart: unless-stopped
+
+  # The code sandbox (2026-10-04): where `run_sandboxed_command` actually
+  # runs. A separate container with NO network at all, no env_file, no
+  # access to nori-data/.env/secret.key -- the only thing it shares with Nori
+  # is a socket in the small sandbox-sock volume. Nori sends it a copy of a
+  # folder and a command; it sends back output and a list of changed files;
+  # Nori alone decides what to save. See docs/sandbox.md.
+  sandbox:
+    build: ./sandbox_service
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER, KILL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 128
+    cpus: 1.0
+    tmpfs:
+      - /work:size=256m,mode=0755
+      - /tmp:size=16m
+    volumes:
+      - sandbox-sock:/run/sandbox
     restart: unless-stopped
 
 volumes:
+  sandbox-sock:
   nori-data:
   nori-prompts:
   nori-static:

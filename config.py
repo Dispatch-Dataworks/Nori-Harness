@@ -236,6 +236,11 @@ _SPEC: dict[str, tuple] = {
     # needed for a toggle to take effect.
     "web_search_enabled": (True, bool, "workspace", False, "let her search the live web"),
     "web_fetch_enabled": (True, bool, "workspace", False, "let her fetch the content of a URL"),
+    # Code sandbox (2026-10-04, operator's ask after Nori requested one) --
+    # master switch for run_sandboxed_command, off by default. Needs the
+    # separate `sandbox` container (docker-compose.yml) to be running; see
+    # sandbox.py and docs/sandbox.md.
+    "sandbox_enabled": (False, bool, "workspace", False, "let her run code in the isolated sandbox container"),
     # default_model_slug removed 2026-09-30 -- superseded by model_chain
     # (see models.py/providers.py): primary+fallback are now a real
     # ordered table, not a single scalar setting, and there's deliberately

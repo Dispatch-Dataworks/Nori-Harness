@@ -969,8 +969,15 @@ def write_file(session: dict, path: str, content: str) -> dict:
     original as name.v2.ext (v3, v4... -- never overwriting an earlier
     version either) and the result says so. Her own live-turn write_file
     is unchanged: it still refuses, with the same error as before."""
+    return write_bytes(session, path, (content or "").encode("utf-8"))
+
+
+def write_bytes(session: dict, path: str, data: bytes) -> dict:
+    """write_file's body, for content that isn't necessarily text -- the
+    code sandbox's output files (2026-10-04). Same write scope, same
+    provenance rule, same versioning, same quota: there is exactly one
+    write path for model-driven writes, and this is it."""
     user_id = session["user_id"]
-    data = (content or "").encode("utf-8")
     if session.get("_write_root"):
         try:
             scoped_target = _resolve(user_id, path)

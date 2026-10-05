@@ -138,7 +138,8 @@ def _net_error(label: str, exc: Exception) -> ModelError:
     a ModelTimeout so callers can tell it from a provider error."""
     detail = str(exc).strip()
     desc = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-    if isinstance(exc, TimeoutError):
+    # concurrent.futures.TimeoutError is only an alias of the builtin from 3.11 on.
+    if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
         return ModelTimeout(f"{label} call timed out ({desc})", kind="blocked_upstream")
     return ModelError(f"{label} call failed: {desc}")
 
@@ -881,11 +882,22 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
 
 
 def _responses_tools(tools: list[dict] | None) -> list[dict] | None:
+    """Chat-Completions-shaped tool schemas -> Responses-API function tools.
+
+    "strict": False is sent EXPLICITLY (2026-10-05). The Responses API defaults
+    strict to TRUE when the field is absent, and in strict mode every parameter
+    counts as required -- so the model fills each optional one with filler. A
+    live probe of tracker_log on gpt-5.6-luna sent {"value_1":187.2,"value_2":0,
+    "value_text":"","note":"","ts":""} with no field, and {"value_1":187.2} with
+    strict:false. The backend then correctly refused value_2 on a single-number
+    tracker, 43 of 45 attempts failed today, and nothing was logged. Every tool
+    with an optional parameter was exposed to the same filler, not just trackers."""
     if not tools:
         return None
     return [{"type": "function", "name": (t.get("function") or {}).get("name"),
             "description": (t.get("function") or {}).get("description") or "",
-            "parameters": (t.get("function") or {}).get("parameters") or {}}
+            "parameters": (t.get("function") or {}).get("parameters") or {},
+            "strict": False}
            for t in tools]
 
 
@@ -1220,10 +1232,7 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     if system_parts:
         body["instructions"] = "\n\n".join(p for p in system_parts if p)
     if tools:
-        body["tools"] = [{"type": "function", "name": (t.get("function") or {}).get("name"),
-                         "description": (t.get("function") or {}).get("description") or "",
-                         "parameters": (t.get("function") or {}).get("parameters") or {}}
-                        for t in tools]
+        body["tools"] = _responses_tools(tools)  # carries strict:False -- see its docstring
     if entry["reasoning_effort"]:
         body["reasoning"] = {"effort": entry["reasoning_effort"]}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",

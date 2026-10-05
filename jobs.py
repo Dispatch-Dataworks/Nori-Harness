@@ -143,6 +143,10 @@ MAX_TASK_CHARS = 8000
 _READ_TOOL_NAMES = ("list_files", "read_file", "search_files")
 _WRITE_TOOL_NAMES = ("write_file", "create_folder")
 _WEB_TOOL_NAMES = ("web_search", "web_fetch")
+# code_exec (2026-10-04): python3 in the isolated sandbox container -- see
+# sandbox.py. Its own checkbox, separate from file_write: without file_write a
+# run can compute and print, but nothing it produces is saved.
+_CODE_TOOL_NAMES = ("run_sandboxed_command",)
 _SUBAGENT_TOOL_NAMES = _READ_TOOL_NAMES  # the default every agent has
 
 
@@ -155,7 +159,20 @@ def allowed_tool_names(agent: dict) -> tuple[str, ...]:
         names += _WRITE_TOOL_NAMES
     if agent.get("web_access"):
         names += _WEB_TOOL_NAMES
+    if agent.get("code_exec"):
+        names += _CODE_TOOL_NAMES
     return tuple(names)
+
+
+def _job_tool_names(agent: dict, session: dict) -> tuple[str, ...]:
+    """allowed_tool_names, minus code execution when the workspace's sandbox
+    switch is off -- so a job is never OFFERED a tool that would just answer
+    'no such tool'."""
+    import sandbox
+    names = allowed_tool_names(agent)
+    if not sandbox.is_enabled(session):
+        names = tuple(n for n in names if n not in _CODE_TOOL_NAMES)
+    return names
 
 
 # What a sub-agent job actually can't do, built FROM the real constants
@@ -173,6 +190,10 @@ SUBAGENT_LIMITS_EXPLAIN = (
     f"configured_roster) with file_write ({', '.join(_WRITE_TOOL_NAMES)} -- still can't overwrite "
     f"a file someone else placed; a would-be overwrite is saved beside it as name.v2.ext instead; an entry may also be confined to one write_folder, outside of which every write is refused) and/or web_access ({', '.join(_WEB_TOOL_NAMES)}); neither is on "
     f"unless that entry says so, and both need a nonzero tool_call_limit to do anything. "
+    f"A third opt-in, code_exec, adds {', '.join(_CODE_TOOL_NAMES)}: python3 (standard library only, no network, "
+    f"no secrets) in a separate isolated sandbox container, run against a COPY of one folder -- it can't "
+    f"touch the real files, its created/changed files are saved back only if the entry also has file_write "
+    f"(same overwrite protection and write folder), and it also needs the admin's workspace-wide sandbox switch. "
     f"Exact file text (raw_file_access) is the one more exception: reading a file's real content, in "
     f"pages, rather than the ~400-character gist read_file normally returns. It's each roster "
     f"entry's own default (see configured_roster), overridable per job either way. A job can also "
@@ -351,6 +372,13 @@ def access_preamble(agent: dict, raw_file_access: bool, expected_outputs: list[s
              f"- Exact file text: {text}",
              f"- Writes: {writes}",
              f"- Web search/fetch: {'yes' if agent.get('web_access') else 'no'}"]
+    if agent.get("code_exec"):
+        lines.append("- Code execution: run_sandboxed_command (python3 only, standard library, no network). It "
+                     "runs on a COPY of the folder you give as cwd. "
+                     + ("Files it creates or changes are saved back under the Writes rule above; a deletion "
+                        "is never applied." if agent.get("file_write") else
+                        "You can't write files, so nothing it creates is saved -- use it to compute and "
+                        "report results."))
     if timeout_s:
         lines.append(f"- Time limit: {timeout_s} seconds for the whole job, then it is stopped. Pace "
                      f"yourself: do the most important work first, and write results as you go.")
@@ -573,9 +601,10 @@ def _run_job_no_tools(job_id: int, agent: dict, task: str, timeout_s: int, queue
     _log_job_end(job_id, agent["label"], "done", None, trace, 0)
 
 
-def _subagent_tools_schema(agent: dict, raw_file_access: bool) -> list[dict]:
+def _subagent_tools_schema(agent: dict, raw_file_access: bool, session: dict | None = None) -> list[dict]:
     import tools
-    schema = [s for s in (tools.schema_for(n) for n in allowed_tool_names(agent)) if s is not None]
+    names = _job_tool_names(agent, session) if session is not None else allowed_tool_names(agent)
+    schema = [s for s in (tools.schema_for(n) for n in names) if s is not None]
     if raw_file_access:
         schema.append(_RAW_READ_SCHEMA)
     return schema
@@ -608,7 +637,12 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
     # someone else placed -- see workfiles.write_file. On a copy, so the
     # flag can't leak into the dispatching session's own later use (the
     # completion-trigger turn in _run_job builds its own session anyway).
-    session = {**session, "_versioned_writes": True}
+    session = {**session, "_versioned_writes": True, "_job_id": job_id, "_job_agent": agent["label"]}
+    # Code execution without file_write computes and prints but saves nothing
+    # (sandbox._apply_changes) -- set here, from the roster row, never from
+    # anything the model supplies.
+    if not agent.get("file_write"):
+        session["_sandbox_no_apply"] = True
     # Write scope (2026-10-02): set only from the roster row's own
     # write_folder, never from anything the model supplies -- enforced in
     # workfiles._check_write_scope, not here.
@@ -619,8 +653,8 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
     deadline = started + timeout_s
     trace = _Trace(timeout_s)
     trace.queued(queued_ms)
-    tool_schema = _subagent_tools_schema(agent, raw_file_access)
-    allowed = allowed_tool_names(agent)
+    tool_schema = _subagent_tools_schema(agent, raw_file_access, session)
+    allowed = _job_tool_names(agent, session)
     tracker = _JobTracker(expected_outputs or [], raw_file_access)
     messages = [{"role": "user", "content":
                  access_preamble(agent, raw_file_access, expected_outputs or [], timeout_s)
@@ -724,6 +758,12 @@ def _run_job_with_tools(job_id: int, agent: dict, task: str, timeout_s: int, ses
                             result = {**result, **_summary_warning(raw_file_access)}
                     elif name == "write_file" and isinstance(result, dict):
                         tracker.saw_write(result)
+                    elif name == "run_sandboxed_command" and isinstance(result, dict):
+                        # What a run saved counts as written (expected_outputs), judged
+                        # from the harness's own results -- never from the agent's claims.
+                        for f in result.get("files") or []:
+                            if f.get("saved"):
+                                tracker.saw_write({"ok": True, "path": f.get("saved_as") or f.get("path")})
                     calls_used += 1
                     bytes_used += _result_bytes(result)
                 trace.tool(rnd, str(name), round((time.time() - t_tool) * 1000), _result_bytes(result),
@@ -1094,6 +1134,9 @@ def _dispatch_impl(session: dict, agent_label: str, task: str, raw_file_access: 
               "tool_call_limit": agent["tool_call_limit"],
               "time_limit_s": timeout_s,
               "time_limit_source": "this sub-agent's own limit" if agent.get("timeout_s") else "the default"}
+    if agent.get("code_exec") and can_use_tools:
+        access["code_execution"] = ("python3 in the isolated sandbox" if writes != "none (read-only)"
+                                    else "python3 in the isolated sandbox (results can't be saved: no file_write)")
     if running_now >= MAX_CONCURRENT_JOBS:
         # Said at dispatch, so a wait isn't mistaken for a hang: it is queued, its
         # time limit hasn't started, and it begins when a slot frees.

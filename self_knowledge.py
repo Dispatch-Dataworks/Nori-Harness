@@ -136,6 +136,7 @@ def _sub_agents_summary() -> dict:
               "enabled": bool(a["enabled"]),
               "tool_call_limit": a["tool_call_limit"], "tool_byte_limit": a["tool_byte_limit"],
               "file_write": bool(a["file_write"]), "web_access": bool(a["web_access"]),
+              "code_exec": bool(a["code_exec"]),
               "write_folder": a["write_folder"] or "(anywhere in the working folder)",
               "exact_file_text_by_default": bool(a["raw_file_access"])}
              for a in sub_agents.list_all()]

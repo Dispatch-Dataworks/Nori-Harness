@@ -178,6 +178,7 @@ import tool_builder
 import turns
 import usertime
 import voice
+import sandbox
 import webtools
 import workfiles
 
@@ -2833,7 +2834,7 @@ class Handler(BaseHTTPRequestHandler):
                             "/admin/webtools": "webtools", "/admin/homeassistant": "homeassistant",
                             "/admin/contexttuning": "contexttuning", "/admin/persona": "persona",
                             "/admin/media": "media", "/admin/health": "health",
-                            "/admin/memorybackend": "memorybackend"}
+                            "/admin/memorybackend": "memorybackend", "/admin/sandbox": "sandbox"}
         if path in settings_aliases:
             if sess["role"] != "admin":
                 return self.forbidden()
@@ -3065,6 +3066,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.homeassistant_discover_post(sess, form)
         if path == "/admin/homeassistant/exposure":
             return self.homeassistant_exposure_post(sess, form)
+        if path == "/admin/sandbox/enabled":
+            return self.sandbox_enabled_post(sess, form)
         if path == "/admin/memorybackend/connection":
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/categories":
@@ -4053,6 +4056,8 @@ class Handler(BaseHTTPRequestHandler):
                     access = ["read-only files"]
                 if a["web_access"]:
                     access.append("web")
+                if a["code_exec"]:
+                    access.append("runs code" if a["file_write"] else "runs code (results not saved)")
                 access.append("exact file text by default" if a["raw_file_access"] else "file gists by default")
                 tools_desc = (f"up to {a['tool_call_limit']} tool call(s), "
                              f"{a['tool_byte_limit']:,} bytes/job, "
@@ -4089,6 +4094,8 @@ class Handler(BaseHTTPRequestHandler):
                 f"placeholder='(anywhere)' style='width:11em;margin-left:.3em'></label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=web_access"
                 f"{' checked' if a['web_access'] else ''}> web search/fetch</label>"
+                f"<label style='font-size:.85em'><input type=checkbox name=code_exec"
+                f"{' checked' if a['code_exec'] else ''}> can run code</label>"
                 f"<label style='font-size:.85em'><input type=checkbox name=raw_file_access"
                 f"{' checked' if a['raw_file_access'] else ''}> exact file text by default</label>"
                 f"<button class='btn'>save</button></form></div>"
@@ -4187,6 +4194,12 @@ class Handler(BaseHTTPRequestHandler):
             "write mode, allow/deny rules). Worth knowing: an agent that can both read your files and "
             "fetch URLs can in principle be talked into sending file content out in a request, "
             "especially if it reads something untrusted -- turn this on only for agents that need it.")
+        code_exec_tip = info_tip(
+            "Adds run_sandboxed_command: python3 (standard library only) in the separate no-network "
+            "sandbox container, run against a COPY of one folder. Needs the workspace switch on the Code "
+            "sandbox tab. Files it creates are saved back only if this agent can also write files "
+            "(same overwrite protection and write folder -- and a write-folder agent can only run code "
+            "inside that folder); a deletion is never applied.")
         byte_limit_tip = info_tip(
             "Cumulative cap across every tool result in one job -- only matters when tool calls are "
             "allowed above. 100 calls each returning a large file costs very differently than 100 "
@@ -4223,6 +4236,8 @@ class Handler(BaseHTTPRequestHandler):
             "<input type=text name=write_folder placeholder='e.g. manuscript/revised -- blank = anywhere'></div>"
             f"<div class=field><label><input type=checkbox name=web_access> web search/fetch "
             f"{web_access_tip}</label></div>"
+            f"<div class=field><label><input type=checkbox name=code_exec> can run code "
+            f"{code_exec_tip}</label></div>"
             f"<div class=field><label><input type=checkbox name=raw_file_access> exact file text by default "
             f"{raw_access_tip}</label></div>"
             "<button class='btn btn-primary btn-block'>add</button></form>"
@@ -4292,7 +4307,7 @@ class Handler(BaseHTTPRequestHandler):
             file_write="file_write" in form, web_access="web_access" in form,
             write_folder=form.get("write_folder") or "",
             raw_file_access="raw_file_access" in form,
-            timeout_s=timeout_s)
+            timeout_s=timeout_s, code_exec="code_exec" in form)
         if not ok:
             return self.subagents_admin_form(sess, str(result))
         return self.subagents_admin_form(sess)
@@ -4372,7 +4387,8 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.subagents_admin_form(sess, err)
         err = sub_agents.set_access(sid, "file_write" in form, "web_access" in form,
-                                    form.get("write_folder") or "", "raw_file_access" in form)
+                                    form.get("write_folder") or "", "raw_file_access" in form,
+                                    code_exec="code_exec" in form)
         if err:
             return self.subagents_admin_form(sess, err)
         return self.subagents_admin_form(sess)
@@ -4911,6 +4927,69 @@ class Handler(BaseHTTPRequestHandler):
         config.set("workspace", sess["workspace_id"], "web_search_enabled", "web_search_enabled" in form)
         config.set("workspace", sess["workspace_id"], "web_fetch_enabled", "web_fetch_enabled" in form)
         return self.webtools_admin_form(sess, info="saved")
+
+    # -- admin: code sandbox (2026-10-04) -- see sandbox.py / docs/sandbox.md
+    def sandbox_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        csrf = esc(sess["csrf"])
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        on = sandbox.is_enabled(sess)
+        st = sandbox.status()
+        if st["reachable"]:
+            chip = (f"<span class='chip active'>sandbox container running</span> "
+                    f"<small class=muted>allowed: {esc(', '.join(st.get('allowed') or []))} · "
+                    f"{st.get('mem_mb')} MB memory limit per run</small>")
+        else:
+            chip = f"<span class=chip>sandbox container not reachable</span> <small class=muted>{esc(st['detail'])}</small>"
+        intro = (
+            "<div class=section><h2>code sandbox</h2>"
+            "<p class=muted>Lets Nori (and any sub-agent with “can run code” ticked) run python3 in a "
+            "separate container that has <b>no network</b>, no secrets, and no access to this instance's "
+            "data. Each run works on a <b>copy</b> of one working-folder folder; files it creates are "
+            "saved back under the usual rules (a file Nori didn't create is never overwritten -- the "
+            "result is saved beside it as name.v2.ext) and a deletion is reported, never applied. "
+            "Python standard library only; every run is logged below.</p>"
+            f"<p>{chip}</p>"
+            "<form method=post action='/admin/sandbox/enabled' style='display:flex;gap:1rem;align-items:center'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<label><input type=checkbox name=sandbox_enabled{' checked' if on else ''}> "
+            "allow running code in the sandbox</label>"
+            "<button class='btn btn-primary'>save</button></form></div>")
+
+        def _row(r: dict) -> str:
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"]))
+            who = f"job #{r['job_id']} ({esc(r['agent'] or '?')})" if r["source"] == "job" else "chat"
+            res = esc(r["outcome"]) + (f" (exit {r['exit_code']})" if r["exit_code"] not in (None, 0) else "")
+            if r["duration_ms"] is not None:
+                res += f" · {r['duration_ms'] / 1000:.1f}s"
+            saved = [c for c in r["changes"] if c.get("saved")]
+            notes = []
+            if saved:
+                notes.append("saved: " + ", ".join(esc(c.get("saved_as") or c["path"]) for c in saved[:6]))
+            skipped = [c for c in r["changes"] if not c.get("saved")]
+            if skipped:
+                notes.append(f"{len(skipped)} change(s) not saved")
+            if r["deleted"]:
+                notes.append(f"{len(r['deleted'])} deletion(s) not applied")
+            if r["error"]:
+                notes.append(esc(r["error"]))
+            return (f"<div class=list-row><div class=list-meta><b><code>{esc(r['command'][:200])}</code></b>"
+                    f"<small>{when} · {who} · in {esc(r['cwd'] or '(top level)')} · {res}"
+                    f"{' · ' + ' · '.join(notes) if notes else ''}</small></div></div>")
+
+        runs = sandbox.recent_runs()
+        log = ("<div class=section><h2>recent runs</h2>"
+               + ("".join(_row(r) for r in runs) if runs else "<p class=muted>nothing has run yet</p>")
+               + "</div>")
+        self._settings_response(sess, "sandbox", e + i + intro + log)
+
+    def sandbox_enabled_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        config.set("workspace", sess["workspace_id"], "sandbox_enabled", "sandbox_enabled" in form)
+        return self.sandbox_admin_form(sess, info="saved")
 
     def webtools_write_mode_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -7459,6 +7538,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("subagents", "Sub-agents"), ("mcp", "MCP servers"),
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
+                                               ("sandbox", "Code sandbox"),
                                                ("homeassistant", "Home Assistant"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
@@ -7636,7 +7716,8 @@ class Handler(BaseHTTPRequestHandler):
                        "homeassistant": self.homeassistant_admin_form,
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
                        "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
-                       "memorybackend": self.memory_backend_admin_form}
+                       "memorybackend": self.memory_backend_admin_form,
+                       "sandbox": self.sandbox_admin_form}
         if tab in admin_pages or tab == "household":
             if sess["role"] != "admin":
                 return self.forbidden()

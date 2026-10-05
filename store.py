@@ -382,6 +382,32 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_user ON jobs(user_id, status);
 
+-- Code sandbox audit (2026-10-04) -- see sandbox.py. One row per
+-- run_sandboxed_command call, whatever the outcome (including refusals), so
+-- "what did she run, for whom, and what did it change" is always answerable.
+-- source is 'chat' or 'job'. changes is a JSON list of {path, status,
+-- saved_as, note/error}; deleted is a JSON list of paths the run deleted in
+-- its COPY (never applied to the real folder).
+CREATE TABLE IF NOT EXISTS sandbox_runs (
+    id            INTEGER PRIMARY KEY,
+    ts            REAL NOT NULL,
+    user_id       INTEGER NOT NULL,
+    source        TEXT NOT NULL,
+    job_id        INTEGER,
+    agent         TEXT,
+    command       TEXT NOT NULL,
+    cwd           TEXT NOT NULL DEFAULT '',
+    outcome       TEXT NOT NULL,
+    exit_code     INTEGER,
+    duration_ms   INTEGER,
+    error         TEXT,
+    stdout_chars  INTEGER NOT NULL DEFAULT 0,
+    stderr_chars  INTEGER NOT NULL DEFAULT 0,
+    changes       TEXT,
+    deleted       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_sandbox_runs_ts ON sandbox_runs(ts);
+
 -- Connected third-party accounts (2026-09-12) -- see connected_accounts.py
 -- (storage) and oauth.py (the actual flow). Tokens encrypted at rest via
 -- crypto.py, same as the sub-agent roster's keys -- these are, if
@@ -1669,6 +1695,10 @@ _MIGRATIONS: list[str] = [
     # jobs._Trace.
     "ALTER TABLE sub_agents ADD COLUMN timeout_s INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN trace TEXT",
+    # Per-agent code execution (2026-10-04) -- adds run_sandboxed_command to
+    # the agent's tool allowlist (jobs.allowed_tool_names). 0 on every
+    # existing row; also needs the workspace's sandbox_enabled setting.
+    "ALTER TABLE sub_agents ADD COLUMN code_exec INTEGER NOT NULL DEFAULT 0",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()
