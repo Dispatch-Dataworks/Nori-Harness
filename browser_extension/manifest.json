@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Nori browser bridge",
+  "version": "0.1.0",
+  "description": "Lets your own Nori instance see and use this browser, only during a session you start, only on sites you allow.",
+  "permissions": ["tabs", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Nori" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

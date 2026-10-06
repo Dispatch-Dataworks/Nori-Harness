@@ -1,0 +1,35 @@
+{
+  "_comment": "Shared by tests/test_nori_bridge.py (Python, bridge.host_matches / normalize_pattern) and tests/test_browser_extension.js (browser_extension/lib.js hostMatches) so the two implementations of the site allowlist can't drift apart.",
+  "host_matches": [
+    ["example.com", "example.com", true],
+    ["www.example.com", "example.com", false],
+    ["example.com", "*.example.com", true],
+    ["www.example.com", "*.example.com", true],
+    ["a.b.example.com", "*.example.com", true],
+    ["evilexample.com", "*.example.com", false],
+    ["example.com.evil.com", "example.com", false],
+    ["example.com.evil.com", "*.example.com", false],
+    ["EXAMPLE.com", "example.COM", true],
+    ["example.com.", "example.com", true],
+    ["", "example.com", false],
+    ["example.com", "", false],
+    ["notexample.com", "example.com", false],
+    ["mail.example.com", ".example.com", false],
+    ["github.com", "*.github.com", true],
+    ["localhost", "localhost", true]
+  ],
+  "normalize": [
+    ["https://Mail.Example.com/inbox?x=1", "mail.example.com"],
+    ["*.Example.com", "*.example.com"],
+    ["example.com:8080/path", "example.com"],
+    ["  example.com  ", "example.com"],
+    ["*", null],
+    ["*.com", null],
+    ["com", null],
+    ["", null],
+    ["exa mple.com", null],
+    ["-bad.example.com", null],
+    ["javascript:alert(1)", null],
+    ["http://", null]
+  ]
+}

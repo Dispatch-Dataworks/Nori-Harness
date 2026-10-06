@@ -178,6 +178,7 @@ import tool_builder
 import turns
 import usertime
 import voice
+import bridge
 import sandbox
 import webtools
 import workfiles
@@ -2834,7 +2835,8 @@ class Handler(BaseHTTPRequestHandler):
                             "/admin/webtools": "webtools", "/admin/homeassistant": "homeassistant",
                             "/admin/contexttuning": "contexttuning", "/admin/persona": "persona",
                             "/admin/media": "media", "/admin/health": "health",
-                            "/admin/memorybackend": "memorybackend", "/admin/sandbox": "sandbox"}
+                            "/admin/memorybackend": "memorybackend", "/admin/sandbox": "sandbox",
+                            "/admin/computeruse": "computeruse"}
         if path in settings_aliases:
             if sess["role"] != "admin":
                 return self.forbidden()
@@ -2901,6 +2903,12 @@ class Handler(BaseHTTPRequestHandler):
         # upload route just above.
         if path.startswith("/paci/inbound/"):
             return self.paci_inbound_post(path)
+
+        # Browser bridge (2026-10-05): the paired extension authenticates with a
+        # bearer token, not a cookie, so these sit ahead of the login/CSRF gates
+        # for the same reason as the PACI route above. See bridge.py.
+        if path in ("/bridge/poll", "/bridge/result"):
+            return self.bridge_post(path)
 
         form = self.form()
 
@@ -3068,6 +3076,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.homeassistant_exposure_post(sess, form)
         if path == "/admin/sandbox/enabled":
             return self.sandbox_enabled_post(sess, form)
+        if path.startswith("/admin/computeruse/"):
+            return self.computeruse_post(sess, path, form)
         if path == "/admin/memorybackend/connection":
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/categories":
@@ -4927,6 +4937,155 @@ class Handler(BaseHTTPRequestHandler):
         config.set("workspace", sess["workspace_id"], "web_search_enabled", "web_search_enabled" in form)
         config.set("workspace", sess["workspace_id"], "web_fetch_enabled", "web_fetch_enabled" in form)
         return self.webtools_admin_form(sess, info="saved")
+
+    # -- admin: computer use / browser bridge (2026-10-05) -- see bridge.py / docs/computer-use.md
+    def computeruse_admin_form(self, sess: dict, err: str = "", info: str = "", new_token: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        csrf = esc(sess["csrf"])
+        uid, wsid = sess["user_id"], sess["workspace_id"]
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        on = bridge.master_enabled(wsid)
+        until = bridge.session_until(uid)
+        active = bridge.session_active(uid, wsid)
+        is_conn = bridge.connected(uid)
+
+        def post(action, body="", style=""):
+            return (f"<form method=post action='/admin/computeruse/{action}' style='display:inline;{style}'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>{body}")
+
+        intro = (
+            "<div class=section><h2>computer use</h2>"
+            "<p class=muted>Lets Nori look at and use <b>your own browser</b> through a small extension, only "
+            "while you've started a session, only on sites you list below. Risky actions (send, submit, buy, "
+            "delete, a link to another site) pause for your approval; password and payment fields are never "
+            "typed into or read; every page she reads is screened as untrusted; every action is logged.</p>"
+            + post("enabled", "<label><input type=checkbox name=bridge_enabled"
+                   f"{' checked' if on else ''}> allow computer use on this instance</label> "
+                   "<button class='btn btn-primary'>save</button></form>")
+            + "</div>")
+
+        if active:
+            left = max(0, int((until - time.time()) // 60))
+            sess_body = (f"<p><span class='chip active'>session running</span> "
+                         f"<small class=muted>about {left} min left · browser "
+                         f"{'connected' if is_conn else 'NOT connected'}</small></p>"
+                         + post("stop", "<button class='btn btn-danger'>STOP NOW (kill switch)</button></form>"))
+        else:
+            opts = "".join(f"<option value={m}>{m} minutes</option>" for m in bridge.SESSION_CHOICES_MIN)
+            sess_body = ("<p><span class=chip>no session</span> <small class=muted>Nori has no browser tools "
+                         "right now</small></p>"
+                         + post("session", f"<select name=minutes>{opts}</select> "
+                                f"<button class='btn btn-primary'{'' if on and bridge.has_token(uid) else ' disabled'}>"
+                                "start a session</button></form>")
+                         + ("" if on and bridge.has_token(uid) else
+                            "<p class=muted>Turn the switch on and pair a browser first.</p>"))
+        session_box = f"<div class=section><h2>session</h2>{sess_body}</div>"
+
+        # pairing
+        tok_rows = []
+        for t in bridge.list_tokens(uid):
+            seen = (time.strftime("%Y-%m-%d %H:%M", time.localtime(t["last_seen_ts"])) if t["last_seen_ts"] else "never")
+            state = "revoked" if t["revoked_ts"] else f"last seen {seen}"
+            tok_rows.append(
+                f"<div class=list-row><div class=list-meta><b>{esc(t['label'])}</b><small>{state}</small></div>"
+                + ("" if t["revoked_ts"] else
+                   "<div class=list-actions>" + post(f"revoke/{t['id']}", "<button class='btn btn-danger'>revoke</button></form>")
+                   + "</div>")
+                + "</div>")
+        shown = (f"<div class=section style='border:2px solid var(--accent,#c60)'><h2>new token -- copy it now</h2>"
+                 f"<p class=muted>It's shown only this once. Paste it into the extension's options, with this "
+                 f"server's address.</p><p><code style='word-break:break-all'>{esc(new_token)}</code></p></div>"
+                 ) if new_token else ""
+        pair_box = (
+            "<div class=section><h2>paired browsers</h2>"
+            + ("".join(tok_rows) or "<p class=muted>none yet</p>")
+            + post("pair", "<div class=field><input type=text name=label placeholder='label, e.g. Chrome on my PC' "
+                   "maxlength=60></div><button class='btn btn-primary'>create a token</button></form>")
+            + "<p class=muted>Install: in Chrome open <code>chrome://extensions</code>, turn on Developer mode, "
+              "<b>Load unpacked</b>, choose the <code>browser_extension</code> folder of this project, open its "
+              "options, paste the address and token.</p></div>")
+
+        # allowlist
+        rule_rows = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(r['pattern'])}</b></div><div class=list-actions>"
+            + post(f"rules/{r['id']}/delete", "<button class='btn'>remove</button></form>") + "</div></div>"
+            for r in bridge.rules())
+        rules_box = (
+            "<div class=section><h2>allowed sites</h2>"
+            "<p class=muted>Deny by default: she can see and touch only tabs on these sites. "
+            "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain.</p>"
+            + (rule_rows or "<p class=muted>none -- she can't see any tab yet</p>")
+            + post("rules", "<div class=field style='display:flex;gap:.4rem'><input type=text name=pattern "
+                   "placeholder='e.g. *.github.com'><button class='btn btn-primary'>add</button></div></form>")
+            + "</div>")
+
+        # approvals
+        pend = bridge.pending_approvals(uid)
+        pend_rows = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(p['summary'] or p['action'])}</b>"
+            f"<small>on {esc(p['host'] or '?')} · asked {time.strftime('%H:%M', time.localtime(p['created_ts']))}"
+            f"</small></div><div class=list-actions>"
+            + post(f"approve/{p['id']}", "<button class='btn btn-primary'>approve</button></form>")
+            + post(f"deny/{p['id']}", "<button class='btn btn-danger'>deny</button></form>")
+            + "</div></div>" for p in pend)
+        approvals_box = ("<div class=section><h2>waiting for your approval</h2>"
+                         + (pend_rows or "<p class=muted>nothing waiting</p>") + "</div>")
+
+        # activity
+        def _row(r: dict) -> str:
+            when = time.strftime("%m-%d %H:%M:%S", time.localtime(r["created_ts"]))
+            extra = f" · {esc(r['error'])}" if r["error"] else ""
+            appr = f" · approval: {esc(r['approval'])}" if r["approval"] != "none" else ""
+            return (f"<div class=list-row><div class=list-meta><b>{esc(r['summary'] or r['action'])}</b>"
+                    f"<small>{when} · {esc(r['host'] or '-')} · {esc(r['status'])}{appr}{extra}</small></div></div>")
+        cmds = bridge.recent_commands()
+        log_box = ("<div class=section><h2>recent activity</h2>"
+                   + ("".join(_row(r) for r in cmds) if cmds else "<p class=muted>nothing yet</p>") + "</div>")
+        self._settings_response(sess, "computeruse",
+                                e + i + shown + intro + session_box + approvals_box + pair_box + rules_box + log_box)
+
+    def computeruse_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        uid, wsid = sess["user_id"], sess["workspace_id"]
+        sub = path[len("/admin/computeruse/"):].strip("/").split("/")
+        action = sub[0]
+        if action == "enabled":
+            on = "bridge_enabled" in form
+            config.set("workspace", wsid, "bridge_enabled", on)
+            if not on:
+                bridge.stop_session(uid)  # switching it off ends any session
+            return self.computeruse_admin_form(sess, info="saved")
+        if action == "pair":
+            raw = bridge.create_token(uid, wsid, form.get("label") or "")
+            return self.computeruse_admin_form(sess, new_token=raw)
+        if action == "revoke" and len(sub) == 2 and sub[1].isdigit():
+            if any(t["id"] == int(sub[1]) for t in bridge.list_tokens(uid)):
+                bridge.revoke_token(int(sub[1]))
+            return self.computeruse_admin_form(sess, info="revoked")
+        if action == "session":
+            if not bridge.master_enabled(wsid) or not bridge.has_token(uid):
+                return self.computeruse_admin_form(sess, err="turn computer use on and pair a browser first")
+            try:
+                bridge.start_session(uid, int(form.get("minutes") or 0))
+            except ValueError as exc:
+                return self.computeruse_admin_form(sess, err=str(exc))
+            return self.computeruse_admin_form(sess, info="session started")
+        if action == "stop":
+            n = bridge.stop_session(uid)
+            return self.computeruse_admin_form(sess, info=f"stopped ({n} pending action(s) cancelled)")
+        if action == "rules" and len(sub) == 1:
+            ok, msg = bridge.add_rule(form.get("pattern") or "")
+            return self.computeruse_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        if action == "rules" and len(sub) == 3 and sub[1].isdigit() and sub[2] == "delete":
+            bridge.remove_rule(int(sub[1]))
+            return self.computeruse_admin_form(sess, info="removed")
+        if action in ("approve", "deny") and len(sub) == 2 and sub[1].isdigit():
+            ok, msg = bridge.resolve_approval(uid, int(sub[1]), action == "approve", uid)
+            return self.computeruse_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        return self.not_found()
 
     # -- admin: code sandbox (2026-10-04) -- see sandbox.py / docs/sandbox.md
     def sandbox_admin_form(self, sess: dict, err: str = "", info: str = ""):
@@ -7225,6 +7384,47 @@ class Handler(BaseHTTPRequestHandler):
             peer_id, method="POST", path=path, headers=self.headers, raw_body=raw)
         return self.send_json(resp, code)
 
+    def bridge_post(self, path: str):
+        """The browser extension's two calls: /bridge/poll (long-poll for a
+        command) and /bridge/result (the answer). Bearer-token authenticated;
+        a bad token counts against the same per-IP failure limiter login uses."""
+        ip = self.ip()
+        if accounts.rate_limited(ip):
+            return self.send_json({"error": "too many attempts"}, 429)
+        auth = self.headers.get("Authorization", "")
+        token = bridge.authenticate(auth[7:].strip()) if auth.lower().startswith("bearer ") else None
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        limit = bridge.MAX_BODY_BYTES if path == "/bridge/result" else bridge.MAX_POLL_BODY_BYTES
+        if n < 0 or n > limit:
+            return self.send_json({"error": "oversized body"}, 413)
+        raw = self.rfile.read(n) if n else b""
+        if token is None:
+            accounts.record_fail(ip)
+            return self.send_json({"error": "unauthorized"}, 401)
+        if not bridge.master_enabled(token["workspace_id"]):
+            return self.send_json({"error": "computer use is switched off", "active": False}, 403)
+        try:
+            body = json.loads(raw) if raw else {}
+        except ValueError:
+            return self.send_json({"error": "bad json"}, 400)
+        if not isinstance(body, dict):
+            return self.send_json({"error": "bad json"}, 400)
+        if path == "/bridge/poll":
+            if isinstance(body.get("ext"), dict):
+                bridge.set_ext_info(token["id"], body["ext"])
+            if body.get("paused"):
+                # A paused extension still reports in (so the popup/settings can say "paused")
+                # but takes no commands.
+                time.sleep(min(bridge.INACTIVE_POLL_WAIT_S, 5))
+                return self.send_json({"active": False, "paused": True, "command": None})
+            return self.send_json(bridge.poll(token))
+        try:
+            cmd_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            return self.send_json({"error": "bad command id"}, 400)
+        ok, msg = bridge.complete(token, cmd_id, body)
+        return self.send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+
     # Peer conversation diagnostics and pending approvals live with peer
     # settings. list_peers(sess) retains the existing visibility scope.
     @staticmethod
@@ -7539,6 +7739,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
                                                ("sandbox", "Code sandbox"),
+                                               ("computeruse", "Computer use"),
                                                ("homeassistant", "Home Assistant"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
@@ -7717,7 +7918,8 @@ class Handler(BaseHTTPRequestHandler):
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
                        "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
                        "memorybackend": self.memory_backend_admin_form,
-                       "sandbox": self.sandbox_admin_form}
+                       "sandbox": self.sandbox_admin_form,
+                       "computeruse": self.computeruse_admin_form}
         if tab in admin_pages or tab == "household":
             if sess["role"] != "admin":
                 return self.forbidden()
@@ -9922,6 +10124,7 @@ def main() -> int:
     reminders.register_peer_actions()  # same reasoning, see that module's own docstring
     trackers.register_peer_actions()  # same reasoning, see that module's own docstring
     swept = jobs.sweep_orphaned()
+    bridge.interrupt_unfinished()  # a restart ended every in-flight browser command
     peers.start()
     scheduler.start()
     if swept:

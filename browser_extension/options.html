@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Nori bridge options</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 34rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem; box-sizing: border-box; font: inherit; }
+  button { margin-top: 1rem; padding: .5rem 1rem; font: inherit; }
+  .muted { color: #666; font-size: .9em; } #msg { margin-top: .75rem; }
+  @media (prefers-color-scheme: dark) { body { background: #1c1c1c; color: #ddd; } input { background: #2a2a2a; color: #ddd; border: 1px solid #555; } .muted { color: #999; } }
+</style></head>
+<body>
+<h1>Nori browser bridge</h1>
+<p class="muted">Pairs this browser with your Nori server. Create a token in Nori: Settings → Computer use → "create a token".</p>
+<label for="url">Nori address</label>
+<input id="url" placeholder="http://127.0.0.1:8877" autocomplete="off">
+<label for="token">Token</label>
+<input id="token" type="password" placeholder="nbr_..." autocomplete="off">
+<button id="save">Save</button>
+<p id="msg" class="muted"></p>
+<script src="options.js"></script>
+</body></html>

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Nori</title>
+<style>
+  body { font: 14px system-ui, sans-serif; width: 18rem; margin: 0; padding: .9rem; color: #222; }
+  h1 { font-size: 1rem; margin: 0 0 .5rem; } .state { font-weight: 600; margin: .25rem 0; }
+  .muted { color: #666; font-size: .85em; } button { margin-top: .7rem; width: 100%; padding: .5rem; font: inherit; }
+  @media (prefers-color-scheme: dark) { body { background: #1c1c1c; color: #ddd; } .muted { color: #999; } }
+</style></head>
+<body>
+<h1>Nori browser bridge</h1>
+<div id="state" class="state">…</div>
+<div id="detail" class="muted"></div>
+<button id="pause">Pause</button>
+<button id="options">Options</button>
+<script src="popup.js"></script>
+</body></html>

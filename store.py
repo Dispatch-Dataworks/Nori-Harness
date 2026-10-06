@@ -408,6 +408,49 @@ CREATE TABLE IF NOT EXISTS sandbox_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_sandbox_runs_ts ON sandbox_runs(ts);
 
+-- Browser bridge (2026-10-05) -- see bridge.py. bridge_tokens: one row per
+-- paired browser extension; only sha256(token) is stored, the raw token is
+-- shown once. bridge_commands: the queue AND the audit log -- every command
+-- she sends the browser, its outcome, and any approval it needed, kept after it
+-- finishes. bridge_site_rules: the allowlist (deny by default) -- only an admin
+-- can change it, over HTTP, never through a tool.
+CREATE TABLE IF NOT EXISTS bridge_tokens (
+    id            INTEGER PRIMARY KEY,
+    user_id       INTEGER NOT NULL,
+    workspace_id  INTEGER NOT NULL,
+    label         TEXT NOT NULL,
+    token_hash    TEXT NOT NULL UNIQUE,
+    created_ts    REAL NOT NULL,
+    last_seen_ts  REAL,
+    revoked_ts    REAL,
+    ext_info      TEXT
+);
+CREATE TABLE IF NOT EXISTS bridge_commands (
+    id            INTEGER PRIMARY KEY,
+    user_id       INTEGER NOT NULL,
+    token_id      INTEGER,
+    action        TEXT NOT NULL,
+    args          TEXT NOT NULL,
+    host          TEXT,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    approval      TEXT NOT NULL DEFAULT 'none',
+    summary       TEXT,
+    result        TEXT,
+    error         TEXT,
+    source        TEXT NOT NULL DEFAULT 'chat',
+    created_ts    REAL NOT NULL,
+    claimed_ts    REAL,
+    done_ts       REAL,
+    resolved_by   INTEGER,
+    force_approval INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_bridge_commands_user ON bridge_commands(user_id, status);
+CREATE TABLE IF NOT EXISTS bridge_site_rules (
+    id          INTEGER PRIMARY KEY,
+    pattern     TEXT NOT NULL UNIQUE,
+    added_ts    REAL NOT NULL
+);
+
 -- Connected third-party accounts (2026-09-12) -- see connected_accounts.py
 -- (storage) and oauth.py (the actual flow). Tokens encrypted at rest via
 -- crypto.py, same as the sub-agent roster's keys -- these are, if

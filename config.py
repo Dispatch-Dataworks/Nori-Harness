@@ -241,6 +241,13 @@ _SPEC: dict[str, tuple] = {
     # separate `sandbox` container (docker-compose.yml) to be running; see
     # sandbox.py and docs/sandbox.md.
     "sandbox_enabled": (False, bool, "workspace", False, "let her run code in the isolated sandbox container"),
+    # Browser bridge ("computer use", 2026-10-05) -- see bridge.py and
+    # docs/computer-use.md. bridge_enabled is the master switch (off: no token
+    # works, no tool exists). bridge_session_until is a unix time, per user: the
+    # browser_* tools exist ONLY while it's in the future -- a deliberate,
+    # time-boxed "she may use my browser now", ended early by the kill switch.
+    "bridge_enabled": (False, bool, "workspace", False, "let the paired browser extension take commands from her"),
+    "bridge_session_until": (0, int, "user", False, "end of the current computer-use session (unix time; 0 = none)"),
     # default_model_slug removed 2026-09-30 -- superseded by model_chain
     # (see models.py/providers.py): primary+fallback are now a real
     # ordered table, not a single scalar setting, and there's deliberately
