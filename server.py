@@ -341,6 +341,17 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
+def approval_card_html(a) -> str:
+    """The empty shell of a browser-approval card for server-rendered history (see
+    bridge.py and CHAT_JS's renderApproval, which fills it in -- one renderer for
+    history and live messages). '' when the message carries no approval."""
+    if not isinstance(a, dict) or a.get("id") is None:
+        return ""
+    return (f"<div class=approval-card data-id='{esc(str(a.get('id')))}' "
+            f"data-status='{esc(str(a.get('status') or 'pending'))}' data-host='{esc(str(a.get('host') or ''))}' "
+            f"data-reason='{esc(str(a.get('reason') or ''))}'></div>")
+
+
 def info_tip(text: str) -> str:
     """The shared long-explanation component (2026-09-18, design pass --
     his own instruction: brief text stays inline, longer explanations
@@ -947,6 +958,11 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
    conversation. Same idea as a sibling application's .toolline. -- */
 .toolline{align-self:center;color:var(--text-mute);font-size:.72rem;opacity:.8;margin:.2rem 0}
 .msg-image{padding:.35rem;background:var(--surface-2)}
+.approval-card{margin-top:.55rem;padding:.55rem .65rem;border:1px solid var(--border,#8884);border-radius:.6rem;background:var(--surface-2)}
+.approval-q{font-weight:600;margin-bottom:.4rem}
+.approval-btns{display:flex;gap:.5rem;flex-wrap:wrap}
+.approval-why,.approval-done{font-size:.8rem;margin-top:.35rem}
+.approval-btns button:disabled{opacity:.55}
 .msg-caption{padding:.35rem .3rem 0;font-size:.85rem}
 /* Chat photo, capped (2026-09-15, operator's own ask): min(320px,100%),
    not a bare percentage of the bubble -- nori's own chat column has no
@@ -1490,6 +1506,43 @@ CHAT_JS = (
     "var sending=false,polling=false,unread=0;"
     "var voiceModalOpen=false;"  # set/read by the voice-mode block far below; declared here since addMessage (right below) already needs to check it
     "function stateColor(s){return COLORS[s]||'#95a5a6';}"
+    # Browser-approval cards (2026-10-06, bridge.py): when she pauses on a risky
+    # browser action her message carries meta.approval; this renders Approve / Deny
+    # right in the chat, and the card's status text once it's been decided.
+    # Server-rendered history emits an empty .approval-card with data-* and
+    # hydrateApprovals() fills it, so both paths share ONE renderer. textContent only.
+    "var APPROVAL_TEXT={approved:'Approved — running it now…',done:'Approved, and it went through.',"
+    "failed:'Approved, but it didn\\'t work.',denied:'Denied.',expired:'Expired — nothing was done. Ask her again.',"
+    "cancelled:'Cancelled — the session ended.',error:'Couldn\\'t record that.'};"
+    "function renderApproval(box,status,detail){"
+    "box.dataset.status=status;while(box.firstChild)box.removeChild(box.firstChild);"
+    "if(status==='pending'){"
+    "var q=document.createElement('div');q.className='approval-q';"
+    "q.textContent='Allow this on '+(box.dataset.host||'the page')+'?';box.appendChild(q);"
+    "var row=document.createElement('div');row.className='approval-btns';"
+    "['approve','deny'].forEach(function(d){var b=document.createElement('button');b.type='button';"
+    "b.className='btn '+(d==='approve'?'btn-primary':'btn-danger');b.dataset.decision=d;"
+    "b.textContent=d==='approve'?'Approve':'Deny';row.appendChild(b);});box.appendChild(row);"
+    "if(box.dataset.reason){var r=document.createElement('div');r.className='approval-why muted';"
+    "r.textContent='Why it paused: '+box.dataset.reason;box.appendChild(r);}"
+    "}else{var t=document.createElement('div');t.className='approval-done muted';"
+    "t.textContent=detail||APPROVAL_TEXT[status]||status;box.appendChild(t);}}"
+    "function approvalBox(a){var box=document.createElement('div');box.className='approval-card';"
+    "box.dataset.id=a.id;box.dataset.host=a.host||'';box.dataset.reason=a.reason||'';"
+    "renderApproval(box,a.status||'pending');return box;}"
+    "function hydrateApprovals(){var boxes=msglist?msglist.querySelectorAll('.approval-card'):[];"
+    "for(var i=0;i<boxes.length;i++){renderApproval(boxes[i],boxes[i].dataset.status||'pending');}}"
+    "if(msglist)msglist.addEventListener('click',function(e){"
+    "var btn=e.target.closest?e.target.closest('.approval-card button[data-decision]'):null;if(!btn)return;"
+    "var box=btn.closest('.approval-card');var btns=box.querySelectorAll('button');"
+    "for(var i=0;i<btns.length;i++)btns[i].disabled=true;"
+    "fetch('/bridge/approval',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:'csrf='+encodeURIComponent(CSRF)+'&id='+encodeURIComponent(box.dataset.id)+'&decision='+btn.dataset.decision})"
+    ".then(function(r){return r.json();}).then(function(j){"
+    "if(j&&j.ok)renderApproval(box,j.status||'approved');"
+    "else renderApproval(box,j&&j.status&&j.status!=='pending'?j.status:'error',j&&j.message);})"
+    ".catch(function(){renderApproval(box,'error');});});"
+    "hydrateApprovals();"
     "function setSendDisabled(on){var b=document.getElementById('sendBtn'),i=document.getElementById('msgInput');"
     "if(b)b.disabled=on;if(i)i.disabled=on;}"
 
@@ -1708,6 +1761,7 @@ CHAT_JS = (
     "var b=document.createElement('div');b.className='msg '+m.role;"
     "if(m.id!=null)b.id='message-'+m.id;"
     "b.textContent=m.content;"
+    "if(m.meta&&m.meta.approval)b.appendChild(approvalBox(m.meta.approval));"
     "var acts=msgActions(m);if(acts)b.appendChild(acts);"
     "msglist.appendChild(b);scrollDown();"
     # Voice mode mirror -- the ONE hook that makes voice mode's transcript
@@ -3078,6 +3132,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.sandbox_enabled_post(sess, form)
         if path.startswith("/admin/computeruse/"):
             return self.computeruse_post(sess, path, form)
+        if path == "/bridge/approval":
+            return self.bridge_approval_post(sess, form)
         if path == "/admin/memorybackend/connection":
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/categories":
@@ -5045,6 +5101,25 @@ class Handler(BaseHTTPRequestHandler):
                    + ("".join(_row(r) for r in cmds) if cmds else "<p class=muted>nothing yet</p>") + "</div>")
         self._settings_response(sess, "computeruse",
                                 e + i + shown + intro + session_box + approvals_box + pair_box + rules_box + log_box)
+
+    def bridge_approval_post(self, sess: dict, form: dict):
+        """Approve / Deny from the chat card (fetch, JSON back). Cookie session +
+        CSRF like every other session POST (already checked by do_POST before this
+        is reached); admin only, and only your own pending requests -- the same
+        bridge.resolve_approval the settings page uses."""
+        if sess["role"] != "admin":
+            return self.send_json({"ok": False, "message": "admin only", "status": "error"}, 403)
+        try:
+            cmd_id = int(form.get("id", ""))
+        except (TypeError, ValueError):
+            return self.send_json({"ok": False, "message": "bad id", "status": "error"}, 400)
+        decision = form.get("decision", "")
+        if decision not in ("approve", "deny"):
+            return self.send_json({"ok": False, "message": "decision must be approve or deny", "status": "error"}, 400)
+        ok, msg = bridge.resolve_approval(sess["user_id"], cmd_id, decision == "approve", sess["user_id"])
+        cmd = bridge._cmd(cmd_id)
+        status = bridge._CARD_STATUS.get(cmd["status"], cmd["status"]) if cmd and cmd["user_id"] == sess["user_id"] else "error"
+        return self.send_json({"ok": ok, "message": msg, "status": status}, 200 if ok else 409)
 
     def computeruse_post(self, sess: dict, path: str, form: dict):
         if sess["role"] != "admin":
@@ -9545,8 +9620,14 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError):
                     pass
             actions = f"<span class=msg-actions>{copy_btn}{debug_btn}</span>" if copy_btn or debug_btn else ""
+            card = ""
+            if m["role"] == "assistant" and m.get("meta"):
+                try:
+                    card = approval_card_html(json.loads(m["meta"]).get("approval"))
+                except (ValueError, TypeError, AttributeError):
+                    pass
             return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}'>"
-                   f"{esc(m['content'])}{actions}</div>")
+                   f"{esc(m['content'])}{card}{actions}</div>")
 
         # the state shown on the LAST page load, before whatever just
         # happened (a new reply, or nothing if this is a plain reload) --

@@ -1742,6 +1742,9 @@ _MIGRATIONS: list[str] = [
     # the agent's tool allowlist (jobs.allowed_tool_names). 0 on every
     # existing row; also needs the workspace's sandbox_enabled setting.
     "ALTER TABLE sub_agents ADD COLUMN code_exec INTEGER NOT NULL DEFAULT 0",
+    # The chat message that carries a browser-approval card (bridge.py), so the
+    # card's status can be kept in step with the command it represents.
+    "ALTER TABLE bridge_commands ADD COLUMN message_id INTEGER",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

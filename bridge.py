@@ -230,9 +230,14 @@ def stop_session(user_id: int) -> int:
     config.set("user", user_id, "bridge_session_until", 0)
     _suspicious_until.pop(user_id, None)
     now = time.time()
+    carded = [r["id"] for r in store.read(lambda c: c.execute(
+        "SELECT id FROM bridge_commands WHERE user_id=? AND message_id IS NOT NULL "
+        "AND status IN ('queued','claimed','awaiting_approval')", (user_id,)).fetchall())]
     n = store.write(lambda c: c.execute(
         "UPDATE bridge_commands SET status='cancelled', error='session ended', done_ts=? WHERE user_id=? "
         "AND status IN ('queued','claimed','awaiting_approval')", (now, user_id)).rowcount)
+    for cid in carded:
+        sync_card(cid)
     for ev in list(_waiters.values()):
         ev.set()
     with _cond:
@@ -258,16 +263,48 @@ def _clip(s, n) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", " ", str(s or ""))[:n]
 
 
-def _notify(user_id: int, text: str) -> None:
+def _notify(user_id: int, text: str, meta: dict | None = None) -> int:
     import conversation
     import emotion
-    conversation.add_message(user_id, "assistant", text, kind="proactive", emotion=emotion.get_state(user_id))
+    return conversation.add_message(user_id, "assistant", text, kind="proactive",
+                                    emotion=emotion.get_state(user_id), meta=meta)
+
+
+# What a chat approval card says about the command it stands for.
+_CARD_STATUS = {"awaiting_approval": "pending", "queued": "approved", "claimed": "approved", "done": "done",
+                "failed": "failed", "denied": "denied", "expired": "expired", "cancelled": "cancelled"}
+
+
+def sync_card(cmd_id: int) -> None:
+    """Keep the chat message's approval card in step with its command, so a page
+    loaded (or polled) later shows what actually happened instead of buttons that
+    no longer do anything."""
+    cmd = _cmd(cmd_id)
+    if not cmd or not cmd.get("message_id"):
+        return
+    status = _CARD_STATUS.get(cmd["status"], cmd["status"])
+
+    def _w(c):
+        row = c.execute("SELECT meta FROM messages WHERE id=?", (cmd["message_id"],)).fetchone()
+        if row is None:
+            return
+        try:
+            meta = json.loads(row["meta"]) if row["meta"] else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if isinstance(meta.get("approval"), dict):
+            meta["approval"]["status"] = status
+            c.execute("UPDATE messages SET meta=? WHERE id=?", (json.dumps(meta), cmd["message_id"]))
+    store.write(_w)
 
 
 def sweep() -> None:
     """Expire what nobody will ever answer: a command no browser picked up, one
     picked up and never answered, an approval nobody gave."""
     now = time.time()
+    stale_cards = [r["id"] for r in store.read(lambda c: c.execute(
+        "SELECT id FROM bridge_commands WHERE status='awaiting_approval' AND message_id IS NOT NULL AND created_ts<?",
+        (now - APPROVAL_TTL_S,)).fetchall())]
     store.write(lambda c: (
         c.execute("UPDATE bridge_commands SET status='expired', error='the browser never picked this up', "
                   "done_ts=? WHERE status='queued' AND created_ts<?", (now, now - STALE_QUEUED_S)),
@@ -275,6 +312,8 @@ def sweep() -> None:
                   "WHERE status='claimed' AND claimed_ts<?", (now, now - STALE_CLAIMED_S)),
         c.execute("UPDATE bridge_commands SET status='expired', approval='expired', error='no approval in time', "
                   "done_ts=? WHERE status='awaiting_approval' AND created_ts<?", (now, now - APPROVAL_TTL_S))))
+    for cid in stale_cards:
+        sync_card(cid)
 
 
 def interrupt_unfinished() -> int:
@@ -358,9 +397,13 @@ def complete(token: dict, cmd_id: int, payload: dict) -> tuple[bool, str]:
             "summary=?, result=? WHERE id=?",
             (json.dumps(args), host, f"{cmd['action']}: {desc}"[:300],
              json.dumps({"reason": _clip(payload.get("reason"), 200)}), cmd_id)))
-        _notify(cmd["user_id"],
-                f"I'm paused waiting for your OK: I want to **{cmd['action']}** {desc} on **{host or 'the page'}**. "
-                f"Approve or deny it in Settings → Computer use.")
+        mid = _notify(cmd["user_id"],
+                      f"I'm paused waiting for your OK: I want to {cmd['action']} {desc} on {host or 'the page'}. "
+                      f"Approve or deny it below (or in Settings → Computer use).",
+                      meta={"approval": {"id": cmd_id, "status": "pending", "action": cmd["action"],
+                                         "summary": desc, "host": host or "",
+                                         "reason": _clip(payload.get("reason"), 200)}})
+        store.write(lambda c: c.execute("UPDATE bridge_commands SET message_id=? WHERE id=?", (mid, cmd_id)))
     elif payload.get("ok"):
         store.write(lambda c: c.execute(
             "UPDATE bridge_commands SET status='done', result=?, host=?, done_ts=? WHERE id=?",
@@ -369,6 +412,7 @@ def complete(token: dict, cmd_id: int, payload: dict) -> tuple[bool, str]:
         store.write(lambda c: c.execute(
             "UPDATE bridge_commands SET status='failed', error=?, host=?, done_ts=? WHERE id=?",
             (_clip(payload.get("error") or "the browser reported a failure", 400), host, now, cmd_id)))
+    sync_card(cmd_id)
     ev = _waiters.get(cmd_id)
     if ev is not None:
         ev.set()
@@ -395,12 +439,14 @@ def resolve_approval(user_id: int, cmd_id: int, approve: bool, resolver_id: int)
         store.write(lambda c: c.execute(
             "UPDATE bridge_commands SET status='queued', approval='approved', resolved_by=?, created_ts=? WHERE id=?",
             (resolver_id, time.time(), cmd_id)))
+        sync_card(cmd_id)
         with _cond:
             _cond.notify_all()
         return True, "approved -- the browser will do it now"
     store.write(lambda c: c.execute(
         "UPDATE bridge_commands SET status='denied', approval='denied', resolved_by=?, done_ts=? WHERE id=?",
         (resolver_id, time.time(), cmd_id)))
+    sync_card(cmd_id)
     _notify(user_id, f"Understood -- I won't do that ({cmd['summary']}).")
     return True, "denied"
 

@@ -468,6 +468,125 @@ class Approvals(unittest.TestCase):
         self.assertTrue(any("didn't work" in m["content"] for m in self._messages()))
 
 
+class ChatApprovalCards(unittest.TestCase):
+    """The approval card in chat (2026-10-06): the pause message carries
+    meta.approval, its status follows the command, and a chat POST resolves it."""
+
+    def setUp(self):
+        _reset()
+        self.token, self.raw = _on()
+        self.browser = None
+
+    def tearDown(self):
+        if self.browser:
+            self.browser.stop()
+
+    def _pause(self):
+        def script(cmd):
+            if cmd.get("approved"):
+                return {"ok": True, "result": {"ok": True}, "host": "www.example.com"}
+            return {"needs_approval": True, "reason": "this submits a form", "host": "www.example.com",
+                    "element": {"describe": 'click button "Send"', "fingerprint": "f1"}}
+        if self.browser is None:       # one fake browser per test, however many pauses it makes
+            self.browser = FakeBrowser(self.token, script)
+            self.browser.start()
+        bridge.authenticate(self.raw)
+        before = {p["id"] for p in bridge.pending_approvals(UID)}
+        _tool("browser_click", tab_id=7, ref="e5")
+        return max(p["id"] for p in bridge.pending_approvals(UID) if p["id"] not in before)
+
+    def _card(self, cid):
+        mid = bridge._cmd(cid)["message_id"]
+        row = store.read(lambda c: c.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone())
+        return dict(row), json.loads(row["meta"])["approval"]
+
+    def test_the_pause_message_carries_a_pending_card(self):
+        cid = self._pause()
+        row, card = self._card(cid)
+        self.assertEqual((row["role"], row["kind"]), ("assistant", "proactive"))
+        self.assertEqual(card, {"id": cid, "status": "pending", "action": "click", "summary": card["summary"],
+                                "host": "www.example.com", "reason": "this submits a form"})
+        self.assertIn("button", card["summary"])
+        self.assertIn("below", row["content"])
+
+    def test_the_card_follows_the_command_through_every_ending(self):
+        cid = self._pause()
+        bridge.resolve_approval(UID, cid, True, UID)
+        self.assertEqual(self._card(cid)[1]["status"], "approved")
+        deadline = time.time() + 5
+        while time.time() < deadline and self._card(cid)[1]["status"] != "done":
+            time.sleep(0.05)
+        self.assertEqual(self._card(cid)[1]["status"], "done")
+
+    def test_deny_expiry_and_kill_switch_update_the_card(self):
+        cid = self._pause()
+        bridge.resolve_approval(UID, cid, False, UID)
+        self.assertEqual(self._card(cid)[1]["status"], "denied")
+        cid2 = self._pause()
+        store.write(lambda c: c.execute("UPDATE bridge_commands SET created_ts=? WHERE id=?", (time.time() - 99999, cid2)))
+        bridge.sweep()
+        self.assertEqual(self._card(cid2)[1]["status"], "expired")
+        cid3 = self._pause()
+        bridge.stop_session(UID)
+        self.assertEqual(self._card(cid3)[1]["status"], "cancelled")
+
+    def test_chat_post_approves_and_denies(self):
+        cid = self._pause()
+        h = _H()
+        h.bridge_approval_post(SESSION, {"id": str(cid), "decision": "approve"})
+        code, body = h.reply()
+        self.assertEqual((code, body["ok"], body["status"]), (200, True, "approved"))
+        cid2 = self._pause()
+        h = _H()
+        h.bridge_approval_post(SESSION, {"id": str(cid2), "decision": "deny"})
+        code, body = h.reply()
+        self.assertEqual((code, body["ok"], body["status"]), (200, True, "denied"))
+        # a decided card can't be decided again
+        h = _H()
+        h.bridge_approval_post(SESSION, {"id": str(cid2), "decision": "approve"})
+        code, body = h.reply()
+        self.assertEqual((code, body["ok"], body["status"]), (409, False, "denied"))
+
+    def test_chat_post_rejects_bad_input_non_admins_and_other_users_requests(self):
+        cid = self._pause()
+        for form in ({}, {"id": "abc", "decision": "approve"}, {"id": str(cid), "decision": "maybe"},
+                     {"id": str(cid)}):
+            h = _H()
+            h.bridge_approval_post(SESSION, form)
+            self.assertEqual(h.reply()[0], 400, form)
+        h = _H()
+        h.bridge_approval_post({**SESSION, "role": "member"}, {"id": str(cid), "decision": "approve"})
+        self.assertEqual(h.reply()[0], 403)
+        h = _H()
+        h.bridge_approval_post({**SESSION, "user_id": UID + 7}, {"id": str(cid), "decision": "approve"})
+        code, body = h.reply()
+        self.assertEqual((code, body["ok"]), (409, False))
+        self.assertEqual(bridge._cmd(cid)["status"], "awaiting_approval", "someone else's click changed nothing")
+
+    def test_the_route_is_behind_the_session_and_csrf_gates(self):
+        import inspect
+        src = inspect.getsource(server.Handler._do_POST_inner)
+        self.assertGreater(src.index('"/bridge/approval"'), src.index("form = self.form()"))
+        self.assertGreater(src.index('"/bridge/approval"'), src.index("csrf_ok"))
+
+    def test_server_rendered_history_shell(self):
+        html = server.approval_card_html({"id": 12, "status": "pending", "host": "www.example.com", "reason": "x'y"})
+        self.assertIn("approval-card", html)
+        self.assertIn("data-id='12'", html)
+        self.assertIn("data-status='pending'", html)
+        self.assertNotIn("x'y", html, "attributes are escaped")
+        for bad in (None, {}, {"status": "pending"}, "str", 5):
+            self.assertEqual(server.approval_card_html(bad), "", bad)
+
+    def test_the_chat_script_renders_cards_and_posts_to_the_route(self):
+        js = server.CHAT_JS
+        for needle in ("function renderApproval", "approvalBox(m.meta.approval)", "hydrateApprovals();",
+                       "'/bridge/approval'", "button[data-decision]"):
+            self.assertIn(needle, js)
+        self.assertNotIn("innerHTML=", js[js.index("function renderApproval"):js.index("function setSendDisabled")],
+                         "card text is set with textContent only")
+
+
 class _H(server.Handler):
     """A Handler with just enough to run bridge_post / computeruse_post."""
 

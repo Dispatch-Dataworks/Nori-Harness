@@ -120,6 +120,7 @@ class SurfaceTriageTests(unittest.TestCase):
         "server.py": ("no prompt", "the chat and history pages are the operator's own view, not a prompt"),
         "turns.py": ("no prompt", "counts and reads the user's unanswered messages"),
         "diagnostics.py": ("no prompt", "kind='tool' meta for the diagnostics page"),
+        "bridge.py": ("no prompt", "reads one message's meta only to update its approval card's status; nothing is put in a prompt"),
     }
 
     def readers(self):
