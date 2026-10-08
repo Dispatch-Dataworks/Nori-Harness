@@ -729,8 +729,11 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
   color:var(--text-dim);font-size:1.15rem;cursor:pointer;flex-shrink:0}
 .icon-btn:active{background:var(--surface-2)}
 .badge{position:absolute;top:2px;right:2px;min-width:15px;height:15px;border-radius:8px;background:var(--accent);
-  color:var(--on-accent);font-size:.6rem;font-weight:700;display:flex;align-items:center;justify-content:center;
+  color:var(--on-accent);font-size:.6rem;font-weight:700;align-items:center;justify-content:center;
   padding:0 3px}
+/* display only when not [hidden] (2026-10-08) -- a bare display:flex beat the UA's [hidden]{display:none},
+   so BOARD_JS hiding the count at 0 never actually hid it. */
+.badge:not([hidden]){display:flex}
 .menu-wrap{position:relative}
 .menu-sheet{position:absolute;top:52px;right:0;min-width:180px;background:var(--surface-2);
   max-height:calc(var(--app-height,100dvh) - 132px - env(safe-area-inset-top));overflow-y:auto;
@@ -1201,7 +1204,11 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
   color:var(--on-accent);font-size:1.6rem;line-height:1;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.35);
   transition:transform .15s ease}
 .board-add-btn[aria-expanded=true]{transform:rotate(45deg)}
-.board-add-menu{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+/* display lives ONLY in the :not([hidden]) rule (2026-10-08): author CSS beats the UA's
+   [hidden]{display:none}, so a bare .board-add-menu{display:flex} left the three options
+   permanently open over the board whatever the JS did to .hidden -- same trap as
+   #scrollbtn / .composer-attach above. */
+.board-add-menu:not([hidden]){display:flex;flex-direction:column;gap:6px;align-items:flex-end}
 .board-add-item{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
   padding:.5rem .85rem;font-size:.85rem;color:var(--text);text-decoration:none;white-space:nowrap;
   box-shadow:0 2px 10px rgba(0,0,0,.25)}
