@@ -227,6 +227,22 @@ CREATE TABLE IF NOT EXISTS conversation_segments (
 );
 CREATE INDEX IF NOT EXISTS ix_segments_user ON conversation_segments(user_id, hi_id);
 
+-- History edits (2026-10-20) -- see conversation.set_pruned / delete_messages. An
+-- audit trail of what the operator hid, restored or permanently deleted from
+-- history, WITHOUT the message text (a deletion must really delete): the action,
+-- how many, the id range, and the search that selected them.
+CREATE TABLE IF NOT EXISTS history_edits (
+    id            INTEGER PRIMARY KEY,
+    ts            REAL NOT NULL,
+    user_id       INTEGER NOT NULL,
+    action        TEXT NOT NULL,
+    message_count INTEGER NOT NULL,
+    first_id      INTEGER,
+    last_id       INTEGER,
+    query         TEXT,
+    note          TEXT
+);
+
 -- Generic per-user/per-workspace settings (2026-09-12) -- the only module
 -- with raw SQL against this is config.py. Built now because the
 -- scheduler needs somewhere to keep per-user ping preferences before a
@@ -1745,6 +1761,11 @@ _MIGRATIONS: list[str] = [
     # The chat message that carries a browser-approval card (bridge.py), so the
     # card's status can be kept in step with the command it represents.
     "ALTER TABLE bridge_commands ADD COLUMN message_id INTEGER",
+    # Hidden-from-her messages (2026-10-20): 1 = kept in storage and shown on the
+    # History page, but excluded from everything the model is shown -- her context
+    # window, compaction summaries, reflection, and the search_history tool. 0 on
+    # every existing row. See conversation.py.
+    "ALTER TABLE messages ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

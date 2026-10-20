@@ -567,7 +567,7 @@ tr:last-child td{border-bottom:0}
 .hist-sticky .hist-search{margin-bottom:0}
 .hist-sticky .hist-matchnav{margin:.6rem 0 0}
 .hist-search{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}
-.hist-search input[type=search]{flex:1;min-width:0}
+.hist-search input[type=search]{flex:1 1 14rem;min-width:0}
 .hist-matchnav{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin:0 0 1rem;font-size:.85rem}
 .hist-list{display:flex;flex-direction:column;gap:.5rem}
 .hist-row{border:1px solid var(--border);border-radius:12px;padding:.7rem .85rem;background:var(--surface)}
@@ -580,6 +580,27 @@ tr:last-child td{border-bottom:0}
 .hist-content{font-size:.92rem;white-space:pre-wrap;overflow-wrap:anywhere}
 .hist-reason{margin-top:.4rem;font-size:.78rem;color:var(--text-mute);font-style:italic}
 .hist-pagenav{display:flex;justify-content:space-between;gap:.8rem;margin-top:1.2rem}
+/* History editing (2026-10-20): pick rows, then hide them from her context or delete them. */
+.hist-row{position:relative}
+.hist-pick{position:absolute;left:0;top:0;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.hist-pick input{width:20px;height:20px;margin:0}
+.hist-row.selectable{padding-left:44px}
+.hist-row.is-hidden{opacity:.68;border-style:dashed}
+.hist-badge-hidden{background:#a33;color:#fff;border-color:#a33}
+.hist-only{display:flex;align-items:center;gap:.35rem;font-size:.82rem;white-space:nowrap}
+.hist-explain{margin:.2rem 0 .8rem;font-size:.82rem}
+.hist-explain summary{cursor:pointer;color:var(--text-mute)}
+.hist-explain p{margin:.4rem 0 0}
+.hist-scope{display:flex;align-items:flex-start;gap:.4rem;font-size:.82rem;margin:.9rem 0 .2rem}
+.hist-actions{position:sticky;bottom:0;z-index:6;display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;
+  background:var(--surface);border-top:1px solid var(--border);padding:.6rem 0;margin-top:.8rem}
+.hist-actions .hist-selall{display:flex;align-items:center;gap:.35rem;font-size:.82rem}
+.hist-actions .hist-count{font-size:.82rem;color:var(--text-mute);flex:1;min-width:6rem}
+.hist-actions button{min-height:44px;padding:.35rem .65rem;font-size:.82rem}
+.hist-actions .hist-count{order:-1;flex:1 1 40%}
+.hist-actions .hist-selall{order:-2}
+.hist-actions button:disabled{opacity:.45;cursor:not-allowed}
+.msg-hidden{opacity:.62;outline:1px dashed var(--text-mute);outline-offset:2px}
 .hist-pagenav a{display:flex;align-items:center;justify-content:center;flex:1;min-height:44px;
   border:1px solid var(--border);border-radius:11px}
 .hist-pagenav a:active{background:var(--surface-3)}
@@ -1342,6 +1363,31 @@ HISTORY_JUMP_JS = (
     "}"
     "centerHistoryHit();"
     "window.addEventListener('load',centerHistoryHit);"
+    "})();</script>"
+)
+
+# History editing (2026-10-20) -- selection counts, "select all on this page", enabling the
+# buttons only when something is picked, and per-button confirmation with the real count.
+# A SEPARATE <script>: independent features don't share fate with the page's other scripts.
+HISTORY_EDIT_JS = (
+    "<script>(function(){"
+    "var f=document.getElementById('history-edit-form');if(!f)return;"
+    "var all=document.getElementById('histAll'),sel=document.getElementById('histSelAll'),"
+    "cnt=document.getElementById('histSelCount'),last=null;"
+    "function picked(){return f.querySelectorAll('input[name=mid]:checked').length;}"
+    "function refresh(){var n=picked(),useAll=!!(all&&all.checked);"
+    "if(cnt)cnt.textContent=useAll?('all '+all.dataset.count+' selected'):(n+' selected');"
+    "var any=useAll||n>0;"
+    "f.querySelectorAll('button[name=action]').forEach(function(b){b.disabled=!any;});}"
+    "f.addEventListener('change',function(e){"
+    "if(e.target===sel){f.querySelectorAll('input[name=mid]').forEach(function(b){b.checked=sel.checked;});}"
+    "refresh();});"
+    "f.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[name=action]'):null;if(b)last=b;});"
+    "f.addEventListener('submit',function(e){"
+    "var b=e.submitter||last;var msg=b&&b.getAttribute('data-confirm');"
+    "if(!msg)return;var n=(all&&all.checked)?all.dataset.count:picked();"
+    "if(!confirm(msg.replace('{n}',n)))e.preventDefault();});"
+    "refresh();"
     "})();</script>"
 )
 
@@ -2737,8 +2783,9 @@ class Handler(BaseHTTPRequestHandler):
         if n <= 0 or n > 65536:
             return {}
         raw = self.rfile.read(n)
-        return {k: v[0] for k, v in urllib.parse.parse_qs(
-            raw.decode("utf-8", "replace"), keep_blank_values=True).items()}
+        parsed = urllib.parse.parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
+        self._form_multi = parsed      # every value of every key -- the History page's checkbox list needs them all
+        return {k: v[0] for k, v in parsed.items()}
 
     def csrf_ok(self, sess: dict, form: dict) -> bool:
         csrf = form.get("csrf", "")
@@ -3215,6 +3262,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.files_onedrive_post(sess, form)
         if path == "/files/sharepoint":
             return self.files_sharepoint_post(sess, form)
+        if path == "/history/edit":
+            return self.history_edit_post(sess, form)
         if path == "/send":
             return self.send_msg(sess, form)
         if path == "/retry":
@@ -9553,7 +9602,7 @@ class Handler(BaseHTTPRequestHandler):
         current_state = emotion.get_state(sess["user_id"])
         show_tools = config.get("user", sess["user_id"], "show_tool_calls")
         with pt.stage("fetch_messages"):
-            msgs = conversation.recent(sess["user_id"], include_tool=show_tools)
+            msgs = conversation.recent(sess["user_id"], include_tool=show_tools, include_pruned=True)
 
         def _copy_btn(text: str) -> str:
             # Assistant-only, real text only (2026-09-15, operator's own
@@ -9633,7 +9682,10 @@ class Handler(BaseHTTPRequestHandler):
                     card = approval_card_html(json.loads(m["meta"]).get("approval"))
                 except (ValueError, TypeError, AttributeError):
                     pass
-            return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}'>"
+            hid = int(m.get("pruned") or 0)
+            hid_cls = " msg-hidden" if hid else ""
+            hid_title = " title='Hidden from her -- she can no longer see this message'" if hid else ""
+            return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}{hid_cls}'{hid_title}>"
                    f"{esc(m['content'])}{card}{actions}</div>")
 
         # the state shown on the LAST page load, before whatever just
@@ -9751,21 +9803,34 @@ class Handler(BaseHTTPRequestHandler):
             hours_ago = float(hours_raw) if hours_raw else None
         except ValueError:
             hours_ago = None
+        only_hidden = q.get("hidden", [""])[0] == "1"
         before_id, after_id, jump_id = _int_param("before"), _int_param("after"), _int_param("jump")
+        max_ids = conversation.MAX_EDIT_IDS
 
         matches: list[int] = []
         searching = bool(query) or hours_ago is not None
         if searching:
-            matches = conversation.history_match_ids(user_id, query=query or None, hours_ago=hours_ago)
+            matches = conversation.history_match_ids(user_id, query=query or None, hours_ago=hours_ago,
+                                                     limit=max_ids + 1, only_pruned=only_hidden)
             if jump_id is None:
                 jump_id = matches[0] if matches else None
 
-        msgs = conversation.history_page(user_id, before_id=before_id, after_id=after_id, center_id=jump_id)
-        newest_overall, oldest_overall = conversation.max_id(user_id), conversation.min_id(user_id)
-        at_latest = bool(msgs) and msgs[0]["id"] == newest_overall
-        at_oldest = bool(msgs) and msgs[-1]["id"] == oldest_overall
+        msgs = conversation.history_page(user_id, before_id=before_id, after_id=after_id, center_id=jump_id,
+                                         only_pruned=only_hidden)
+        if only_hidden:
+            # the overall newest/oldest ids aren't this filtered list's ends
+            at_latest = bool(msgs) and not conversation.history_page(
+                user_id, after_id=msgs[0]["id"], limit=1, only_pruned=True)
+            at_oldest = bool(msgs) and not conversation.history_page(
+                user_id, before_id=msgs[-1]["id"], limit=1, only_pruned=True)
+        else:
+            newest_overall, oldest_overall = conversation.max_id(user_id), conversation.min_id(user_id)
+            at_latest = bool(msgs) and msgs[0]["id"] == newest_overall
+            at_oldest = bool(msgs) and msgs[-1]["id"] == oldest_overall
+        empty_note = ("nothing is hidden from her." if only_hidden and not searching
+                      else "nothing here yet.")
         rows = "".join(self._history_row(m, highlight_id=jump_id, user_id=user_id) for m in msgs) \
-            or "<p class=muted>nothing here yet.</p>"
+            or f"<p class=muted>{empty_note}</p>"
 
         match_nav = ""
         if searching:
@@ -9775,41 +9840,161 @@ class Handler(BaseHTTPRequestHandler):
                 pos = matches.index(jump_id) + 1 if jump_id in matches else 1
                 older_match = matches[pos] if pos < len(matches) else None  # matches is newest-first
                 newer_match = matches[pos - 2] if pos >= 2 else None
-                bits = [f"<span class=muted>match {pos} of {len(matches)}</span>"]
+                total = f"{max_ids}+" if len(matches) > max_ids else str(len(matches))
+                bits = [f"<span class=muted>match {pos} of {total}</span>"]
                 if newer_match is not None:
                     bits.append(f"<a href='/history?{self._history_qs(q, jump=newer_match)}'>&uarr; newer match</a>")
                 if older_match is not None:
                     bits.append(f"<a href='/history?{self._history_qs(q, jump=older_match)}'>&darr; older match</a>")
                 match_nav = f"<div class=hist-matchnav>{''.join(bits)}</div>"
 
+        hid_qs = {"hidden": "1"} if only_hidden else {}
         page_nav = "<div class=hist-pagenav>"
         if msgs and not at_latest:
-            page_nav += f"<a href='/history?after={msgs[0]['id']}'>&uarr; newer</a>"
+            page_nav += f"<a href='/history?{urllib.parse.urlencode({**hid_qs, 'after': msgs[0]['id']})}'>&uarr; newer</a>"
         if msgs and not at_oldest:
-            page_nav += f"<a href='/history?before={msgs[-1]['id']}'>&darr; older</a>"
+            page_nav += f"<a href='/history?{urllib.parse.urlencode({**hid_qs, 'before': msgs[-1]['id']})}'>&darr; older</a>"
         page_nav += "</div>"
 
+        hidden_total = conversation.count_hidden(user_id)
         search_form = (
             "<form method=get action='/history' class=hist-search>"
             f"<input type=search name=q value='{esc(query)}' placeholder='search the real conversation…'>"
             f"<input type=number name=hours_ago value='{esc(str(int(hours_ago)) if hours_ago else '')}' "
             "placeholder='hours ago' style='width:6em'>"
+            f"<label class=hist-only><input type=checkbox name=hidden value=1{' checked' if only_hidden else ''}> "
+            f"hidden from her only ({hidden_total})</label>"
             "<button class=btn type=submit>jump</button></form>")
 
+        # How many messages "apply to all" would touch: the search's matches, or every hidden message.
+        scope_count = len(matches) if searching else (hidden_total if only_hidden else 0)
+        scope_html = ""
+        if scope_count:
+            if scope_count > max_ids:
+                scope_html = (f"<p class='hist-scope muted'>More than {max_ids} messages match -- narrow the "
+                              "search to act on all of them at once.</p>")
+            else:
+                what = "match this search" if searching else "are hidden from her"
+                scope_html = (f"<label class=hist-scope><input type=checkbox name=all_matches value=1 id=histAll "
+                              f"data-count='{scope_count}'> <span>Apply to all {scope_count} message(s) that {what}, "
+                              "not just the ones ticked</span></label>")
+        keep = {k: v[0] for k, v in q.items() if v and v[0] and k in ("q", "hours_ago", "hidden", "jump", "before", "after")}
+        edit_open = (
+            "<form id=history-edit-form method=post action='/history/edit'>"
+            f"<input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
+            f"<input type=hidden name=return_q value='{esc(urllib.parse.urlencode(keep))}'>"
+            f"<input type=hidden name=q value='{esc(query)}'>"
+            f"<input type=hidden name=hours_ago value='{esc(str(int(hours_ago)) if hours_ago else '')}'>"
+            f"<input type=hidden name=hidden value='{'1' if only_hidden else ''}'>")
+        actions = (
+            f"{scope_html}<div class=hist-actions>"
+            "<label class=hist-selall><input type=checkbox id=histSelAll> this page</label>"
+            "<span id=histSelCount class=hist-count>0 selected</span>"
+            "<button class=btn type=submit name=action value=hide>Hide from her</button>"
+            "<button class=btn type=submit name=action value=restore>Restore</button>"
+            "<button class='btn btn-danger' type=submit name=action value=delete "
+            "data-confirm=\"Permanently delete {n} message(s)? This cannot be undone. Automatic backups made earlier "
+            "may still contain them until those age out.\">Delete forever</button></div>")
+
+        explain = (
+            "<details class=hist-explain><summary>Hide or delete messages?</summary>"
+            "<p><b>Hide from her</b> keeps a message here (marked, and you can restore it) but she never sees it again: "
+            "not in her recent context, not in her summaries, not in her memory reflection, not when she searches "
+            "history. <b>Delete forever</b> removes it completely, including a photo's stored file.</p>"
+            "<p>Neither changes what she already <i>remembered</i> from a conversation -- review "
+            "<a href='/settings?tab=memory'>Memory</a> for that.</p></details>")
+
+        flash = self._history_flash(q)
         # _hdr_back("History"), not the bare hdr-text div this used to
         # have -- found during the design pass sweep (2026-09-18):
         # /history had no back chevron at all, the one real gap "every
         # page without exception" actually caught.
         header = self._app_header(sess, self._hdr_back("History"))
-        main = (f"<div class=hist-wrap><div class=hist-sticky>{search_form}{match_nav}</div>"
-               f"<div class=hist-list>{rows}</div>{page_nav}</div>")
-        self.send(200, page_app("history · nori", header, main, extra_js=HISTORY_JUMP_JS))
+        main = (f"<div class=hist-wrap><div class=hist-sticky>{search_form}{match_nav}</div>{flash}{explain}"
+                f"{edit_open}<div class=hist-list>{rows}</div>{actions}</form>{page_nav}</div>")
+        self.send(200, page_app("history · nori", header, main, extra_js=HISTORY_JUMP_JS + HISTORY_EDIT_JS))
+
+    @staticmethod
+    def _history_flash(q: dict) -> str:
+        """The one-line result of the last edit, from a short allow-listed code in the
+        URL -- never free text from the query string."""
+        done = q.get("done", [""])[0]
+        try:
+            n = max(0, min(int(q.get("n", ["0"])[0] or 0), 100000))
+            files = max(0, min(int(q.get("f", ["0"])[0] or 0), 100000))
+        except ValueError:
+            return ""
+        noun = "message" if n == 1 else "messages"
+        texts = {
+            "hide": f"Hid {n} {noun} from her context.",
+            "restore": f"Restored {n} {noun} to her context.",
+            "delete": f"Permanently deleted {n} {noun}" + (f" and {files} stored picture file(s)." if files else "."),
+            "none": "Nothing was selected.",
+            "nosearch": "\"Apply to all\" needs a search, a time window, or the hidden-only filter.",
+            "toomany": "That's too many messages to change at once -- narrow the search.",
+            "nochange": "Nothing changed -- those messages were already in that state.",
+        }
+        text = texts.get(done)
+        return f"<p class=info>{esc(text)}</p>" if text else ""
+
+    def history_edit_post(self, sess: dict, form: dict):
+        """Hide / restore / delete the ticked messages (or, with 'apply to all', every
+        message the current search or hidden filter matches -- recomputed HERE from the
+        search terms, never taken from the page's own list). Session + CSRF are already
+        checked by do_POST; every id is scoped to this user inside conversation.*, so
+        another account's ids match nothing. Then 303 back to the same view."""
+        user_id = sess["user_id"]
+        action = form.get("action", "")
+        query = (form.get("q") or "").strip()
+        try:
+            hours_ago = float(form["hours_ago"]) if form.get("hours_ago") else None
+        except ValueError:
+            hours_ago = None
+        only_hidden = form.get("hidden") == "1"
+        keep = {k: v for k, v in urllib.parse.parse_qsl(form.get("return_q") or "", keep_blank_values=False)
+                if k in ("q", "hours_ago", "hidden", "jump", "before", "after")}
+
+        def back(**flash):
+            qs = urllib.parse.urlencode({**keep, **{k: v for k, v in flash.items() if v not in (None, "")}})
+            return self.send(303, b"", {"Location": "/history" + (("?" + qs) if qs else "")})
+
+        if action not in ("hide", "restore", "delete"):
+            return back(done="none")
+        max_ids = conversation.MAX_EDIT_IDS
+        if form.get("all_matches"):
+            if not (query or hours_ago is not None or only_hidden):
+                return back(done="nosearch")
+            ids = conversation.history_match_ids(user_id, query=query or None, hours_ago=hours_ago,
+                                                 limit=max_ids + 1, only_pruned=only_hidden)
+            if len(ids) > max_ids:
+                return back(done="toomany")
+        else:
+            ids = conversation._clean_ids(getattr(self, "_form_multi", {}).get("mid", []))
+        if not ids:
+            return back(done="none")
+        import compaction  # local: same reasoning as the other lazy imports in this file
+        scope_q = query or None
+        if action == "delete":
+            res = conversation.delete_messages(user_id, ids)
+            if not res["ids"]:
+                return back(done="nochange")
+            compaction.invalidate_around(user_id, res["ids"])
+            conversation.record_edit(user_id, "delete", res["ids"], query=scope_q,
+                                     note=f"{res['files']} picture file(s) removed" if res["files"] else None)
+            keep.pop("jump", None)        # the message it pointed at may be gone
+            return back(done="delete", n=len(res["ids"]), f=res["files"] or None)
+        changed = conversation.set_pruned(user_id, ids, pruned=(action == "hide"))
+        if not changed:
+            return back(done="nochange")
+        compaction.invalidate_around(user_id, changed)
+        conversation.record_edit(user_id, action, changed, query=scope_q)
+        return back(done=action, n=len(changed))
 
     def _history_qs(self, q: dict, **overrides) -> str:
         """Rebuilds the current query string with one or more params
         replaced -- used by match-nav links so jumping between hits keeps
         the same active search active instead of losing it."""
-        merged = {k: v[0] for k, v in q.items() if v and v[0]}
+        merged = {k: v[0] for k, v in q.items() if v and v[0] and k not in ("done", "n", "f")}
         merged.update({k: str(v) for k, v in overrides.items()})
         return urllib.parse.urlencode(merged)
 
@@ -9824,6 +10009,8 @@ class Handler(BaseHTTPRequestHandler):
             color = emotion.COLORS.get(m["emotion"], "#95a5a6")
             badges.append(f"<span class=hist-badge style='background:{esc(color)}22;color:{esc(color)}'>"
                          f"{esc(m['emotion'])}</span>")
+        if int(m.get("pruned") or 0):
+            badges.append("<span class='hist-badge hist-badge-hidden'>hidden from her</span>")
         if meta.get("source") == "voice":
             badges.append("<span class=hist-badge>\U0001f399 voice</span>")
         if "cost_usd" in meta:
@@ -9840,7 +10027,10 @@ class Handler(BaseHTTPRequestHandler):
                 content_html += f"<div class=msg-caption>{esc(m['content'])}</div>"
         else:
             content_html = esc(m['content'])
-        return (f"<div id='hist-{m['id']}' class='hist-row {esc(m['role'])}{hl}'>"
+        hid = " is-hidden" if int(m.get("pruned") or 0) else ""
+        pick = (f"<label class=hist-pick><input type=checkbox name=mid value='{int(m['id'])}' "
+                f"aria-label='Select this message'></label>")
+        return (f"<div id='hist-{m['id']}' class='hist-row selectable {esc(m['role'])}{hl}{hid}'>{pick}"
                f"<div class=hist-meta><span class=hist-ts>{esc(ts_txt)}</span>{''.join(badges)}</div>"
                f"<div class=hist-content>{content_html}</div>{reason_html}</div>")
 

@@ -14,6 +14,7 @@ will ever return one user's messages to a call scoped for another.
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import own_output
@@ -241,8 +242,22 @@ def last_message_ts(user_id: int) -> float | None:
     return r["ts"]
 
 
-def recent(user_id: int, limit: int = DEFAULT_WINDOW, *, include_tool: bool = False) -> list[dict]:
-    """include_tool=True is for chat DISPLAY only. Defaulting False means
+# SQL fragment: a message the operator hid from her (messages.pruned=1, see
+# set_pruned) must never reach anything the model is shown. Every model-facing
+# reader below applies it; the human views (history_page, history_match_ids,
+# since/display callers) deliberately don't. tests/test_nori_history_prune.py
+# fails if a reader of `messages` here is in neither group.
+_VISIBLE_TO_HER = " AND COALESCE(pruned,0)=0"
+
+
+def recent(user_id: int, limit: int = DEFAULT_WINDOW, *, include_tool: bool = False,
+           include_pruned: bool = False) -> list[dict]:
+    """include_pruned (2026-10-20): False by DEFAULT, so every model-facing caller
+    -- context.build_messages, memory's reflection window, compaction's cut --
+    never sees a message the operator hid from her, with no change of their own.
+    Only the chat page's own DISPLAY passes True (he still sees his chat).
+
+    include_tool=True is for chat DISPLAY only. Defaulting False means
     every existing caller -- context.build_messages (what the model sees)
     and memory.py's reflection window -- excludes kind='tool' rows with no
     code change of their own; only chat_page's own render, which passes
@@ -250,6 +265,8 @@ def recent(user_id: int, limit: int = DEFAULT_WINDOW, *, include_tool: bool = Fa
     sees them either way, same principle as the reader/actor split: what's
     shown to the human isn't necessarily what reaches the model."""
     kind_filter = VISIBLE_TOOLS_FILTER if include_tool else " AND kind!='tool'"
+    if not include_pruned:
+        kind_filter += _VISIBLE_TO_HER
     rows = store.read(lambda c: c.execute(
         f"SELECT * FROM messages WHERE user_id=?{kind_filter} ORDER BY id DESC LIMIT ?",
         (user_id, limit)).fetchall())
@@ -284,7 +301,7 @@ def latest_user_message_after(user_id: int, after_id: int) -> dict | None:
     sweeps for after finishing a turn, to catch a message that arrived
     while it was running rather than dropping or racing it."""
     r = store.read(lambda c: c.execute(
-        "SELECT * FROM messages WHERE user_id=? AND id>? AND role='user' "
+        "SELECT * FROM messages WHERE user_id=? AND id>? AND role='user' AND COALESCE(pruned,0)=0 "
         "ORDER BY id DESC LIMIT 1", (user_id, after_id)).fetchone())
     return dict(r) if r else None
 
@@ -335,7 +352,7 @@ def before(user_id: int, before_id: int) -> list[dict]:
     the background, not on a live turn, so there's no per-request cost
     to control here the way there is for a real chat.run() call."""
     rows = store.read(lambda c: c.execute(
-        "SELECT * FROM messages WHERE user_id=? AND id<? AND kind!='tool' ORDER BY id ASC",
+        "SELECT * FROM messages WHERE user_id=? AND id<? AND kind!='tool' AND COALESCE(pruned,0)=0 ORDER BY id ASC",
         (user_id, before_id)).fetchall())
     return [dict(r) for r in rows]
 
@@ -346,7 +363,7 @@ def in_range(user_id: int, lo_id: int, hi_id: int) -> list[dict]:
     fed a prior summary alongside this; the raw span is the only input,
     on purpose (see conversation_segments' own schema comment)."""
     rows = store.read(lambda c: c.execute(
-        "SELECT * FROM messages WHERE user_id=? AND id>=? AND id<=? AND kind!='tool' ORDER BY id ASC",
+        "SELECT * FROM messages WHERE user_id=? AND id>=? AND id<=? AND kind!='tool' AND COALESCE(pruned,0)=0 ORDER BY id ASC",
         (user_id, lo_id, hi_id)).fetchall())
     return [dict(r) for r in rows]
 
@@ -374,7 +391,7 @@ HISTORY_PAGE_SIZE = 50
 
 def history_page(user_id: int, *, before_id: int | None = None, after_id: int | None = None,
                  center_id: int | None = None, limit: int = HISTORY_PAGE_SIZE,
-                 kind: str | None = None) -> list[dict]:
+                 kind: str | None = None, only_pruned: bool = False) -> list[dict]:
     """Always returns newest-first, regardless of which cursor drove the
     query -- server.py renders one consistent order regardless of how the
     page was reached. Exactly one of before_id/after_id/center_id should
@@ -388,8 +405,14 @@ def history_page(user_id: int, *, before_id: int | None = None, after_id: int | 
 
     kind (2026-09-15, the photo reel) narrows to one message kind (e.g.
     'image') without duplicating this cursor logic in a second function
-    -- the reel reuses this exact paging mechanism, just filtered."""
+    -- the reel reuses this exact paging mechanism, just filtered.
+
+    only_pruned (2026-10-20) narrows to the messages hidden from her. This is
+    the HUMAN view: it always includes hidden messages (that is how they're
+    found again to restore or delete), unlike every model-facing reader."""
     kind_clause, kind_params = (" AND kind=?", (kind,)) if kind is not None else ("", ())
+    if only_pruned:
+        kind_clause += " AND COALESCE(pruned,0)=1"
     if center_id is not None:
         half = max(1, limit // 2)
         newer = store.read(lambda c: c.execute(
@@ -418,7 +441,7 @@ def history_page(user_id: int, *, before_id: int | None = None, after_id: int | 
 
 
 def history_match_ids(user_id: int, *, query: str | None = None, hours_ago: float | None = None,
-                      limit: int = 500) -> list[int]:
+                      limit: int = 500, only_pruned: bool = False) -> list[int]:
     """Bare matching ids, newest first -- NOT a results list to display
     (see module comment above): server.py uses this only to know where to
     jump to and to drive "next match"/"previous match" navigation once
@@ -426,9 +449,11 @@ def history_match_ids(user_id: int, *, query: str | None = None, hours_ago: floa
     not reusing search()'s own segmenting/clipping -- that machinery
     exists to fit a bounded token budget for the model; this just needs
     ids."""
-    if not query and hours_ago is None:
+    if not query and hours_ago is None and not only_pruned:
         return []
     clauses, params = ["user_id=?", "kind!='tool'"], [user_id]
+    if only_pruned:
+        clauses.append("COALESCE(pruned,0)=1")
     if hours_ago is not None:
         clauses.append("ts>=?")
         params.append(time.time() - max(0.0, float(hours_ago)) * 3600)
@@ -439,6 +464,118 @@ def history_match_ids(user_id: int, *, query: str | None = None, hours_ago: floa
         f"SELECT id FROM messages WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT ?",
         (*params, limit)).fetchall())
     return [r["id"] for r in rows]
+
+
+# ── editing history (2026-10-20, operator's ask; same idea as the sibling
+# application's history page) ─────────────────────────────────────────────
+# Two different things, deliberately kept apart:
+#   HIDE  (set_pruned)       -- the message stays in storage and on the History
+#                               page, marked, and is restorable; it is simply never
+#                               shown to the model again (see _VISIBLE_TO_HER).
+#   DELETE (delete_messages) -- the row is gone for good, and so is the stored
+#                               picture of an image message.
+# Every function is scoped by user_id: a message id from another account matches
+# nothing, whatever the caller passes.
+MAX_EDIT_IDS = 5000
+
+
+def _clean_ids(message_ids) -> list[int]:
+    out = set()
+    for x in message_ids or ():
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            out.add(n)
+    return sorted(out)[:MAX_EDIT_IDS]
+
+
+def record_edit(user_id: int, action: str, ids: list[int], *, query: str | None = None,
+                note: str | None = None) -> None:
+    """The audit trail: what was done, how many, which id range, and the search that
+    selected them -- never the text, so a deletion stays a deletion."""
+    if not ids:
+        return
+    store.write(lambda c: c.execute(
+        "INSERT INTO history_edits(ts, user_id, action, message_count, first_id, last_id, query, note) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (time.time(), user_id, action, len(ids), min(ids), max(ids), (query or None) and query[:200], note)))
+
+
+def set_pruned(user_id: int, message_ids, *, pruned: bool) -> list[int]:
+    """Hide (pruned=True) or restore (False) messages. Returns the ids whose state
+    actually changed -- already-in-that-state and other users' ids are not in it."""
+    ids = _clean_ids(message_ids)
+    if not ids:
+        return []
+    marks = ",".join("?" for _ in ids)
+    want = 1 if pruned else 0
+
+    def _w(c):
+        rows = c.execute(
+            f"SELECT id FROM messages WHERE user_id=? AND id IN ({marks}) AND COALESCE(pruned,0)!=?",
+            (user_id, *ids, want)).fetchall()
+        changed = [r["id"] for r in rows]
+        if changed:
+            m2 = ",".join("?" for _ in changed)
+            c.execute(f"UPDATE messages SET pruned=? WHERE user_id=? AND id IN ({m2})", (want, user_id, *changed))
+        return changed
+    return store.write(_w)
+
+
+_FILE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+
+
+def delete_messages(user_id: int, message_ids) -> dict:
+    """Permanently delete messages. Returns {"ids": [deleted ids], "files": n} where
+    files is how many stored pictures went with them (an image message's file and
+    thumbnail -- unless another remaining message still points at the same file).
+    The file id is validated as plain hex before it ever becomes a path."""
+    ids = _clean_ids(message_ids)
+    if not ids:
+        return {"ids": [], "files": 0}
+    marks = ",".join("?" for _ in ids)
+    rows = store.read(lambda c: c.execute(
+        f"SELECT id, kind, meta FROM messages WHERE user_id=? AND id IN ({marks})", (user_id, *ids)).fetchall())
+    found = [r["id"] for r in rows]
+    if not found:
+        return {"ids": [], "files": 0}
+    file_ids = set()
+    for r in rows:
+        if r["kind"] == "image" and r["meta"]:
+            try:
+                fid = (json.loads(r["meta"]) or {}).get("file_id")
+            except (ValueError, TypeError):
+                fid = None
+            if isinstance(fid, str) and _FILE_ID_RE.match(fid):
+                file_ids.add(fid)
+    m2 = ",".join("?" for _ in found)
+    store.write(lambda c: c.execute(
+        f"DELETE FROM messages WHERE user_id=? AND id IN ({m2})", (user_id, *found)))
+    removed = 0
+    if file_ids:
+        import imagegen  # local: avoids a load-order cycle, same as every other lazy import here
+        for fid in sorted(file_ids):
+            still = store.read(lambda c: c.execute(
+                "SELECT 1 FROM messages WHERE kind='image' AND meta LIKE ? LIMIT 1", (f'%"{fid}"%',)).fetchone())
+            if still:
+                continue          # another message still shows this picture
+            for path in (imagegen.GEN_DIR / fid, imagegen.thumb_path(fid)):
+                try:
+                    path.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    print(f"conversation.delete_messages: couldn't remove {path.name}: {exc}", flush=True)
+    return {"ids": found, "files": removed}
+
+
+def count_hidden(user_id: int) -> int:
+    r = store.read(lambda c: c.execute(
+        "SELECT count(*) AS n FROM messages WHERE user_id=? AND COALESCE(pruned,0)=1", (user_id,)).fetchone())
+    return r["n"]
 
 
 # ── history search (2026-09-12) -- complement to memory.py's typed recall,
@@ -498,7 +635,7 @@ def search(user_id: int, *, query: str | None = None, hours_ago: float | None = 
                         "searching with neither would return your entire history"}
     max_segments = max(1, min(int(max_segments or 5), _SEARCH_MAX_SEGMENTS))
 
-    clauses = ["user_id=?", "kind!='tool'"]
+    clauses = ["user_id=?", "kind!='tool'", "COALESCE(pruned,0)=0"]   # hidden messages are never searchable by her
     params: list = [user_id]
     if hours_ago is not None:
         clauses.append("ts>=?")
@@ -562,7 +699,7 @@ def search(user_id: int, *, query: str | None = None, hours_ago: float | None = 
         cur_id, cur_ts = mid, mts
         for _ in range(context_before):
             row = store.read(lambda c: c.execute(
-                "SELECT id, ts FROM messages WHERE user_id=? AND id<? AND kind!='tool' "
+                "SELECT id, ts FROM messages WHERE user_id=? AND id<? AND kind!='tool' AND COALESCE(pruned,0)=0 "
                 "ORDER BY id DESC LIMIT 1", (user_id, cur_id)).fetchone())
             if row is None or cur_ts - row["ts"] > _SEGMENT_GAP_S:
                 break
@@ -571,7 +708,7 @@ def search(user_id: int, *, query: str | None = None, hours_ago: float | None = 
         cur_id, cur_ts = mid, mts
         for _ in range(context_after):
             row = store.read(lambda c: c.execute(
-                "SELECT id, ts FROM messages WHERE user_id=? AND id>? AND kind!='tool' "
+                "SELECT id, ts FROM messages WHERE user_id=? AND id>? AND kind!='tool' AND COALESCE(pruned,0)=0 "
                 "ORDER BY id ASC LIMIT 1", (user_id, cur_id)).fetchone())
             if row is None or row["ts"] - cur_ts > _SEGMENT_GAP_S:
                 break
@@ -605,7 +742,7 @@ def search(user_id: int, *, query: str | None = None, hours_ago: float | None = 
     segments = []
     for lo, hi, _lo_ts, _hi_ts in kept:
         rows = store.read(lambda c: c.execute(
-            "SELECT * FROM messages WHERE user_id=? AND id>=? AND id<=? AND kind!='tool' "
+            "SELECT * FROM messages WHERE user_id=? AND id>=? AND id<=? AND kind!='tool' AND COALESCE(pruned,0)=0 "
             "ORDER BY id ASC", (user_id, lo, hi)).fetchall())
         if not rows:
             continue

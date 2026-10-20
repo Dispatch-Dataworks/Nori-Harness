@@ -71,8 +71,9 @@ class NoriToolVisibilityTests(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
         self.addCleanup(self.db.close)
-        self.db.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY, user_id INTEGER, role TEXT, content TEXT, kind TEXT)")
-        self.env = definitions("conversation.py", {"VISIBLE_TOOLS_FILTER", "recent", "since"},
+        self.db.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY, user_id INTEGER, role TEXT, content TEXT, kind TEXT, "
+                        "pruned INTEGER NOT NULL DEFAULT 0)")
+        self.env = definitions("conversation.py", {"VISIBLE_TOOLS_FILTER", "_VISIBLE_TO_HER", "recent", "since"},
                                dict(DEFAULT_WINDOW=30, store=SimpleNamespace(read=lambda fn: fn(self.db))))
 
     def add(self, content, kind="tool", user_id=1):
@@ -88,6 +89,15 @@ class NoriToolVisibilityTests(unittest.TestCase):
         rows = self.env["recent"](1, limit=2, include_tool=True)
         self.assertEqual([r["content"] for r in rows], ["used remember", "used set_emotion"])
         self.assertEqual([r["kind"] for r in self.env["recent"](1)], ["chat"])
+
+    def test_a_message_hidden_from_her_is_left_out_unless_the_display_asks_for_it(self):
+        self.add("kept", kind="chat")
+        self.add("hidden from her", kind="chat")
+        self.db.execute("UPDATE messages SET pruned=1 WHERE content='hidden from her'")
+        self.assertEqual([r["content"] for r in self.env["recent"](1)], ["kept"])
+        self.assertEqual([r["content"] for r in self.env["recent"](1, include_pruned=True)], ["kept", "hidden from her"])
+        self.assertEqual([r["content"] for r in self.env["since"](1, 0)], ["kept", "hidden from her"],
+                         "the chat's own poll feed is display, so it still carries it")
 
     def test_poll_skips_hidden_rows_without_starving_pagination(self):
         self.add("before cursor", kind="chat")

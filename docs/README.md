@@ -29,12 +29,15 @@ Everything else here goes deeper once it's up.
   |---|---|
   | [Memory](memory.md) | Typed long-term memory, reflection, pinning |
   | [Conversation compaction](compaction.md) | How older conversation gets summarized instead of dropped |
+  | [History: hide & delete](history.md) | Searching the full history, hiding messages from her context, deleting them for good |
   | [Context & tuning](context.md) | What actually rides in the prompt every turn, and the knobs that control it |
   | [The persona editor](persona.md) | Editing who she is from the settings pages, and the ways back from a bad edit |
   | [Tools & the dispatch model](tools.md) | How a capability becomes a callable tool, and the one chokepoint every call goes through |
   | [Content screening](content-screening.md) | The other real security boundary: how untrusted external content (email, calendar, web pages, HA state) is kept from injecting instructions |
   | [The working folder](working-folder.md) | Files she can read, write, and download into, and what's scanned |
   | [Sub-agents](sub-agents.md) | Background jobs run under a separate, limited roster |
+  | [Code sandbox](sandbox.md) | Running python3 in a separate no-network container, and how results come back |
+  | [Computer use](computer-use.md) | The browser bridge: her using your own browser, on sites you allow, with approvals |
   | [MCP client](mcp.md) | Connecting a third-party MCP tool server |
   | [Web search & fetch](web-search-and-fetch.md) | Tavily search and the SSRF-hardened fetch tool |
   | [Home Assistant](home-assistant.md) | Smart-home read/control, entity exposure |

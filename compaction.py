@@ -142,6 +142,51 @@ def _write_segment(user_id: int, lo_id: int, hi_id: int, lo_ts: float, hi_ts: fl
     store.write(_w)
 
 
+def invalidate_around(user_id: int, message_ids) -> int:
+    """Drop the stored summaries that a history edit (hide / restore / delete,
+    2026-10-20) makes wrong -- so text from a message she's no longer meant to
+    see can't survive inside an older precomputed summary, and a restored
+    message gets summarized again. compact_user() rebuilds them in the
+    background from the raw messages that remain.
+
+    For every changed id this removes: the segment(s) whose span contains it,
+    AND the nearest segment on each side. The neighbours matter because
+    re-partitioning can MERGE adjacent sessions (a hidden message may have been
+    the only thing bridging or splitting a time gap), and a rebuilt merged
+    segment sitting beside a surviving old one would put the same stretch of
+    conversation in her context twice. Returns how many summaries were dropped."""
+    ids = conversation._clean_ids(message_ids)
+    if not ids:
+        return 0
+    segs = [dict(r) for r in store.read(lambda c: c.execute(
+        "SELECT id, lo_id, hi_id FROM conversation_segments WHERE user_id=? ORDER BY lo_id",
+        (user_id,)).fetchall())]
+    doomed: set[int] = set()
+    for mid in ids:
+        prev_id = next_id = None
+        for s in segs:
+            if s["lo_id"] <= mid <= s["hi_id"]:
+                doomed.add(s["id"])
+            elif s["hi_id"] < mid:
+                prev_id = s["id"]                 # keeps the nearest one: segs are ordered by lo_id
+            elif s["lo_id"] > mid and next_id is None:
+                next_id = s["id"]
+        doomed.update(x for x in (prev_id, next_id) if x is not None)
+        # a segment containing the id also has its own neighbours
+        for i, s in enumerate(segs):
+            if s["lo_id"] <= mid <= s["hi_id"]:
+                if i > 0:
+                    doomed.add(segs[i - 1]["id"])
+                if i + 1 < len(segs):
+                    doomed.add(segs[i + 1]["id"])
+    if not doomed:
+        return 0
+    marks = ",".join("?" for _ in doomed)
+    return int(store.write(lambda c: c.execute(
+        f"DELETE FROM conversation_segments WHERE user_id=? AND id IN ({marks})",
+        (user_id, *sorted(doomed))).rowcount) or 0)
+
+
 def _summarize_span(user_id: int, display_name: str, lo_id: int, hi_id: int) -> str | None:
     """The one and only real regeneration path -- always conversation.
     in_range()'s raw messages, never a prior segment's own text. Returns

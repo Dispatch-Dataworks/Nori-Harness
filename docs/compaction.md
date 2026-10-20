@@ -65,6 +65,15 @@ raw column: the reason is exactly the kind of fact worth carrying
 forward through the same accuracy-preserving path everything else in a
 segment already goes through, not a special case bypassing it.
 
+## Hidden and deleted messages
+
+A message hidden from her on the [History page](history.md) (or deleted) must not survive inside a stored summary.
+`conversation.before()` and `in_range()` — compaction's only inputs — exclude hidden messages, and every hide,
+restore or delete calls `compaction.invalidate_around()`, which drops the summaries containing the changed messages
+**and the nearest summary on each side** (re-partitioning can merge adjacent sessions, and a rebuilt merged summary
+beside a surviving old one would put the same stretch of conversation in her context twice). The background pass then
+rebuilds them from the raw messages that remain — the same "always re-derive from the raw span" rule as above.
+
 ## Failure handling
 
 A summarization call that fails doesn't corrupt or skip anything
