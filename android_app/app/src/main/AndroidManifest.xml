@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Why each permission is here (nothing is requested that a feature does not need):
+         INTERNET / ACCESS_NETWORK_STATE: talk to your own Nori server, report wifi/cellular in the poll snapshot.
+         FOREGROUND_SERVICE(+_SPECIAL_USE): the always-on connection (the ongoing notification with a Pause button). FOREGROUND_SERVICE_MEDIA_PROJECTION: the screen-share window only.
+         POST_NOTIFICATIONS: replies, reminders and approvals. RECEIVE_BOOT_COMPLETED: reconnect after a restart.
+         REQUEST_IGNORE_BATTERY_OPTIMIZATIONS: asked once so Android does not put the connection to sleep. WAKE_LOCK: keep the screen on while an owner-opened window is running.
+         REQUEST_INSTALL_PACKAGES: install the app's own updates (Android still asks you to confirm).
+         RECORD_AUDIO / MODIFY_AUDIO_SETTINGS: only for the chat's push-to-talk in the web view (the page asks, only the paired server may).
+         SYSTEM_ALERT_WINDOW: Android blocks starting an app/link from the background; an app with a visible overlay window may. Used for phone actions, and for keeping the screen on during a window.
+         ACCESS_*_LOCATION: on-device place fences (arrived / left) and the one-shot "Save here as place". No location trail, no coordinates in polls.
+         SET_ALARM: timers and alarms Nori sets for you. health.*: read-only Health Connect access for the metrics you switch on.
+         NOT requested: QUERY_ALL_PACKAGES, PACKAGE_USAGE_STATS, CAMERA, notification-listener access, contacts, SMS, call log. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_BLOOD_PRESSURE" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+
+    <!-- Package visibility without QUERY_ALL_PACKAGES: only apps that have a launcher icon are visible (for list_apps / open_app), plus Health Connect. -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+
+    <application
+        android:name=".NoriApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- nori-pair://pair?code=XXXX-XXXX&server=https://... (the one-tap link on Settings -> Devices); the owner confirms the server before anything is sent -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nori-pair" />
+            </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+
+        <activity android:name=".SettingsActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nori-app" android:host="settings" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/share_label"
+            android:theme="@style/ShareTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".QuickTaskActivity" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:theme="@style/ShareTheme" android:windowSoftInputMode="stateVisible" />
+        <activity android:name=".ScreenShareRequestActivity" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:theme="@style/ShareTheme" />
+        <activity android:name=".ApprovalActivity" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:theme="@style/ShareTheme" />
+
+        <!-- specialUse only: place fences are delivered to a receiver by Google Play services, so no foreground location service is needed (and boot start stays allowed). -->
+        <service android:name=".SyncService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a long-poll connection to the owner's own private Nori server open so replies, reminders and approval requests arrive as notifications; the owner started it and can pause it from the notification." />
+        </service>
+
+        <service android:name=".ScreenShareService" android:exported="false" android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".NoriAccessibilityService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <service
+            android:name=".PauseTile"
+            android:exported="true"
+            android:icon="@drawable/ic_stat"
+            android:label="Nori"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".InteractTile"
+            android:exported="true"
+            android:icon="@drawable/ic_stat"
+            android:label="Nori may act"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".ShareTile"
+            android:exported="true"
+            android:icon="@drawable/ic_stat"
+            android:label="Nori may look"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <receiver android:name=".ControlReceiver" android:exported="false" />
+        <receiver android:name=".ApprovalReceiver" android:exported="false" />
+        <receiver android:name=".GeofenceReceiver" android:exported="false" />
+        <receiver android:name=".BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver android:name=".NoriWidget" android:exported="true" android:label="Nori">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_info" />
+        </receiver>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
+
+        <activity android:name=".HealthRationaleActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".HealthRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+    </application>
+</manifest>

@@ -179,6 +179,9 @@ import turns
 import usertime
 import voice
 import bridge
+import device_data
+import devices
+import phone_tools  # noqa: F401  (registers the phone_* / place_reminder_* tools)
 import sandbox
 import webtools
 import workfiles
@@ -1596,6 +1599,11 @@ CHAT_JS = (
     "else renderApproval(box,j&&j.status&&j.status!=='pending'?j.status:'error',j&&j.message);})"
     ".catch(function(){renderApproval(box,'error');});});"
     "hydrateApprovals();"
+    # /?prefill=... (2026-10-21): the Android app's widgets ("Log water", "Log weight") open the chat with the
+    # composer already filled in. Capped, set as plain text, never sent automatically.
+    "(function(){try{var pf=new URLSearchParams(location.search).get('prefill');"
+    "var mi=document.getElementById('msgInput');if(pf&&mi){mi.value=pf.slice(0,500);"
+    "mi.dispatchEvent(new Event('input'));mi.focus();}}catch(e){}})();"
     "function setSendDisabled(on){var b=document.getElementById('sendBtn'),i=document.getElementById('msgInput');"
     "if(b)b.disabled=on;if(i)i.disabled=on;}"
 
@@ -2123,6 +2131,9 @@ CHAT_JS = (
     "voiceMicBtn.classList.remove('speaking');if(voiceStopBtn)voiceStopBtn.hidden=true;}"
     "window.closeVoiceModal=closeVoiceModal;"
     "micBtn.addEventListener('click',openVoiceModal);"
+    # /?talk=1 (2026-10-21): the Android app's "Talk to Nori" widget opens the chat straight into voice mode.
+    # It only OPENS the modal; recording still needs the user's own press, exactly as if they'd tapped the mic.
+    "try{if(new URLSearchParams(location.search).get('talk')==='1')openVoiceModal();}catch(e){}"
     "if(voiceClose)voiceClose.addEventListener('click',closeVoiceModal);"
 
     # Playback -- vSpeak is called from addMessage's voice-mode mirror
@@ -2830,6 +2841,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, b'{"status":"ok"}', ctype="application/json")
             except Exception:  # noqa: BLE001
                 return self.send(503, b'{"status":"degraded"}', ctype="application/json")
+        if path == "/device/app.apk":     # the paired phone fetches updates with its own token, no cookie
+            return self.device_apk_get()
 
         if path.startswith("/avatar/"):
             return self.serve_avatar(path.rsplit("/", 1)[1])
@@ -2884,6 +2897,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.history_page(sess, urllib.parse.parse_qs(qs))
         if path == "/photos":
             return self.photos_page(sess, urllib.parse.parse_qs(qs))
+        if path == "/settings/devices/app.apk":
+            return self.devices_apk_get(sess)
         if path == "/settings":
             q = urllib.parse.parse_qs(qs)
             tab = q.get("tab", [""])[0]
@@ -3015,8 +3030,15 @@ class Handler(BaseHTTPRequestHandler):
         # Browser bridge (2026-10-05): the paired extension authenticates with a
         # bearer token, not a cookie, so these sit ahead of the login/CSRF gates
         # for the same reason as the PACI route above. See bridge.py.
-        if path in ("/bridge/poll", "/bridge/result"):
+        # /bridge/approval is shared: with an Authorization: Bearer header it is the extension's notification
+        # button; without one it is the chat card's session+CSRF route further down.
+        if path in ("/bridge/poll", "/bridge/result", "/bridge/register", "/bridge/share", "/bridge/ask",
+                    "/bridge/activity") or (path == "/bridge/approval" and
+                                            self.headers.get("Authorization", "").lower().startswith("bearer ")):
             return self.bridge_post(path)
+        # The Android app (2026-10-21, docs/devices.md): same reasoning, its own bearer token (npn_).
+        if path in self._DEVICE_PATHS:
+            return self.device_post(path)
 
         form = self.form()
 
@@ -3262,6 +3284,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.files_onedrive_post(sess, form)
         if path == "/files/sharepoint":
             return self.files_sharepoint_post(sess, form)
+        if path.startswith("/settings/devices/"):
+            return self.devices_settings_post(sess, path, form)
         if path == "/history/edit":
             return self.history_edit_post(sess, form)
         if path == "/send":
@@ -7515,46 +7539,395 @@ class Handler(BaseHTTPRequestHandler):
             peer_id, method="POST", path=path, headers=self.headers, raw_body=raw)
         return self.send_json(resp, code)
 
-    def bridge_post(self, path: str):
-        """The browser extension's two calls: /bridge/poll (long-poll for a
-        command) and /bridge/result (the answer). Bearer-token authenticated;
-        a bad token counts against the same per-IP failure limiter login uses."""
+    _DEVICE_PATHS = ("/device/register", "/device/poll", "/device/ack", "/device/result", "/device/approval",
+                     "/device/events", "/device/place", "/device/health", "/device/share", "/device/unregister")
+    _DEVICE_LIMITS = {"/device/poll": 16 * 1024, "/device/register": 4096, "/device/ack": 4096,
+                      "/device/approval": 4096, "/device/unregister": 4096, "/device/events": 64 * 1024,
+                      "/device/place": 8192, "/device/health": 512 * 1024, "/device/result": 12 * 1024 * 1024,
+                      "/device/share": 12 * 1024 * 1024}
+    _BRIDGE_LIMITS = {"/bridge/poll": 16 * 1024, "/bridge/result": 8 * 1024 * 1024, "/bridge/register": 4096,
+                      "/bridge/share": 12 * 1024 * 1024, "/bridge/ask": 256 * 1024, "/bridge/activity": 64 * 1024,
+                      "/bridge/approval": 4096}
+
+    def _bearer_body(self, limits: dict, path: str):
+        """The shared front of every device route: the per-IP failure limiter, the body-size cap, and the raw body.
+        Returns (raw, False), or (None, True) when a rejection has ALREADY been sent (send_json returns None, so
+        the flag is explicit rather than inferred from its return value)."""
         ip = self.ip()
         if accounts.rate_limited(ip):
-            return self.send_json({"error": "too many attempts"}, 429)
+            self.send_json({"error": "too many attempts"}, 429)
+            return None, True
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > limits.get(path, 16 * 1024):
+            self.send_json({"error": "oversized body"}, 413)
+            return None, True
+        return (self.rfile.read(n) if n else b""), False
+
+    def _bearer_token(self, kind: str):
         auth = self.headers.get("Authorization", "")
-        token = bridge.authenticate(auth[7:].strip()) if auth.lower().startswith("bearer ") else None
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        limit = bridge.MAX_BODY_BYTES if path == "/bridge/result" else bridge.MAX_POLL_BODY_BYTES
-        if n < 0 or n > limit:
-            return self.send_json({"error": "oversized body"}, 413)
-        raw = self.rfile.read(n) if n else b""
-        if token is None:
-            accounts.record_fail(ip)
-            return self.send_json({"error": "unauthorized"}, 401)
-        if not bridge.master_enabled(token["workspace_id"]):
-            return self.send_json({"error": "computer use is switched off", "active": False}, 403)
+        return bridge.authenticate(auth[7:].strip(), kind=kind) if auth.lower().startswith("bearer ") else None
+
+    @staticmethod
+    def _json_body(raw: bytes):
         try:
             body = json.loads(raw) if raw else {}
         except ValueError:
-            return self.send_json({"error": "bad json"}, 400)
-        if not isinstance(body, dict):
+            return None
+        return body if isinstance(body, dict) else None
+
+    def bridge_post(self, path: str):
+        """The browser extension's calls (docs/devices.md): /bridge/poll (long poll: a command and/or notification
+        messages), /bridge/result, /bridge/register (a pairing code for a token), /bridge/share, /bridge/ask,
+        /bridge/activity, /bridge/approval. Bearer-token authenticated; a bad token or code counts against the same
+        per-IP failure limiter login uses. Computer use's master switch gates only COMMANDS (bridge.poll), so
+        notifications, sharing and the side panel keep working with it off."""
+        ip = self.ip()
+        raw, rejected = self._bearer_body(self._BRIDGE_LIMITS, path)
+        if rejected:
+            return
+        if path == "/bridge/register":
+            body = self._json_body(raw)
+            if body is None:
+                return self.send_json({"error": "bad json"}, 400)
+            res, err = devices.claim_code(str(body.get("code") or ""), "browser", name=str(body.get("name") or ""),
+                                          version=str(body.get("v") or ""))
+            if res is None:
+                accounts.record_fail(ip)
+                return self.send_json({"error": err}, 401)
+            return self.send_json(res)
+        token = self._bearer_token("browser")
+        if token is None:
+            accounts.record_fail(ip)
+            return self.send_json({"error": "unauthorized"}, 401)
+        body = self._json_body(raw)
+        if body is None:
             return self.send_json({"error": "bad json"}, 400)
         if path == "/bridge/poll":
             if isinstance(body.get("ext"), dict):
                 bridge.set_ext_info(token["id"], body["ext"])
-            if body.get("paused"):
-                # A paused extension still reports in (so the popup/settings can say "paused")
-                # but takes no commands.
+            devices.mark_paused(token["id"], bool(body.get("paused")))
+            if body.get("paused") or devices.is_held(token):
+                # A paused/held extension still reports in (so the popup/settings can say so) but takes no work.
                 time.sleep(min(bridge.INACTIVE_POLL_WAIT_S, 5))
-                return self.send_json({"active": False, "paused": True, "command": None})
-            return self.send_json(bridge.poll(token))
+                return self.send_json({"active": False, "paused": bool(body.get("paused")),
+                                       "held": devices.is_held(token), "command": None, "messages": [],
+                                       "settings": {**devices.browser_settings(token["user_id"]),
+                                                    "notifications": False, "activity": False}})
+            resp = bridge.poll(token, extra=devices.browser_has_pending(token, body))
+            resp.update(devices.browser_extras(token, body))
+            return self.send_json(resp)
+        if path == "/bridge/result":
+            try:
+                cmd_id = int(body.get("id"))
+            except (TypeError, ValueError):
+                return self.send_json({"error": "bad command id"}, 400)
+            ok, msg = bridge.complete(token, cmd_id, body)
+            return self.send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+        if devices.is_held(token):
+            return self.send_json({"ok": False, "error": "this browser is on hold in Settings → Devices"}, 403)
+        if path == "/bridge/approval":
+            return self._device_approval(token, body)
+        if path == "/bridge/share":
+            out, code = device_data.handle_share(token, body)
+            return self.send_json(out, code)
+        if path == "/bridge/ask":
+            out, code = device_data.handle_ask(token, body)
+            return self.send_json(out, code)
+        if path == "/bridge/activity":
+            n = devices.add_browser_activity(token["user_id"], body.get("host_seconds"))
+            return self.send_json({"ok": True, "recorded_seconds": n})
+        return self.not_found()
+
+    def _device_approval(self, token: dict, body: dict):
+        """Approve / Deny from a notification's action button (phone or browser). Same resolve_approval as the chat
+        card; only the owner's own requests resolve."""
         try:
             cmd_id = int(body.get("id"))
         except (TypeError, ValueError):
-            return self.send_json({"error": "bad command id"}, 400)
-        ok, msg = bridge.complete(token, cmd_id, body)
-        return self.send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+            return self.send_json({"ok": False, "error": "bad id"}, 400)
+        if body.get("decision") not in ("approve", "deny"):
+            return self.send_json({"ok": False, "error": "decision must be approve or deny"}, 400)
+        ok, msg = bridge.resolve_approval(token["user_id"], cmd_id, body["decision"] == "approve", token["user_id"])
+        cmd = bridge._cmd(cmd_id)
+        status = (bridge._CARD_STATUS.get(cmd["status"], cmd["status"])
+                  if cmd and cmd["user_id"] == token["user_id"] else "error")
+        devices.log_activity(token["user_id"], token["id"], "approval", f"{body['decision']} #{cmd_id}: {status}")
+        return self.send_json({"ok": ok, "message": msg, "status": status}, 200 if ok else 409)
+
+    def device_post(self, path: str):
+        """The Android app's calls (docs/devices.md): register (a pairing code), poll, ack, result, approval, events,
+        place, health, share, unregister. Bearer npn_ token; a wrong code/token counts against the login limiter."""
+        ip = self.ip()
+        raw, rejected = self._bearer_body(self._DEVICE_LIMITS, path)
+        if rejected:
+            return
+        if path == "/device/register":
+            body = self._json_body(raw)
+            if body is None:
+                return self.send_json({"error": "bad json"}, 400)
+            res, err = devices.claim_code(str(body.get("code") or ""), "phone", name=str(body.get("name") or ""),
+                                          version=str(body.get("v") or ""))
+            if res is None:
+                accounts.record_fail(ip)
+                return self.send_json({"error": err}, 401)
+            return self.send_json(res)
+        token = self._bearer_token("phone")
+        if token is None:
+            accounts.record_fail(ip)
+            return self.send_json({"error": "unauthorized"}, 401)
+        body = self._json_body(raw)
+        if body is None:
+            return self.send_json({"error": "bad json"}, 400)
+        if path == "/device/poll":
+            return self.send_json(devices.phone_poll(token, body))
+        if path == "/device/unregister":
+            devices.revoke(token["user_id"], token["id"])
+            return self.send_json({"ok": True})
+        if path == "/device/ack":
+            return self.send_json({"ok": devices.ack_command(token, body.get("id"))})
+        if path == "/device/result":
+            ok, msg = devices.phone_result(token, body)
+            return self.send_json({"ok": ok, "message": msg}, 200 if ok else 409)
+        if devices.is_held(token):
+            return self.send_json({"ok": False, "error": "this phone is on hold in Settings → Devices"}, 403)
+        if path == "/device/approval":
+            return self._device_approval(token, body)
+        if path == "/device/events":
+            return self.send_json({"ok": True, "recorded": device_data.record_events(token, body.get("events"))})
+        if path == "/device/health":
+            return self.send_json({"ok": True, **device_data.ingest_health(token, body.get("samples"))})
+        if path == "/device/share":
+            out, code = device_data.handle_share(token, body)
+            return self.send_json(out, code)
+        if path == "/device/place":
+            if not config.get("user", token["user_id"], "phone_places_enabled"):
+                return self.send_json({"ok": False, "error": "places are switched off in Settings → Devices"}, 403)
+            place, err = device_data.add_place(token["user_id"], str(body.get("name") or ""), body.get("lat"),
+                                               body.get("lon"), body.get("radius_m") or 120,
+                                               bool(body.get("home")), source="phone")
+            if place is None:
+                return self.send_json({"ok": False, "error": err}, 400)
+            return self.send_json({"ok": True, "place": {"id": place["id"], "name": place["name"]}})
+        return self.not_found()
+
+    def device_apk_get(self):
+        """GET /device/app.apk with the phone's own bearer token -- the in-app updater."""
+        ip = self.ip()
+        if accounts.rate_limited(ip):
+            return self.send_json({"error": "too many attempts"}, 429)
+        if self._bearer_token("phone") is None:
+            accounts.record_fail(ip)
+            return self.send_json({"error": "unauthorized"}, 401)
+        return self._send_apk()
+
+    def devices_apk_get(self, sess: dict):
+        """GET /settings/devices/app.apk with the web session -- the first install, from the phone's browser."""
+        return self._send_apk()
+
+    def _send_apk(self):
+        path = devices.apk_path()
+        if path is None:
+            return self.send_json({"error": "no APK has been uploaded to this server yet"}, 404)
+        data = path.read_bytes()
+        self._timing_status = 200
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", "attachment; filename=\"nori-companion.apk\"")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # -- Settings -> Devices (2026-10-21): the owner's own phone and browser, per account.
+    def devices_settings_form(self, sess: dict, err: str = "", info: str = "", new_code: tuple | None = None):
+        uid, csrf = sess["user_id"], esc(sess["csrf"])
+        is_admin = sess["role"] == "admin"
+        g = lambda k: config.get("user", uid, k)  # noqa: E731
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+
+        def post(action, body=""):
+            return (f"<form method=post action='/settings/devices/{action}' style='display:inline'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>{body}")
+
+        def chk(key, label, tip=""):
+            return (f"<div class=field><label><input type=checkbox name={key}{' checked' if g(key) else ''}> "
+                    f"{label} {info_tip(tip) if tip else ''}</label></div>")
+
+        base = os.environ.get("NORI_PUBLIC_URL", "").rstrip("/") or f"https://{self.headers.get('Host', 'your-nori-address')}"
+        code_box = ""
+        if new_code:
+            code, kind = new_code
+            link = ("nori-pair://pair?code=" + code + "&server=" + urllib.parse.quote(base, safe="")) if kind == "phone" else ""
+            code_box = ("<div class=section style='border:2px solid var(--accent,#c60)'><h2>pairing code -- shown once</h2>"
+                        f"<p style='font-size:1.6rem;letter-spacing:.15em'><code>{esc(code)}</code></p>"
+                        f"<p class=muted>Good for 15 minutes, one use. Server address: <code>{esc(base)}</code></p>"
+                        + (f"<p><a href='{esc(link)}'>Open on this phone to pair</a></p>" if link else
+                           "<p class=muted>Paste the address and this code into the extension's options page.</p>")
+                        + "</div>")
+
+        def device_rows(kind):
+            rows = []
+            for d in devices.devices_for(uid, kind):
+                st, caps = d["state"], d["caps"]
+                now_ms = int(time.time() * 1000)
+                wins = []
+                if kind == "phone":
+                    if int(st.get("interact_until") or 0) > now_ms:
+                        wins.append("control window open")
+                    if int(st.get("share_until") or 0) > now_ms:
+                        wins.append("screen share open")
+                bits = [d["status"] + (" · paused on the device" if d["paused"] else "") + (" · ON HOLD" if d["held"] else "")]
+                if d.get("app_version"):
+                    bits.append(f"v{d['app_version']}")
+                if caps:
+                    bits.append("allowed there: " + ", ".join(k for k, v in caps.items() if v) if any(caps.values()) else "nothing allowed there yet")
+                bits += wins
+                rows.append(
+                    f"<div class=list-row><div class=list-meta><b>{esc(d['label'])}</b><small>{esc(' · '.join(bits))}</small></div>"
+                    "<div class=list-actions>"
+                    + post(f"hold/{d['id']}", f"<button class='btn'>{'resume' if d['held'] else 'hold'}</button></form>")
+                    + post(f"revoke/{d['id']}", "<button class='btn btn-danger'>remove</button></form>") + "</div></div>")
+            return "".join(rows) or "<p class=muted>none paired yet</p>"
+
+        apk = devices.app_info()
+        apk_line = (f"<p class=muted>App version on this server: <b>{esc(apk['latest'])}</b> -- "
+                    "<a href='/settings/devices/app.apk'>download the APK</a> (open this page on the phone).</p>"
+                    if apk else "<p class=muted>No app has been uploaded to this server yet (<code>build.ps1 -Upload</code>).</p>")
+        phone_switches = (
+            chk("phone_notifications_enabled", "send me notifications on my phone")
+            + chk("phone_notify_replies", "…including her chat replies", "Off: only reminders, pings, job results and approvals.")
+            + chk("phone_health_enabled", "accept Health Connect data into my trackers", "Weight, blood pressure, steps, sleep, resting heart rate. The phone must also allow it.")
+            + chk("phone_places_enabled", "accept arrived/left events for my named places", "The phone checks the places itself and sends only 'arrived at / left'. No location trail is kept."))
+        if is_admin:
+            phone_switches += (
+                chk("phone_actions_enabled", "let her open links/apps and set timers, alarms, navigation on my phone")
+                + chk("phone_control_enabled", "let her read and use my phone's screen (accessibility), in a window I open on the phone",
+                      "Needs the Accessibility service on the phone. Sends, payments and deletions pause for your approval.")
+                + chk("phone_screen_enabled", "let her look at my phone's screen (screenshots), in a window I open on the phone")
+                + "<div class=field><label>apps she must never see or control (package names, comma separated)</label>"
+                  f"<input type=text name=phone_hidden_apps value='{esc(g('phone_hidden_apps'))}'></div>"
+                + "<div class=field><label>most phone actions per hour</label>"
+                  f"<input type=number name=phone_actions_per_hour min=1 max=200 value={int(g('phone_actions_per_hour') or 30)}></div>")
+        phone_box = (
+            "<div class=section><h2>phone</h2>"
+            "<p class=muted>The Nori Android app: real notifications, a share sheet, health data, places and (only in windows you open "
+            "on the phone) actions. Everything but notifications is off until you turn it on here <b>and</b> in the app.</p>"
+            + device_rows("phone")
+            + post("pair/phone", "<button class='btn btn-primary'>pair a phone</button></form>") + apk_line
+            + post("phone", phone_switches + "<button class='btn btn-primary'>save phone settings</button></form>") + "</div>")
+
+        places = device_data.list_places(uid)
+        place_rows = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(p['name'])}</b><small>{'home · ' if p['is_home'] else ''}{p['radius_m']} m</small></div>"
+            "<div class=list-actions>"
+            + ("" if p["is_home"] else post(f"place/home/{p['id']}", "<button class='btn'>make home</button></form>"))
+            + post(f"place/delete/{p['id']}", "<button class='btn btn-danger'>delete</button></form>") + "</div></div>"
+            for p in places)
+        events = device_data.recent_place_events(uid, 6)
+        ev_html = ("<p class=muted>" + " · ".join(f"{esc(x['kind'])} {esc(x['place_name'])} {esc(usertime.fmt(uid, x['ts'], '%b %d %H:%M'))}" for x in events) + "</p>") if events else ""
+        rem = device_data.list_place_reminders(uid)
+        rem_rows = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(r['text'])}</b><small>when you {esc(r['when_kind'])} {esc(r['place_name'])}</small></div>"
+            "<div class=list-actions>" + post(f"reminder/cancel/{r['id']}", "<button class='btn'>cancel</button></form>") + "</div></div>"
+            for r in rem)
+        places_box = (
+            "<div class=section><h2>places</h2><p class=muted>Save a place from the phone app (\"save here\"); ask her to remind you "
+            "when you arrive or leave. Coordinates exist only because you saved the place.</p>"
+            + (place_rows or "<p class=muted>no places saved yet</p>") + ev_html
+            + (("<h3>place reminders</h3>" + rem_rows) if rem_rows else "") + "</div>")
+
+        browser_switches = (
+            chk("browser_notifications_enabled", "desktop notifications through the extension")
+            + chk("browser_activity_enabled", "passive browsing time (site names and seconds only)",
+                  "Never titles, URLs or contents. Hidden sites below are never counted.")
+            + (chk("bridge_standing_look", "standing look: she may read tabs and open new tabs on allowed sites without a session",
+                   "Read-only. Clicking and typing still need a session and your approval. Allowed sites are set under Computer use.")
+               if is_admin else "")
+            + "<div class=field><label>sites the extension never reports or shares (comma separated, *.example.com ok)</label>"
+              f"<input type=text name=browser_hidden_hosts value='{esc(g('browser_hidden_hosts'))}'></div>"
+            + "<div class=field><label>days to keep browsing-time totals</label>"
+              f"<input type=number name=browser_day_keep_days min=7 max=365 value={int(g('browser_day_keep_days') or 60)}></div>")
+        day = devices.browser_day(uid, 7)
+        today = usertime.fmt(uid, time.time(), "%Y-%m-%d")
+        today_rows = "".join(f"<li>{esc(x['host'])} -- {x['seconds'] // 60} min</li>" for x in (day.get(today) or [])[:10])
+        week_total = sum(x["seconds"] for rows in day.values() for x in rows)
+        time_html = ("<h3>browsing time</h3>"
+                     + (f"<ul>{today_rows}</ul>" if today_rows else "<p class=muted>nothing recorded today</p>")
+                     + f"<p class=muted>last 7 days: {week_total // 60} min across {len({x['host'] for rows in day.values() for x in rows})} site(s)</p>"
+                     + post("browsingtime/clear", "<button class='btn btn-danger'>forget all browsing time</button></form>")) if g("browser_activity_enabled") or day else ""
+        browser_box = (
+            "<div class=section><h2>browser</h2>"
+            "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, and (if you "
+            "also use Computer use) a bridge she can act through. Install and pair it once.</p>"
+            + device_rows("browser")
+            + post("pair/browser", "<button class='btn btn-primary'>pair a browser</button></form>")
+            + post("browser", browser_switches + "<button class='btn btn-primary'>save browser settings</button></form>")
+            + time_html + "</div>")
+
+        acts = devices.recent_activity(uid, 12)
+        act_box = ("<div class=section><h2>recent device activity</h2><p class=muted>What your devices sent that landed somewhere "
+                   "(counts only, never content).</p>"
+                   + ("".join(f"<div class=list-row><div class=list-meta><b>{esc(a['kind'])}</b><small>{esc(usertime.fmt(uid, a['ts'], '%b %d %H:%M'))} · {esc(a['detail'] or '')}</small></div></div>" for a in acts)
+                      or "<p class=muted>nothing yet</p>") + "</div>")
+        self._settings_response(sess, "devices", e + i + code_box + phone_box + places_box + browser_box + act_box)
+
+    def devices_settings_post(self, sess: dict, path: str, form: dict):
+        uid, ws = sess["user_id"], sess["workspace_id"]
+        is_admin = sess["role"] == "admin"
+        sub = path[len("/settings/devices/"):].strip("/").split("/")
+        act = sub[0]
+        if act == "pair" and len(sub) == 2 and sub[1] in ("phone", "browser"):
+            code, err = devices.create_code(uid, ws, sub[1])
+            if code is None:
+                return self.devices_settings_form(sess, err=err)
+            return self.devices_settings_form(sess, new_code=(code, sub[1]))
+        if act in ("hold", "revoke") and len(sub) == 2 and sub[1].isdigit():
+            did = int(sub[1])
+            if act == "hold":
+                d = devices.get_device(did)
+                ok = bool(d and d["user_id"] == uid and devices.set_hold(uid, did, not devices.device_state(d).get("server_hold")))
+            else:
+                ok = devices.revoke(uid, did)
+            return self.devices_settings_form(sess, info="done" if ok else "", err="" if ok else "no such device")
+        if act == "phone":
+            keys = ["phone_notifications_enabled", "phone_notify_replies", "phone_health_enabled", "phone_places_enabled"]
+            if is_admin:
+                keys += ["phone_actions_enabled", "phone_control_enabled", "phone_screen_enabled"]
+            for k in keys:
+                config.set("user", uid, k, k in form)
+            if is_admin:
+                apps = [a for a in re.split(r"[,\s]+", form.get("phone_hidden_apps", "")) if re.fullmatch(r"[A-Za-z0-9_.]{3,200}", a)]
+                config.set("user", uid, "phone_hidden_apps", ",".join(apps[:100]))
+                try:
+                    config.set("user", uid, "phone_actions_per_hour", max(1, min(int(form.get("phone_actions_per_hour") or 30), 200)))
+                except ValueError:
+                    return self.devices_settings_form(sess, err="actions per hour must be a number")
+            return self.devices_settings_form(sess, info="phone settings saved")
+        if act == "browser":
+            for k in ["browser_notifications_enabled", "browser_activity_enabled"] + (["bridge_standing_look"] if is_admin else []):
+                config.set("user", uid, k, k in form)
+            hosts = [h for h in (bridge.normalize_pattern(x) for x in re.split(r"[,\s]+", form.get("browser_hidden_hosts", ""))) if h]
+            config.set("user", uid, "browser_hidden_hosts", ",".join(hosts[:100]))
+            try:
+                config.set("user", uid, "browser_day_keep_days", max(7, min(int(form.get("browser_day_keep_days") or 60), 365)))
+            except ValueError:
+                return self.devices_settings_form(sess, err="days to keep must be a number")
+            return self.devices_settings_form(sess, info="browser settings saved")
+        if act == "place" and len(sub) == 3 and sub[2].isdigit():
+            ok = (device_data.set_home(uid, int(sub[2])) if sub[1] == "home"
+                  else device_data.delete_place(uid, int(sub[2])) if sub[1] == "delete" else False)
+            return self.devices_settings_form(sess, info="done" if ok else "", err="" if ok else "no such place")
+        if act == "reminder" and len(sub) == 3 and sub[1] == "cancel" and sub[2].isdigit():
+            device_data.cancel_place_reminder(uid, int(sub[2]))
+            return self.devices_settings_form(sess, info="cancelled")
+        if act == "browsingtime" and len(sub) == 2 and sub[1] == "clear":
+            n = devices.clear_browser_day(uid)
+            return self.devices_settings_form(sess, info=f"forgot {n} day-site total(s)")
+        return self.not_found()
 
     # Peer conversation diagnostics and pending approvals live with peer
     # settings. list_peers(sess) retains the existing visibility scope.
@@ -7860,7 +8233,7 @@ class Handler(BaseHTTPRequestHandler):
         # read-only spend dashboard, since reporting isn't a setting.
         groups = [("Personal", (("pings", "Pings"), ("chatvoice", "Chat & voice"),
                                  ("cost", "Usage & cost"), ("notify", "Notifications"),
-                                 ("memory", "Memory"), ("accounts", "Connected accounts"),
+                                 ("devices", "Devices"), ("memory", "Memory"), ("accounts", "Connected accounts"),
                                  ("active_tools", "Active tools"), ("schedules", "Scheduled tasks"),
                                  ("tasks", "Tasks"), ("notes", "Notes"), ("reminders", "Reminders"),
                                  ("categories", "Categories"), ("about", "About")))]
@@ -8012,6 +8385,9 @@ class Handler(BaseHTTPRequestHandler):
             # read-only, nothing here (build/uptime/model/tool count/
             # storage/integration summary) is sensitive.
             return self.instance_about_page(sess)
+        if tab == "devices":
+            # Personal: every account manages only its own devices; the admin never sees another account's.
+            return self.devices_settings_form(sess, err=err, info=info)
         if tab == "schedules":
             # Personal, like pings/memory -- a schedule always belongs to
             # ONE account (schedules.py's own module docstring: even a
@@ -10372,6 +10748,18 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
+def _device_turn_runner(user_id: int, extra_message: dict | None = None) -> dict:
+    """What devices.py / device_data.py call to answer something a device sent (a share, the side panel's question):
+    the SAME turn a typed message gets, through turns.run's per-user lock (a busy account queues it)."""
+    user = accounts.get_user(user_id)
+    if user is None:
+        return {"ok": False, "error": "no such account"}
+    sess = {"role": user["role"], "user_id": user_id, "workspace_id": user["workspace_id"], "csrf": ""}
+    return turns.run(user_id,
+                     lambda: Handler._run_turn(None, sess, user, extra_message=extra_message),
+                     lambda _orphan: Handler._run_turn(None, sess, user))
+
+
 def main() -> int:
     _redirect_logs()
     load_env(ENV_PATH)
@@ -10403,6 +10791,7 @@ def main() -> int:
     trackers.register_peer_actions()  # same reasoning, see that module's own docstring
     swept = jobs.sweep_orphaned()
     bridge.interrupt_unfinished()  # a restart ended every in-flight browser command
+    device_data.set_turn_runner(_device_turn_runner)
     peers.start()
     scheduler.start()
     if swept:

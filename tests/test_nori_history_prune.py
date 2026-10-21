@@ -545,6 +545,7 @@ class EveryReaderOfMessagesIsClassified(unittest.TestCase):
         "set_pruned": "the edit operation itself",
         "delete_messages": "the edit operation itself",
         "count_hidden": "a number for the UI",
+        "assistant_messages_after": "notifications for the owner's own devices, not a prompt; still excludes hidden messages",
         "add_message": "insert",
         "cost_summary": "cost reporting",
     }

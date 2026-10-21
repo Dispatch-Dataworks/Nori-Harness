@@ -30,6 +30,14 @@ The extension connects **out** to Nori (so nothing on your PC listens for connec
 
 Tools: `browser_tabs`, `browser_open`, `browser_read`, `browser_click`, `browser_type`, `browser_scroll`, `browser_screenshot`.
 
+## Standing look (read-only, no session)
+
+Settings -> Devices -> Browser -> **standing look** lets her use the *read-only* tools -- `browser_tabs`, `browser_read`,
+`browser_screenshot`, `browser_scroll`, and `browser_open` (always a **new** tab) -- without a running session, on allowed sites
+only, while the master switch is on and a browser is paired. `browser_click` and `browser_type` still need a session and your
+approval; the extension itself refuses them in this mode ("a session isn't running; I can only look"). The allowlist, hidden
+sites, private-window and sensitive-field rules are unchanged.
+
 ## What is enforced (in code, not by asking the model nicely)
 
 | Rule | Where |

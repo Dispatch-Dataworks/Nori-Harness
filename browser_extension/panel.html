@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ask Nori</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100vh; padding: .8rem; gap: .6rem; }
+  #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: .5rem; }
+  .bubble { padding: .45rem .65rem; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 92%; }
+  .bubble.user { align-self: flex-end; background: var(--accent); color: var(--accent-fg); }
+  .bubble.nori { align-self: flex-start; background: var(--card); border: 1px solid var(--line); }
+  .bubble.system { align-self: stretch; max-width: 100%; color: var(--muted); font-size: .88em; background: transparent; padding: .1rem 0; }
+  .bubble.system.err { color: var(--bad); }
+  #page { font-size: .9em; }
+  #page b { overflow-wrap: anywhere; }
+  form { display: flex; flex-direction: column; gap: .4rem; }
+</style></head>
+<body>
+<div>
+  <h1>Ask Nori about this page</h1>
+  <div id="page" class="card"><span class="muted">Looking at the tab in front…</span></div>
+  <p class="muted" id="promise">Nothing is read from the page until you press Ask. Then Nori gets the page's title, address and up to 30,000 characters of its visible text (never password fields or what is typed into forms).</p>
+</div>
+<div id="log" aria-live="polite"></div>
+<div id="sent" class="muted" role="status"></div>
+<form id="form">
+  <textarea id="q" rows="3" maxlength="2000" placeholder="Ask a question about this page"></textarea>
+  <button id="ask" type="submit" class="primary">Ask</button>
+</form>
+<script src="lib.js"></script>
+<script src="panel.js"></script>
+</body></html>

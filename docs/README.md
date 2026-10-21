@@ -38,6 +38,7 @@ Everything else here goes deeper once it's up.
   | [Sub-agents](sub-agents.md) | Background jobs run under a separate, limited roster |
   | [Code sandbox](sandbox.md) | Running python3 in a separate no-network container, and how results come back |
   | [Computer use](computer-use.md) | The browser bridge: her using your own browser, on sites you allow, with approvals |
+  | [Devices: Android app & browser extension](devices.md) | Pairing, notifications, share, health, places, phone actions and control windows, the extension's side panel and browsing time |
   | [MCP client](mcp.md) | Connecting a third-party MCP tool server |
   | [Web search & fetch](web-search-and-fetch.md) | Tavily search and the SSRF-hardened fetch tool |
   | [Home Assistant](home-assistant.md) | Smart-home read/control, entity exposure |

@@ -467,6 +467,84 @@ CREATE TABLE IF NOT EXISTS bridge_site_rules (
     added_ts    REAL NOT NULL
 );
 
+-- Devices (2026-10-21) -- the Android app and the extension, see devices.py and docs/devices.md.
+-- bridge_tokens above IS the device registry (kind/paused/caps/state/last_msg_id/app_version are ALTERed on).
+-- One-time pairing codes: only the hash is stored; 15-minute life; single use.
+CREATE TABLE IF NOT EXISTS device_pairing_codes (
+    id           INTEGER PRIMARY KEY,
+    user_id      INTEGER NOT NULL,
+    workspace_id INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    code_hash    TEXT NOT NULL UNIQUE,
+    created_ts   REAL NOT NULL,
+    expires_ts   REAL NOT NULL,
+    used_ts      REAL
+);
+-- Named places. The phone evaluates geofences ON DEVICE and reports only arrived/left; coordinates exist here only
+-- because the owner defined the place (from the app's "save here" or the settings page).
+CREATE TABLE IF NOT EXISTS places (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    lat         REAL NOT NULL,
+    lon         REAL NOT NULL,
+    radius_m    INTEGER NOT NULL DEFAULT 120,
+    is_home     INTEGER NOT NULL DEFAULT 0,
+    created_ts  REAL NOT NULL,
+    source      TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_places_user_name ON places(user_id, name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS place_events (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    place_id    INTEGER NOT NULL,
+    place_name  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    device_id   INTEGER,
+    UNIQUE(user_id, place_id, kind, ts)
+);
+CREATE TABLE IF NOT EXISTS place_reminders (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    place_id    INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    when_kind   TEXT NOT NULL DEFAULT 'arrive',
+    once        INTEGER NOT NULL DEFAULT 1,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_ts  REAL NOT NULL,
+    fired_ts    REAL
+);
+-- Health samples already mapped into a tracker entry, so a re-sent sample never double-logs and a daily total updates.
+CREATE TABLE IF NOT EXISTS device_health (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    metric      TEXT NOT NULL,
+    dedupe_key  TEXT NOT NULL,
+    entry_id    INTEGER,
+    value       REAL,
+    updated_ts  REAL NOT NULL,
+    UNIQUE(user_id, metric, dedupe_key)
+);
+-- Passive browsing time: host names and seconds ONLY -- never titles, URLs or contents.
+CREATE TABLE IF NOT EXISTS browser_day (
+    user_id  INTEGER NOT NULL,
+    day      TEXT NOT NULL,
+    host     TEXT NOT NULL,
+    seconds  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day, host)
+);
+-- What a device sent that landed somewhere (a share, a health batch, place events): counts and ids, never content.
+CREATE TABLE IF NOT EXISTS device_activity (
+    id        INTEGER PRIMARY KEY,
+    ts        REAL NOT NULL,
+    user_id   INTEGER NOT NULL,
+    device_id INTEGER,
+    kind      TEXT NOT NULL,
+    detail    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_device_activity_user ON device_activity(user_id, id);
+
 -- Connected third-party accounts (2026-09-12) -- see connected_accounts.py
 -- (storage) and oauth.py (the actual flow). Tokens encrypted at rest via
 -- crypto.py, same as the sub-agent roster's keys -- these are, if
@@ -1766,6 +1844,16 @@ _MIGRATIONS: list[str] = [
     # window, compaction summaries, reflection, and the search_history tool. 0 on
     # every existing row. See conversation.py.
     "ALTER TABLE messages ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0",
+    # Devices (2026-10-21): the registry columns on bridge_tokens, and which kind of device a command is for.
+    "ALTER TABLE bridge_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'browser'",
+    "ALTER TABLE bridge_tokens ADD COLUMN paused INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bridge_tokens ADD COLUMN caps TEXT",
+    "ALTER TABLE bridge_tokens ADD COLUMN state TEXT",
+    "ALTER TABLE bridge_tokens ADD COLUMN last_msg_id INTEGER",
+    "ALTER TABLE bridge_tokens ADD COLUMN app_version TEXT",
+    "ALTER TABLE bridge_commands ADD COLUMN target TEXT NOT NULL DEFAULT 'browser'",
+    "ALTER TABLE bridge_commands ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bridge_commands ADD COLUMN acked_ts REAL",
     # Sub-agent job cost/usage tracking (2026-09-14) -- see jobs.py's
     # cost_summary(). A job that finished before this migration simply has
     # no cost recorded (NULL/0), same honest gap conversation.cost_meta()

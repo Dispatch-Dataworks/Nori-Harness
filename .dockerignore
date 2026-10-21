@@ -52,3 +52,9 @@ __pycache__/
 .pytest_cache/
 .vscode/
 .idea/
+
+# The Android app and the browser extension are built/loaded on the operator's machine, never run inside this image
+# (the built APK is copied into the data volume by android_app/build.ps1 -Upload). 100+ MB of Gradle output
+# must not ride into the build context.
+android_app/
+browser_extension/

@@ -248,6 +248,23 @@ _SPEC: dict[str, tuple] = {
     # time-boxed "she may use my browser now", ended early by the kill switch.
     "bridge_enabled": (False, bool, "workspace", False, "let the paired browser extension take commands from her"),
     "bridge_session_until": (0, int, "user", False, "end of the current computer-use session (unix time; 0 = none)"),
+    # Devices (2026-10-21, docs/devices.md): the Android app and the extension's own features. Everything but
+    # notifications is off by default; every one of these is a SERVER-side switch that the device combines with its
+    # own consent (a capability works only if BOTH allow it).
+    "phone_notifications_enabled": (True, bool, "user", False, "send reminders/replies to the paired phone"),
+    "phone_notify_replies": (True, bool, "user", False, "also notify her chat replies (not just reminders/pings/approvals)"),
+    "phone_health_enabled": (False, bool, "user", False, "accept Health Connect data from the phone into my trackers"),
+    "phone_places_enabled": (False, bool, "user", False, "accept arrived/left events for my named places"),
+    "phone_actions_enabled": (False, bool, "user", False, "let her open links/apps and set timers/alarms on my phone"),
+    "phone_control_enabled": (False, bool, "user", False, "let her read and use my phone's screen (accessibility), in a window I open"),
+    "phone_screen_enabled": (False, bool, "user", False, "let her look at my phone's screen (screenshots), in a window I open"),
+    "phone_hidden_apps": ("", str, "user", False, "package names of phone apps she must never see or control (comma separated)"),
+    "phone_actions_per_hour": (30, int, "user", False, "most phone actions she may take per hour"),
+    "browser_notifications_enabled": (True, bool, "user", False, "desktop notifications through the browser extension"),
+    "browser_activity_enabled": (False, bool, "user", False, "passive browsing time (host names and seconds only)"),
+    "browser_hidden_hosts": ("", str, "user", False, "sites the extension never reports or shares (comma separated, *.example.com ok)"),
+    "bridge_standing_look": (False, bool, "user", False, "read-only browser tools without a running session, on allowed sites"),
+    "browser_day_keep_days": (60, int, "user", False, "days of browsing-time totals to keep"),
     # default_model_slug removed 2026-09-30 -- superseded by model_chain
     # (see models.py/providers.py): primary+fallback are now a real
     # ordered table, not a single scalar setting, and there's deliberately

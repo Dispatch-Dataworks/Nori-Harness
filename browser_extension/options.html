@@ -1,21 +1,48 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Nori bridge options</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="ui.css">
 <style>
-  body { font: 15px system-ui, sans-serif; max-width: 34rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
-  input { width: 100%; padding: .5rem; box-sizing: border-box; font: inherit; }
-  button { margin-top: 1rem; padding: .5rem 1rem; font: inherit; }
-  .muted { color: #666; font-size: .9em; } #msg { margin-top: .75rem; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1c1c; color: #ddd; } input { background: #2a2a2a; color: #ddd; border: 1px solid #555; } .muted { color: #999; } }
+  body { max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
+  details { margin-top: 1rem; }
+  summary { cursor: pointer; font-weight: 600; }
+  .buttons { display: flex; gap: .5rem; margin-top: .75rem; flex-wrap: wrap; }
 </style></head>
 <body>
 <h1>Nori browser bridge</h1>
-<p class="muted">Pairs this browser with your Nori server. Create a token in Nori: Settings → Computer use → "create a token".</p>
+<p class="muted">Pairs this browser with your own Nori server. Nothing here talks to anyone else.</p>
+<div id="paired" class="card" hidden></div>
+
+<h2>Pair this browser</h2>
+<p class="muted">In Nori: Settings → Devices → "Pair a browser" shows a one-time code (valid 15 minutes).</p>
 <label for="url">Nori address</label>
-<input id="url" placeholder="http://127.0.0.1:8877" autocomplete="off">
-<label for="token">Token</label>
-<input id="token" type="password" placeholder="nbr_..." autocomplete="off">
-<button id="save">Save</button>
-<p id="msg" class="muted"></p>
+<input id="url" type="url" placeholder="https://nori.example.com" autocomplete="off">
+<div id="url-warn" class="warn" hidden></div>
+<label for="code">Pairing code</label>
+<input id="code" type="text" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="12">
+<label for="name">Name for this browser</label>
+<input id="name" type="text" placeholder="Chrome on Windows" autocomplete="off" maxlength="60">
+<div class="buttons"><button id="pair" class="primary">Pair</button></div>
+<p id="pair-msg" class="msg" role="status"></p>
+
+<details>
+  <summary>I already have a token</summary>
+  <p class="muted">Settings → Computer use → "create a token". It starts with nbr_.</p>
+  <label for="token">Token</label>
+  <input id="token" type="password" placeholder="nbr_..." autocomplete="off">
+  <div class="buttons"><button id="save">Save token</button></div>
+  <p id="save-msg" class="msg" role="status"></p>
+</details>
+
+<h2>This browser</h2>
+<label class="check"><input type="checkbox" id="notify"><span>Show desktop notifications from Nori (replies, reminders, finished jobs, approval requests). Nori also needs its own switch on, and quiet hours are applied by the server.</span></label>
+<label class="check"><input type="checkbox" id="private"><span>Include private (incognito) windows. Off by default: nothing from a private window is shared, read, timed or controlled. Chrome must also be told to allow this extension in incognito.</span></label>
+
+<h2>Remove</h2>
+<p class="muted">Forgets the token in this browser and stops everything. To make the token useless, also remove this browser in Nori: Settings → Devices.</p>
+<div class="buttons"><button id="remove" class="danger">Remove this browser</button></div>
+<p id="remove-msg" class="msg" role="status"></p>
+
+<script src="lib.js"></script>
 <script src="options.js"></script>
 </body></html>

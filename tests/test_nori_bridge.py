@@ -566,8 +566,12 @@ class ChatApprovalCards(unittest.TestCase):
     def test_the_route_is_behind_the_session_and_csrf_gates(self):
         import inspect
         src = inspect.getsource(server.Handler._do_POST_inner)
-        self.assertGreater(src.index('"/bridge/approval"'), src.index("form = self.form()"))
-        self.assertGreater(src.index('"/bridge/approval"'), src.index("csrf_ok"))
+        # the SESSION route is the last mention; an earlier one is the extension's bearer-token dispatch
+        route = src.rindex('if path == "/bridge/approval":')
+        self.assertGreater(route, src.index("form = self.form()"))
+        self.assertGreater(route, src.index("csrf_ok"))
+        self.assertIn('startswith("bearer ")', src[src.index('"/bridge/approval"') - 400:src.index('"/bridge/approval"') + 400],
+                      "the earlier mention only dispatches requests that carry a bearer token")
 
     def test_server_rendered_history_shell(self):
         html = server.approval_card_html({"id": 12, "status": "pending", "host": "www.example.com", "reason": "x'y"})
@@ -636,11 +640,17 @@ class HttpRoutes(unittest.TestCase):
             _post("/bridge/poll", token="nbr_nope", ip="6.6.6.6")
         self.assertEqual(_post("/bridge/poll", token=self.raw, ip="6.6.6.6")[0], 429, "even a good token is held off an IP in lockout")
 
-    def test_master_switch_off_is_403(self):
+    def test_master_switch_off_still_polls_but_hands_out_no_commands(self):
+        """Computer use's master switch gates COMMANDS only (2026-10-21): notifications, sharing and the side panel
+        keep working with it off, so the poll answers 200 with no command rather than refusing."""
         config.set("workspace", WS, "bridge_enabled", False)
-        code, body = _post("/bridge/poll", token=self.raw)
-        self.assertEqual(code, 403)
+        bridge._enqueue(UID, "tabs", {}, summary="x", host=None, source="chat")
+        with patch.object(bridge, "INACTIVE_POLL_WAIT_S", 0.1):
+            code, body = _post("/bridge/poll", token=self.raw)
+        self.assertEqual(code, 200)
         self.assertFalse(body["active"])
+        self.assertIsNone(body["command"])
+        self.assertIn("messages", body)
 
     def test_poll_returns_a_command_then_result_completes_it(self):
         cid = bridge._enqueue(UID, "tabs", {}, summary="list tabs", host=None, source="chat")

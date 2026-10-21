@@ -1,0 +1,35 @@
+/* Shared by the popup, the options page and the side panel. Light and dark follow the browser. */
+:root {
+  --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --card: #f6f8fa;
+  --accent: #2563eb; --accent-fg: #ffffff; --ok: #1a7f37; --bad: #b42318; --warn-bg: #fff8c5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1d21; --fg: #e6e8eb; --muted: #9aa3ad; --line: #3a3f46; --card: #24272c; --accent: #5b8cff; --accent-fg: #0b1020; --ok: #4cc26b; --bad: #ff7b72; --warn-bg: #3a3317; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1 { font-size: 1.05rem; margin: 0 0 .15rem; }
+h2 { font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 1rem 0 .35rem; font-weight: 600; }
+.muted { color: var(--muted); font-size: .88em; }
+.state { font-weight: 600; margin: .15rem 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .55rem .7rem; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .2rem 0; }
+.pill { font-weight: 600; font-size: .85em; padding: .05rem .5rem; border-radius: 999px; border: 1px solid var(--line); }
+.pill.on { color: var(--ok); border-color: var(--ok); }
+.pill.off { color: var(--muted); }
+label { display: block; font-weight: 600; margin: .8rem 0 .2rem; }
+label.check { display: flex; align-items: flex-start; gap: .5rem; font-weight: 400; margin: .5rem 0; }
+label.check input { margin-top: .25rem; }
+input[type=text], input[type=password], input[type=url], select, textarea {
+  width: 100%; padding: .45rem .55rem; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+textarea { resize: vertical; min-height: 3.2rem; }
+button { font: inherit; padding: .45rem .8rem; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+button:disabled { opacity: .55; cursor: default; }
+button.wide { width: 100%; margin-top: .5rem; }
+.msg { margin-top: .5rem; min-height: 1.3em; }
+.msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+.warn { background: var(--warn-bg); border-radius: 6px; padding: .4rem .6rem; margin-top: .4rem; }
+[hidden] { display: none !important; }

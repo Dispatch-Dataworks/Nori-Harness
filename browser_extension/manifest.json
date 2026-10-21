@@ -1,13 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Nori browser bridge",
-  "version": "0.1.0",
-  "description": "Lets your own Nori instance see and use this browser, only during a session you start, only on sites you allow.",
-  "permissions": ["tabs", "scripting", "storage", "alarms"],
+  "version": "0.2.0",
+  "description": "Lets your own Nori instance notify you, take what you send it, answer questions about a page you ask about, and (only when you start a session or switch it on) see and use this browser, only on sites you allow.",
+  "permissions": ["tabs", "scripting", "storage", "alarms", "notifications", "contextMenus", "sidePanel", "idle", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Nori" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Nori",
+    "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+  },
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
   "options_ui": { "page": "options.html", "open_in_tab": true },
+  "side_panel": { "default_path": "panel.html" },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   }

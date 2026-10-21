@@ -1,16 +1,53 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Nori</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="ui.css">
 <style>
-  body { font: 14px system-ui, sans-serif; width: 18rem; margin: 0; padding: .9rem; color: #222; }
-  h1 { font-size: 1rem; margin: 0 0 .5rem; } .state { font-weight: 600; margin: .25rem 0; }
-  .muted { color: #666; font-size: .85em; } button { margin-top: .7rem; width: 100%; padding: .5rem; font: inherit; }
-  @media (prefers-color-scheme: dark) { body { background: #1c1c1c; color: #ddd; } .muted { color: #999; } }
+  body { width: 22rem; padding: .9rem; }
+  .small { font-size: .85em; }
+  #last-activity { margin-top: .2rem; }
+  .line { padding: .12rem 0 .12rem 1.1rem; position: relative; font-weight: 600; }
+  .line::before { content: ""; position: absolute; left: .1rem; top: .62rem; width: .5rem; height: .5rem; border-radius: 50%; background: var(--muted); }
+  .line.on::before { background: var(--ok); }
+  .line.on { color: var(--ok); }
+  .line.off { color: var(--muted); font-weight: 400; }
 </style></head>
 <body>
 <h1>Nori browser bridge</h1>
 <div id="state" class="state">…</div>
 <div id="detail" class="muted"></div>
-<button id="pause">Pause</button>
-<button id="options">Options</button>
+<button id="pause" class="wide">Pause</button>
+
+<h2>Sharing right now</h2>
+<div class="card" id="sharing">
+  <div id="sh-notif" class="line off">desktop notifications: off</div>
+  <div id="sh-activity" class="line off">browsing time sharing: off</div>
+  <div id="sh-look" class="line off">standing look: off</div>
+  <div id="sh-private" class="line off">private windows: not included</div>
+  <div id="last-activity" class="muted small" hidden></div>
+</div>
+
+<h2>Last command</h2>
+<div id="last-command" class="muted">No command yet</div>
+
+<h2>Send to Nori</h2>
+<div class="card">
+  <div class="muted small" id="send-what">Sends this tab's title and address.</div>
+  <label for="dest" class="small">Send it to</label>
+  <select id="dest">
+    <option value="chat">The chat</option>
+    <option value="note">A note</option>
+    <option value="task">A task</option>
+  </select>
+  <label class="check small"><input type="checkbox" id="withtext"><span>Include the page's text (up to 8,000 characters)</span></label>
+  <input type="text" id="note" maxlength="1000" placeholder="Add a note (optional)" autocomplete="off">
+  <button id="send" class="primary wide">Send this page</button>
+  <div id="send-msg" class="msg small" role="status"></div>
+  <div id="last-share" class="muted small"></div>
+</div>
+
+<button id="panel" class="wide">Open side panel</button>
+<button id="options" class="wide">Options</button>
+<script src="lib.js"></script>
 <script src="popup.js"></script>
 </body></html>

@@ -572,6 +572,20 @@ def delete_messages(user_id: int, message_ids) -> dict:
     return {"ids": found, "files": removed}
 
 
+def assistant_messages_after(user_id: int, after_id: int, kinds, limit: int = 50) -> list[dict]:
+    """Her messages past `after_id` of the given kinds, oldest first -- what devices.py turns into NOTIFICATIONS on the
+    owner's own phone/browser (2026-10-21). Not a prompt, so it isn't model-facing, but it still leaves out messages
+    hidden from her: a notification must not surface what the owner chose to take out of the conversation."""
+    kinds = tuple(kinds)
+    if not kinds:
+        return []
+    marks = ",".join("?" for _ in kinds)
+    rows = store.read(lambda c: c.execute(
+        f"SELECT * FROM messages WHERE user_id=? AND id>? AND role='assistant' AND kind IN ({marks}) "
+        f"AND COALESCE(pruned,0)=0 ORDER BY id LIMIT ?", (user_id, after_id, *kinds, limit)).fetchall())
+    return [dict(r) for r in rows]
+
+
 def count_hidden(user_id: int) -> int:
     r = store.read(lambda c: c.execute(
         "SELECT count(*) AS n FROM messages WHERE user_id=? AND COALESCE(pruned,0)=1", (user_id,)).fetchone())

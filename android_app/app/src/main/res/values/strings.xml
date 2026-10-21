@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Nori</string>
+    <string name="shortcut_talk">Talk to Nori</string>
+    <string name="shortcut_talk_long">Talk to Nori with the microphone</string>
+    <string name="shortcut_task">Add task</string>
+    <string name="shortcut_task_long">Add a task for Nori</string>
+    <string name="shortcut_settings">Nori settings</string>
+    <string name="shortcut_settings_long">What this phone lets Nori do</string>
+    <string name="share_label">Send to Nori</string>
+    <string name="widget_talk">Talk</string>
+    <string name="widget_task">Add task</string>
+    <string name="widget_water">Log water</string>
+    <string name="widget_weight">Log weight</string>
+    <string name="widget_description">One-tap buttons: talk to Nori, add a task, log water, log weight</string>
+    <string name="a11y_description">Lets the Nori app read the text and controls on your screen and, only while you have opened the control window in the Nori app, tap, type and scroll when Nori asks. Nothing is read or done unless you allowed it in the Nori app, it never acts in Settings, the app store, wallets or password managers, it never reads or types into password, card or code fields, and it asks you first before anything like sending, paying or deleting. You can turn it off here at any time.</string>
+</resources>

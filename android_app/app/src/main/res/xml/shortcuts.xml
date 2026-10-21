@@ -1,0 +1,11 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="talk" android:enabled="true" android:shortcutShortLabel="@string/shortcut_talk" android:shortcutLongLabel="@string/shortcut_talk_long">
+        <intent android:action="android.intent.action.VIEW" android:data="nori-app://talk" android:targetPackage="app.nori.companion" android:targetClass="app.nori.companion.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="task" android:enabled="true" android:shortcutShortLabel="@string/shortcut_task" android:shortcutLongLabel="@string/shortcut_task_long">
+        <intent android:action="android.intent.action.VIEW" android:data="nori-app://task" android:targetPackage="app.nori.companion" android:targetClass="app.nori.companion.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="settings" android:enabled="true" android:shortcutShortLabel="@string/shortcut_settings" android:shortcutLongLabel="@string/shortcut_settings_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.nori.companion" android:targetClass="app.nori.companion.SettingsActivity" />
+    </shortcut>
+</shortcuts>
