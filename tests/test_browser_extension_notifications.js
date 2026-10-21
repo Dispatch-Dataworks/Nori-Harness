@@ -93,8 +93,8 @@ test("the poll carries the version, ack, paused and tab_visible=false when no No
   assert.strictEqual(p.body.ack, 0);
   assert.strictEqual(p.body.paused, false);
   assert.strictEqual(p.body.tab_visible, false);
-  assert.strictEqual(p.body.v, "0.2.0");
-  assert.strictEqual(p.body.ext.v, "0.2.0");
+  assert.strictEqual(p.body.v, "0.2.1");
+  assert.strictEqual(p.body.ext.v, "0.2.1");
 });
 
 test("tab_visible is true only when the focused window's active tab is on the Nori origin", async () => {

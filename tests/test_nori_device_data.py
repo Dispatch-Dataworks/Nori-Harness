@@ -810,7 +810,7 @@ class DevicesPage(unittest.TestCase):
     def test_computer_use_is_a_section_of_the_devices_page_for_admins_only(self):
         admin, member = self._form(), self._form(MEM)
         for needle in ('id=computer-use', "allow computer use on this instance", "standing look", "STOP NOW" if False else "start a session",
-                       "allowed sites", "waiting for your approval", "recent actions", "href='#computer-use'"):
+                       "site access", "waiting for your approval", "recent actions", "href='#computer-use'"):
             self.assertIn(needle, admin, needle)
             self.assertNotIn(needle, member, "computer use is the admin's: " + needle)
         for needle in ("jump to:", "href='#phone'", "href='#browser'", "href='#places'", "href='#activity'"):

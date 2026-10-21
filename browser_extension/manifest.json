@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nori browser bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lets your own Nori instance notify you, take what you send it, answer questions about a page you ask about, and (only when you start a session or switch it on) see and use this browser, only on sites you allow.",
   "permissions": ["tabs", "scripting", "storage", "alarms", "notifications", "contextMenus", "sidePanel", "idle", "activeTab"],
   "host_permissions": ["<all_urls>"],

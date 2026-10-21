@@ -1,4 +1,4 @@
-// Nori browser bridge -- service worker (v0.2.0). Long-polls the paired Nori server for commands and
+// Nori browser bridge -- service worker (v0.2.1). Long-polls the paired Nori server for commands and
 // notifications and carries them out in this browser. See ../docs/computer-use.md and ../docs/devices.md.
 //
 // Safety it enforces itself (the server cannot override these):
@@ -46,7 +46,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function cfg() { return await chrome.storage.local.get(DEFAULTS); }
 async function setStatus(s) { await chrome.storage.local.set({ status: { ...s, ts: now() } }); }
 const hiddenOf = (c) => (c.serverSettings && Array.isArray(c.serverSettings.hidden_hosts) ? c.serverSettings.hidden_hosts : []);
-const version = () => { try { return chrome.runtime.getManifest().version; } catch (e) { return "0.2.0"; } };
+const version = () => { try { return chrome.runtime.getManifest().version; } catch (e) { return "0.2.1"; } };
 
 class Refuse extends Error {}
 
@@ -275,7 +275,7 @@ async function reply(c, id, payload) {
 }
 
 async function handle(c, cmd, settings) {
-  const allowed = cmd.allowed || [];
+  const allowed = L.sitePolicy(cmd);
   const pol = { hidden: settings.hidden_hosts || [], includePrivate: !!c.includePrivate, lookOnly: !!cmd.look_only, standingLook: settings.standing_look === true };
   let result;
   try {

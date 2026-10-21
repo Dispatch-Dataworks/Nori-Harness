@@ -21,7 +21,7 @@ enforced in code, none depends on the model behaving:
   * OFF unless an admin turns the master switch on AND starts a session. The
     browser_* tools do not exist (not merely "refuse") outside a session; a
     session is time-boxed and ends early with the kill switch.
-  * Deny-by-default site allowlist (bridge_site_rules), editable only over
+  * Site access: deny-by-default allowlist, or (the operator's choice) allow-by-default with a blocklist (bridge_site_rules.kind), editable only over
     admin HTTP, never by a tool. Checked here for navigation and again, with
     the authoritative view of the live tab, in the extension.
   * Risky actions pause for the operator's approval -- the extension
@@ -126,24 +126,65 @@ def host_allowed(host: str | None, patterns: list[str]) -> bool:
     return bool(host) and any(host_matches(host, p) for p in patterns)
 
 
-def rules() -> list[dict]:
-    return [dict(r) for r in store.read(lambda c: c.execute(
-        "SELECT * FROM bridge_site_rules ORDER BY pattern").fetchall())]
+SITE_MODES = ("deny_default", "allow_default")
+
+
+def site_mode(workspace_id: int) -> str:
+    """deny_default: only the allow list may be touched. allow_default: anything but the block list. Anything
+    unrecognised is the strict one."""
+    m = config.get("workspace", workspace_id, "bridge_site_mode")
+    return m if m in SITE_MODES else "deny_default"
+
+
+def set_site_mode(workspace_id: int, mode: str) -> bool:
+    if mode not in SITE_MODES:
+        return False
+    config.set("workspace", workspace_id, "bridge_site_mode", mode)
+    return True
+
+
+def rules(kind: str | None = None) -> list[dict]:
+    rows = store.read(lambda c: c.execute("SELECT * FROM bridge_site_rules ORDER BY pattern").fetchall())
+    return [dict(r) for r in rows if kind is None or r["kind"] == kind]
 
 
 def allowed_patterns() -> list[str]:
-    return [r["pattern"] for r in rules()]
+    return [r["pattern"] for r in rules("allow")]
 
 
-def add_rule(raw: str) -> tuple[bool, str]:
+def blocked_patterns() -> list[str]:
+    return [r["pattern"] for r in rules("block")]
+
+
+def site_permitted(host: str | None, workspace_id: int) -> bool:
+    """May Nori touch this host? A host that can't be named (chrome://, about:blank...) never may."""
+    if not host:
+        return False
+    if site_mode(workspace_id) == "allow_default":
+        return not host_allowed(host, blocked_patterns())
+    return host_allowed(host, allowed_patterns())
+
+
+def site_policy(workspace_id: int) -> dict:
+    """What the extension is told with every command. In allow_default the legacy `allowed` list is sent EMPTY, so an
+    extension that predates the mode refuses everything (fail closed) instead of reading the block list as an allow list."""
+    if site_mode(workspace_id) == "allow_default":
+        return {"allowed": [], "site_mode": "allow_default", "blocked": blocked_patterns()}
+    return {"allowed": allowed_patterns(), "site_mode": "deny_default", "blocked": []}
+
+
+def add_rule(raw: str, kind: str = "allow") -> tuple[bool, str]:
+    kind = "block" if kind == "block" else "allow"
     pattern = normalize_pattern(raw)
     if pattern is None:
         return False, "that isn't a usable site -- use a host like mail.example.com or *.example.com"
     try:
-        store.write(lambda c: c.execute("INSERT INTO bridge_site_rules(pattern, added_ts) VALUES (?,?)",
-                                        (pattern, time.time())))
+        store.write(lambda c: c.execute("INSERT INTO bridge_site_rules(pattern, added_ts, kind) VALUES (?,?,?)",
+                                        (pattern, time.time(), kind)))
     except Exception:  # noqa: BLE001 -- the UNIQUE constraint
-        return False, f"{pattern} is already on the list"
+        other = [r for r in rules() if r["pattern"] == pattern]
+        where = ("the " + ("blocked" if other[0]["kind"] == "block" else "allowed") + " list") if other else "a list"
+        return False, f"{pattern} is already on {where}"
     return True, f"added {pattern}"
 
 
@@ -408,7 +449,7 @@ def poll(token: dict, wait_s: float | None = None, *, extra=None) -> dict:
                                     "force_approval": bool(claimed["force_approval"]),
                                     "approved": claimed["approval"] == "approved",
                                     "look_only": looking,
-                                    "allowed": allowed_patterns()}}
+                                    **site_policy(ws)}}
         remaining = deadline - time.time()
         if remaining <= 0 or (extra is not None and extra()):
             return {"active": session_active(user_id, ws), "session_until": session_until(user_id),
@@ -636,14 +677,16 @@ def _t_tabs(session: dict) -> dict:
     tabs = [{"tab_id": t.get("id"), "host": _clip(t.get("host"), 100), "title": _clip(t.get("title"), TITLE_CAP),
              "active": bool(t.get("active"))} for t in (res.get("tabs") or [])[:50]]
     return {"tabs": tabs, "other_tabs_hidden": int(res.get("hidden") or 0),
-            "note": "only tabs on sites the operator allowed are listed; others are hidden, not closed"}
+            "note": "only tabs on sites the operator lets you use are listed; others are hidden, not closed"}
 
 
 def _t_open(session: dict, url: str = "", new_tab: bool = True) -> dict:
     host = host_of(url)
     if host is None:
         return {"error": "url must be a full http(s) address"}
-    if not host_allowed(host, allowed_patterns()):
+    if not site_permitted(host, session["workspace_id"]):
+        if site_mode(session["workspace_id"]) == "allow_default":
+            return {"error": f"{host} is on the operator's blocked-sites list"}
         return {"error": f"{host} isn't on the operator's allowed-sites list -- ask them to add it in "
                          f"Settings → Devices"}
     # With no session (standing look) an existing tab is never navigated: always a NEW tab.
@@ -747,12 +790,12 @@ def _register_tools() -> None:
 
     tabid = {"tab_id": {"type": "integer", "description": "from browser_tabs"}}
     reg("browser_tabs",
-        "List the operator's open browser tabs on sites they've allowed (id, host, title). Other tabs are "
+        "List the operator's open browser tabs on sites they let you use (id, host, title). Other tabs are "
         "hidden from you. This tool exists only while the operator has a computer-use session running, or has "
         "turned on standing look (read-only).",
         {}, [], _t_tabs, look=True)
     reg("browser_open",
-        "Open a web address in the operator's browser. Only sites on their allowed list work.",
+        "Open a web address in the operator's browser. Only sites the operator permits work.",
         {"url": {"type": "string"}, "new_tab": {"type": "boolean", "default": True}}, ["url"], _t_open,
         consequential=True, look=True)
     reg("browser_read",

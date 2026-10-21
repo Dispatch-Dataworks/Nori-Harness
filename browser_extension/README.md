@@ -1,4 +1,4 @@
-# Nori browser bridge (v0.2.0)
+# Nori browser bridge (v0.2.1)
 
 A Chrome (Manifest V3) extension that connects this browser to **your own** Nori server. It never talks to anyone
 else, nothing on this computer listens for connections (the extension calls out to Nori and waits for the reply),
@@ -15,7 +15,7 @@ happens. The contract with the server is in `docs/devices.md` ("Browser extensio
 | **Ask about this page** (side panel) | when you press Ask | you press it |
 | **Browsing time** (host names and seconds) | every 60 s while you are active in Chrome | Nori's "browsing time" setting is on *and* you are not paused |
 | **Use my browser in a session** (list tabs, read, screenshot, click, type, open) | only during a session you start in Nori | Nori says a session is running, on sites you allowed |
-| **Standing look** (list tabs, read, screenshot, open a *new* tab) | when Nori asks, with no session | Nori's "standing look" setting is on; allowed sites only; never click or type |
+| **Standing look** (list tabs, read, screenshot, open a *new* tab) | when Nori asks, with no session | Nori's "standing look" setting is on; permitted sites only (the allow list, or everything but the block list); never click or type |
 
 ## Install (developer mode)
 

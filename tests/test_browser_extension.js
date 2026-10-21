@@ -15,6 +15,24 @@ t("host matching agrees with the shared vectors", () => {
   }
 });
 
+t("site policy: deny by default (allow list) or allow by default (block list)", () => {
+  // the policy a server sends with each command; anything but an explicit allow_default is the strict allow list
+  assert.deepStrictEqual(L.sitePolicy({ allowed: ["*.example.com"] }), ["*.example.com"], "an older server");
+  assert.deepStrictEqual(L.sitePolicy({ allowed: ["a.com"], site_mode: "deny_default", blocked: ["b.com"] }), ["a.com"]);
+  assert.deepStrictEqual(L.sitePolicy({ site_mode: "whatever", allowed: ["a.com"] }), ["a.com"]);
+  assert.deepStrictEqual(L.sitePolicy({}), []);
+  assert.deepStrictEqual(L.sitePolicy(null), []);
+  const open = L.sitePolicy({ site_mode: "allow_default", allowed: [], blocked: ["mybank.com", "*.health.org"] });
+  assert.strictEqual(L.hostAllowed("news.example.com", open), true, "anything not blocked");
+  assert.strictEqual(L.hostAllowed("mybank.com", open), false);
+  assert.strictEqual(L.hostAllowed("www.health.org", open), false, "wildcards block subdomains");
+  assert.strictEqual(L.hostAllowed("health.org", open), false);
+  assert.strictEqual(L.hostAllowed(null, open), false, "a page with no web host is never allowed");
+  assert.strictEqual(L.hostAllowed("", open), false);
+  assert.strictEqual(L.hostAllowed("x.com", L.sitePolicy({ site_mode: "allow_default" })), true, "an empty block list blocks nothing");
+  assert.strictEqual(L.hostAllowed("x.com", L.sitePolicy({ site_mode: "allow_default", blocked: "x.com" })), true, "a malformed list is ignored, not trusted");
+});
+
 t("hostAllowed / hostOf", () => {
   assert.strictEqual(L.hostAllowed("a.example.com", ["x.com", "*.example.com"]), true);
   assert.strictEqual(L.hostAllowed("other.com", ["x.com", "*.example.com"]), false);

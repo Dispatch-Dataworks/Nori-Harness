@@ -48,6 +48,7 @@ with open(os.path.join(ROOT, "tests", "bridge_vectors.json"), encoding="utf-8") 
 
 
 def _reset():
+    config.set("workspace", WS, "bridge_site_mode", "deny_default")
     for tbl in ("bridge_commands", "bridge_tokens", "bridge_site_rules"):
         store.write(lambda c, t=tbl: c.execute(f"DELETE FROM {t}"))
     config.set("workspace", WS, "bridge_enabled", False)
@@ -109,6 +110,59 @@ class Allowlist(unittest.TestCase):
         self.assertEqual(bridge.add_rule("*")[0], False)
         bridge.remove_rule(bridge.rules()[0]["id"])
         self.assertEqual(bridge.allowed_patterns(), [])
+
+    # ── site access mode (2026-10-21): deny by default (allow list) or allow by default (block list) ──
+    def test_the_two_lists_are_separate_and_a_pattern_lives_on_only_one(self):
+        self.assertEqual(bridge.add_rule("*.example.com")[0], True)
+        self.assertEqual(bridge.add_rule("*.mybank.com", "block")[0], True)
+        self.assertEqual((bridge.allowed_patterns(), bridge.blocked_patterns()), (["*.example.com"], ["*.mybank.com"]))
+        ok, msg = bridge.add_rule("*.mybank.com")
+        self.assertFalse(ok)
+        self.assertIn("blocked list", msg)
+        self.assertEqual(len(bridge.rules()), 2)
+        self.assertEqual([r["pattern"] for r in bridge.rules("block")], ["*.mybank.com"])
+
+    def test_deny_by_default_is_the_default_and_junk_falls_back_to_it(self):
+        self.assertEqual(bridge.site_mode(WS), "deny_default")
+        config.set("workspace", WS, "bridge_site_mode", "whatever")
+        self.assertEqual(bridge.site_mode(WS), "deny_default")
+        self.assertFalse(bridge.set_site_mode(WS, "whatever"))
+        self.assertTrue(bridge.set_site_mode(WS, "allow_default"))
+        self.assertEqual(bridge.site_mode(WS), "allow_default")
+
+    def test_site_permitted_in_both_modes(self):
+        bridge.add_rule("*.example.com")
+        bridge.add_rule("mybank.com", "block")
+        self.assertTrue(bridge.site_permitted("a.example.com", WS))
+        self.assertFalse(bridge.site_permitted("other.org", WS))
+        self.assertFalse(bridge.site_permitted("mybank.com", WS))
+        bridge.set_site_mode(WS, "allow_default")
+        self.assertTrue(bridge.site_permitted("a.example.com", WS))
+        self.assertTrue(bridge.site_permitted("other.org", WS), "anything not blocked")
+        self.assertFalse(bridge.site_permitted("mybank.com", WS))
+        self.assertFalse(bridge.site_permitted(None, WS), "a page with no web host is never permitted")
+        self.assertFalse(bridge.site_permitted("", WS))
+
+    def test_the_policy_sent_to_the_extension_fails_closed_for_an_old_extension(self):
+        bridge.add_rule("*.example.com")
+        bridge.add_rule("mybank.com", "block")
+        self.assertEqual(bridge.site_policy(WS), {"allowed": ["*.example.com"], "site_mode": "deny_default", "blocked": []})
+        bridge.set_site_mode(WS, "allow_default")
+        pol = bridge.site_policy(WS)
+        self.assertEqual(pol, {"allowed": [], "site_mode": "allow_default", "blocked": ["mybank.com"]})
+
+    def test_browser_open_honours_the_mode(self):
+        bridge.add_rule("*.example.com")
+        bridge.add_rule("mybank.com", "block")
+        with patch.object(bridge, "run_command", return_value={"ok": True}) as rc:
+            self.assertIn("allowed-sites", bridge._t_open(SESSION, "https://other.org/")["error"])
+            self.assertEqual(rc.call_count, 0)
+            bridge.set_site_mode(WS, "allow_default")
+            self.assertIn("blocked-sites", bridge._t_open(SESSION, "https://mybank.com/x")["error"])
+            self.assertEqual(rc.call_count, 0)
+            self.assertEqual(bridge._t_open(SESSION, "https://other.org/"), {"ok": True})
+            self.assertEqual(rc.call_count, 1)
+            self.assertIn("error", bridge._t_open(SESSION, "chrome://settings"), "not a web address")
 
     def test_host_of_only_accepts_web_urls(self):
         self.assertEqual(bridge.host_of("https://A.Example.com:8080/x"), "a.example.com")
@@ -652,6 +706,16 @@ class HttpRoutes(unittest.TestCase):
         self.assertIsNone(body["command"])
         self.assertIn("messages", body)
 
+    def test_the_poll_carries_the_site_policy(self):
+        bridge.add_rule("mybank.com", "block")
+        bridge._enqueue(UID, "tabs", {}, summary="x", host=None, source="chat")
+        cmd = _post("/bridge/poll", token=self.raw)[1]["command"]
+        self.assertEqual((cmd["site_mode"], cmd["allowed"], cmd["blocked"]), ("deny_default", ["*.example.com"], []))
+        bridge.set_site_mode(WS, "allow_default")
+        bridge._enqueue(UID, "tabs", {}, summary="x", host=None, source="chat")
+        cmd = _post("/bridge/poll", token=self.raw)[1]["command"]
+        self.assertEqual((cmd["site_mode"], cmd["allowed"], cmd["blocked"]), ("allow_default", [], ["mybank.com"]))
+
     def test_poll_returns_a_command_then_result_completes_it(self):
         cid = bridge._enqueue(UID, "tabs", {}, summary="list tabs", host=None, source="chat")
         code, body = _post("/bridge/poll", {"ext": {"v": "0.1.0"}}, token=self.raw)
@@ -721,6 +785,29 @@ class AdminHandlers(unittest.TestCase):
         h = self._post("stop")
         self.assertFalse(bridge.session_active(UID, WS))
         self.assertIn("stopped", h.page)
+
+    def test_site_mode_form_swaps_the_list_and_keeps_the_other_one(self):
+        self._post("rules", pattern="*.example.com")
+        h = self._post("sitemode", site_mode="allow_default")
+        self.assertEqual(bridge.site_mode(WS), "allow_default")
+        self.assertIn("Blocked sites", h.page)
+        self.assertNotIn("*.example.com</b>", h.page, "the allow list isn't the one on show")
+        self.assertIn("(1 site(s)) is kept", h.page)
+        h = self._post("rules", pattern="*.mybank.com")
+        self.assertEqual((bridge.allowed_patterns(), bridge.blocked_patterns()), (["*.example.com"], ["*.mybank.com"]),
+                         "in allow-by-default the add box adds to the BLOCK list")
+        self.assertIn("*.mybank.com</b>", h.page)
+        self._post("sitemode", site_mode="deny_default")
+        self.assertIn("*.example.com</b>", self._post("rules", pattern="x.org").page)
+        self.assertEqual(bridge.blocked_patterns(), ["*.mybank.com"])
+        self.assertIn("pick one", self._post("sitemode", site_mode="nope").page)
+        self.assertEqual(bridge.site_mode(WS), "deny_default")
+
+    def test_site_mode_is_admin_only(self):
+        h = _H()
+        h.computeruse_post({**SESSION, "role": "member"}, "/admin/computeruse/sitemode", {"site_mode": "allow_default"})
+        self.assertEqual(h.sent[0]["code"], 403)
+        self.assertEqual(bridge.site_mode(WS), "deny_default")
 
     def test_bad_session_length_and_bad_rule(self):
         self._post("enabled", bridge_enabled="on")

@@ -247,6 +247,9 @@ _SPEC: dict[str, tuple] = {
     # browser_* tools exist ONLY while it's in the future -- a deliberate,
     # time-boxed "she may use my browser now", ended early by the kill switch.
     "bridge_enabled": (False, bool, "workspace", False, "let the paired browser extension take commands from her"),
+    # Which sites she may touch (2026-10-21): "deny_default" = only the sites on the allow list; "allow_default" =
+    # any site except those on the block list. The operator's hidden hosts and private windows stay off limits in both.
+    "bridge_site_mode": ("deny_default", str, "workspace", False, "site access mode (deny_default/allow_default)"),
     "bridge_session_until": (0, int, "user", False, "end of the current computer-use session (unix time; 0 = none)"),
     # Devices (2026-10-21, docs/devices.md): the Android app and the extension's own features. Everything but
     # notifications is off by default; every one of these is a SERVER-side switch that the device combines with its

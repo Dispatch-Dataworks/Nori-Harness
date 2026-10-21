@@ -5104,7 +5104,7 @@ class Handler(BaseHTTPRequestHandler):
         intro = (
             "<div class=section id=computer-use><h2>computer use</h2>"
             "<p class=muted>Lets Nori look at and use <b>your own browser</b> through the extension above, only "
-            "while you've started a session, only on sites you list below. Risky actions (send, submit, buy, "
+            "while you've started a session, only on the sites you permit below. Risky actions (send, submit, buy, "
             "delete, a link to another site) pause for your approval; password and payment fields are never "
             "typed into or read; every page she reads is screened as untrusted; every action is logged.</p>"
             + post("enabled",
@@ -5112,9 +5112,9 @@ class Handler(BaseHTTPRequestHandler):
                    f"{' checked' if on else ''}> allow computer use on this instance</label></div>"
                    "<div class=field><label><input type=checkbox name=bridge_standing_look"
                    f"{' checked' if bridge.standing_look(uid) else ''}> standing look: she may read tabs and open "
-                   "new tabs on allowed sites <b>without</b> a session " + info_tip(
-                       "Read-only. Clicking and typing still need a session and your approval. The allowed sites "
-                       "are the list below.") + "</label></div>"
+                   "new tabs on permitted sites <b>without</b> a session " + info_tip(
+                       "Read-only. Clicking and typing still need a session and your approval. Which sites are "
+                       "permitted is the site access setting below.") + "</label></div>"
                    "<button class='btn btn-primary'>save</button></form>")
             + "</div>")
 
@@ -5134,17 +5134,39 @@ class Handler(BaseHTTPRequestHandler):
                          + ("" if ready else "<p class=muted>Turn the switch on and pair a browser first.</p>"))
         session_box = f"<div class=section><h2>session</h2>{sess_body}</div>"
 
+        mode = bridge.site_mode(wsid)
+        blocking = mode == "allow_default"
         rule_rows = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(r['pattern'])}</b></div><div class=list-actions>"
             + post(f"rules/{r['id']}/delete", "<button class='btn'>remove</button></form>") + "</div></div>"
-            for r in bridge.rules())
+            for r in bridge.rules("block" if blocking else "allow"))
+        mode_form = post(
+            "sitemode",
+            "<div class=field><label><input type=radio name=site_mode value=deny_default"
+            f"{'' if blocking else ' checked'}> <b>deny by default</b> -- she can use only the sites on the allowed list</label></div>"
+            "<div class=field><label><input type=radio name=site_mode value=allow_default"
+            f"{' checked' if blocking else ''}> <b>allow by default</b> -- she can use any site except the ones on the "
+            "blocked list</label></div>"
+            "<button class='btn'>save</button></form>")
+        other_n = len(bridge.rules("allow" if blocking else "block"))
         rules_box = (
-            "<div class=section><h2>allowed sites</h2>"
-            "<p class=muted>Deny by default: she can see and touch only tabs on these sites. "
-            "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain.</p>"
-            + (rule_rows or "<p class=muted>none -- she can't see any tab yet</p>")
+            "<div class=section><h2>site access</h2>"
+            "<p class=muted>Which sites she may see and touch in your browser. Sites you list under "
+            "<b>hidden</b> in the browser settings, private windows and non-web pages stay off limits either way; "
+            "risky actions still pause for your approval.</p>" + mode_form
+            + ("<p class=muted><b>Blocked sites</b> -- she can't see or touch tabs on these. "
+               "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain. "
+               "<b>Standing look</b> can read any tab on a site that isn't blocked.</p>"
+               if blocking else
+               "<p class=muted><b>Allowed sites</b> -- she can see and touch only tabs on these. "
+               "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain.</p>")
+            + (rule_rows or ("<p class=muted>none -- nothing is blocked</p>" if blocking
+                             else "<p class=muted>none -- she can't see any tab yet</p>"))
             + post("rules", "<div class=field style='display:flex;gap:.4rem'><input type=text name=pattern "
-                   "placeholder='e.g. *.github.com'><button class='btn btn-primary'>add</button></div></form>")
+                   f"placeholder='e.g. {'*.mybank.com' if blocking else '*.github.com'}'>"
+                   f"<button class='btn btn-primary'>{'block' if blocking else 'add'}</button></div></form>")
+            + (f"<p class=muted><small>The {'allowed' if blocking else 'blocked'} list ({other_n} site(s)) is kept for "
+               "when you switch back.</small></p>" if other_n else "")
             + "</div>")
 
         pend = bridge.pending_approvals(uid)
@@ -5221,8 +5243,13 @@ class Handler(BaseHTTPRequestHandler):
         if action == "stop":
             n = bridge.stop_session(uid)
             return self.computeruse_admin_form(sess, info=f"stopped ({n} pending action(s) cancelled)")
+        if action == "sitemode":
+            if not bridge.set_site_mode(wsid, form.get("site_mode") or ""):
+                return self.computeruse_admin_form(sess, err="pick one of the two options")
+            return self.computeruse_admin_form(sess, info="saved")
         if action == "rules" and len(sub) == 1:
-            ok, msg = bridge.add_rule(form.get("pattern") or "")
+            ok, msg = bridge.add_rule(form.get("pattern") or "",
+                                      "block" if bridge.site_mode(wsid) == "allow_default" else "allow")
             return self.computeruse_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
         if action == "rules" and len(sub) == 3 and sub[1].isdigit() and sub[2] == "delete":
             bridge.remove_rule(int(sub[1]))

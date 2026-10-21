@@ -1845,6 +1845,9 @@ _MIGRATIONS: list[str] = [
     # every existing row. See conversation.py.
     "ALTER TABLE messages ADD COLUMN pruned INTEGER NOT NULL DEFAULT 0",
     # Devices (2026-10-21): the registry columns on bridge_tokens, and which kind of device a command is for.
+    # Site access mode (2026-10-21): which list a bridge_site_rules row belongs to -- 'allow' (the allowlist) or
+    # 'block' (the blocklist used when she may go anywhere not listed).
+    "ALTER TABLE bridge_site_rules ADD COLUMN kind TEXT NOT NULL DEFAULT 'allow'",
     "ALTER TABLE bridge_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'browser'",
     "ALTER TABLE bridge_tokens ADD COLUMN paused INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE bridge_tokens ADD COLUMN caps TEXT",

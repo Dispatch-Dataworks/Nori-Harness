@@ -344,7 +344,7 @@ test("options: pair with a code -> /bridge/register -> token stored, code field 
   page.el("name").value = "Laptop";
   await page.el("pair").trigger("click");
   await waitFor(() => env.registers().length === 1, 3000, "register");
-  assert.deepStrictEqual(env.registers()[0].body, { code: "WXYZ-2345", kind: "browser", name: "Laptop", v: "0.2.0", model: "Chrome 130 on Windows" });
+  assert.deepStrictEqual(env.registers()[0].body, { code: "WXYZ-2345", kind: "browser", name: "Laptop", v: "0.2.1", model: "Chrome 130 on Windows" });
   await waitFor(() => env.storage.token, 3000, "token stored");
   await sleep(30);
   assert.strictEqual(page.el("code").value, "");

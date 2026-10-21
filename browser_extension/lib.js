@@ -16,7 +16,7 @@
 (function (root) {
   "use strict";
 
-  const VERSION_FALLBACK = "0.2.0";
+  const VERSION_FALLBACK = "0.2.1";
 
   // ───────────────────────── hosts ─────────────────────────
   function hostMatches(host, pattern) {
@@ -30,9 +30,25 @@
     return host === pattern;
   }
 
+  // `patterns` is either an allow list (an array: only these hosts) or a policy from sitePolicy() --
+  // {mode: "allow_default", blocked: [...]}: any web host except the blocked ones. A host that can't be named
+  // (chrome://, about:blank, a missing url) is never allowed.
   function hostAllowed(host, patterns) {
     if (!host) return false;
-    return (patterns || []).some((p) => hostMatches(host, p));
+    if (patterns && !Array.isArray(patterns) && patterns.mode === "allow_default") {
+      return !(patterns.blocked || []).some((p) => hostMatches(host, p));
+    }
+    return (Array.isArray(patterns) ? patterns : []).some((p) => hostMatches(host, p));
+  }
+
+  // The server sends {allowed, site_mode, blocked} with each command. Anything but an explicit "allow_default" is the
+  // strict allow list, and an older server (no site_mode) behaves exactly as before.
+  function sitePolicy(cmd) {
+    const c = cmd || {};
+    if (c.site_mode === "allow_default") {
+      return { mode: "allow_default", blocked: Array.isArray(c.blocked) ? c.blocked.filter((p) => typeof p === "string") : [] };
+    }
+    return Array.isArray(c.allowed) ? c.allowed.filter((p) => typeof p === "string") : [];
   }
 
   // "hidden" uses the same matcher as the allowlist (wildcards included), but the sense is inverted:
@@ -643,7 +659,7 @@
   }
 
   const api = {
-    hostMatches, hostAllowed, hostHidden, hostOf, sameOrigin, sanitizeHostList, isSensitiveField, classify, fingerprint, describe,
+    hostMatches, hostAllowed, sitePolicy, hostHidden, hostOf, sameOrigin, sanitizeHostList, isSensitiveField, classify, fingerprint, describe,
     SENSITIVE_RE, RISKY_RE, LOOK_ACTIONS, LOOK_REFUSAL, lookOnlyVerdict,
     LIM, cleanText, cleanMultiline, cleanPageText, pageTextCollector,
     gatePage, shareUrl, buildShareBody, dataUrlToJpeg, JPEG_QUALITIES, SHARE_KINDS, SHARE_DESTS, normDest, shareMenuSpec, parseShareMenuId,

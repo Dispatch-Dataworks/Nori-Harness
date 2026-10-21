@@ -43,7 +43,7 @@ test("version gating", () => {
   assert.strictEqual(L.featureSupported("sidePanel", 130), true);
   assert.strictEqual(L.featureSupported("sidePanel", 115), false);
   assert.strictEqual(L.featureSupported("unknownFeature", 999), false);
-  assert.strictEqual(MANIFEST.version, "0.2.0");
+  assert.strictEqual(MANIFEST.version, "0.2.1");
   assert.strictEqual(L.compareVersions(MANIFEST.version, "0.1.0"), 1);
 });
 
@@ -85,7 +85,7 @@ test("pairing by code: POST /bridge/register {code, kind:'browser', name, model,
   assert.strictEqual(r.name, "Desk");
   const c = env.registers()[0];
   assert.strictEqual(c.url, "https://nori.example/bridge/register");
-  assert.deepStrictEqual(c.body, { code: "ABCD-1234", kind: "browser", name: "Desk PC", v: "0.2.0", model: "Chrome 130 on Windows" });
+  assert.deepStrictEqual(c.body, { code: "ABCD-1234", kind: "browser", name: "Desk PC", v: "0.2.1", model: "Chrome 130 on Windows" });
   assert.strictEqual(c.auth, undefined, "no bearer token on the register call");
   assert.strictEqual(env.storage.token, "nbr_newtoken_0123456789abcdef");
   assert.strictEqual(env.storage.baseUrl, "https://nori.example");
@@ -408,9 +408,9 @@ test("MV3: a backoff is persisted, so waiting longer than a worker lives is just
 });
 
 // ── the manifest and the files ──
-test("manifest v0.2.0: the permissions, CSP and entry points", () => {
+test("manifest v0.2.1: the permissions, CSP and entry points", () => {
   assert.strictEqual(MANIFEST.manifest_version, 3);
-  assert.strictEqual(MANIFEST.version, "0.2.0");
+  assert.strictEqual(MANIFEST.version, "0.2.1");
   assert.deepStrictEqual([...MANIFEST.permissions].sort(), ["activeTab", "alarms", "contextMenus", "idle", "notifications", "scripting", "sidePanel", "storage", "tabs"]);
   assert.deepStrictEqual(MANIFEST.host_permissions, ["<all_urls>"]);
   assert.strictEqual(MANIFEST.content_security_policy.extension_pages, "script-src 'self'; object-src 'self'");
