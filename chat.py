@@ -1492,6 +1492,8 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         # from a turn that ran fine and genuinely chose not to reply. See
         # peers._run_prompted_turn's own new logging for where this is
         # read and made durable.
+        # An app aside she copied into her reply (see own_output.strip_aside) never reaches the chat or the record.
+        text = own_output.strip_aside(text) or "(no reply — the model returned nothing)"
         return {"text": text, "usage": {**usage, "cost": None if cost_unavailable else usage["cost"]},
                "hit_round_limit": hit_round_limit, "dispatch_meta": last_dispatch_meta,
                "tool_calls": list(tool_call_log)}

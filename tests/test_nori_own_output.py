@@ -79,6 +79,27 @@ class RenderTests(unittest.TestCase):
         for c in (PROSE_CALL, LIMIT_LINE, FAIL_LINE, COPIED_ANNOTATION):
             self.assertEqual(conversation.render_for_model(row("assistant", c)), "", c)
 
+    def test_the_why_aside_is_the_marked_app_note_and_a_copy_of_it_in_her_history_is_cut(self):
+        """2026-10-21: the aside was a "(internal note to self ..." she could write herself; she copied it into replies, then read the copies as a leak."""
+        meta = '{"reason": "a calendar event starting in about 0 min: Work"}'
+        proactive = row("assistant", "Work starts now.", kind="proactive", meta=meta)
+        t = conversation.render_for_model(proactive)
+        self.assertTrue(t.startswith("Work starts now.\n(app note, not part of what you said: the real reason you said this was a calendar event"), t)
+        self.assertNotIn("internal note to self", t)
+        self.assertIn("not an error or a leak", t)
+        for copied in ("Work starts now.\n(internal note to self -- not part of what you actually said: the real reason you said this was x)",
+                       "Work starts now.\n(internal note to self -- not part of what you actual said ...)",
+                       "Work starts now.\n(app note, not part of what you said: the real reason you said this was x)"):
+            self.assertEqual(conversation.render_for_model(row("assistant", copied)), "Work starts now.", copied)
+        self.assertEqual(conversation.render_for_model(row("assistant", "(internal note to self -- the real reason ...)")), "",
+                         "only the aside: nothing")
+        # her own proactive message that carries a copy still gets exactly ONE aside (the app's), not two
+        copied_proactive = row("assistant", "Work starts now.\n(internal note to self -- copied)", kind="proactive", meta=meta)
+        self.assertEqual(conversation.render_for_model(copied_proactive).count("the real reason you said this was"), 1)
+        # a message ABOUT the note (a quotation) is not cut
+        quoted = "It said:\n> (internal note to self ...) and that was a copy."
+        self.assertEqual(conversation.render_for_model(row("assistant", quoted)), quoted)
+
     def test_a_photo_she_sent_renders_as_a_marked_app_note_not_a_bracket_she_can_copy(self):
         t = conversation.render_for_model(row("assistant", "There you are.", kind="image"))
         self.assertTrue(t.startswith("(app note, not part of what you said:"), t)

@@ -106,10 +106,11 @@ def render_for_model(m: dict) -> str:
     reason = meta.get("reason")
     if not reason:
         return c
-    return (f"{c}\n(internal note to self -- not part of what you actually said, and this note "
-           f"itself never appears anywhere they can see: the real reason you said this was "
-           f"{reason}. If they ever ask why, that's the true, honest answer -- give it plainly "
-           f"rather than guessing or deflecting.)")
+    # The app's own marked form (own_output.app_note), never a "note to self" she could write herself: the earlier wording was copied into her
+    # replies, in front of him, and then read back by her as a leak. The reply path and scrub() both cut a copy.
+    return f"{c}\n" + own_output.app_note(
+        f"the real reason you said this was {reason}. This line is added by the app and is never shown to them. If they ask why you said it, "
+        f"that's the true answer -- give it plainly rather than guessing or deflecting. It is not an error or a leak")
 
 
 def _image_message_text(m: dict) -> str:

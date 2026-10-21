@@ -23,6 +23,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import call as mock_call, Mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import own_output  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -119,7 +122,7 @@ class NoriToolVisibilityTests(unittest.TestCase):
                 call = Mock(side_effect=[dict(content="", tool_calls=calls), dict(content="Done.")])
                 dispatch = Mock(return_value={"ok": True})
                 add_message = Mock()
-                env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
+                env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(own_output=own_output,
                     json=json, re=re, MAX_TOOL_ROUNDS=3, call_via_chain=call,
                     # run() resolves the workspace's own model/reasoning
                     # override via _resolve_model() and falls back to
@@ -185,7 +188,7 @@ class NoriToolVisibilityTests(unittest.TestCase):
         call = Mock(side_effect=[dict(content="", tool_calls=calls), dict(content="Done.")])
         dispatch = Mock(return_value={"error": "cooldown active for another 3 minute(s)"})
         add_message = Mock()
-        env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
+        env = definitions("chat.py", {"run", "_detect_leaked_call"}, dict(own_output=own_output,
             json=json, re=re, MAX_TOOL_ROUNDS=3, call_via_chain=call,
             _resolve_model=lambda workspace_id: (None, None),
             DEFAULT_MODEL="x-ai/grok-4.3",
@@ -213,7 +216,7 @@ class RoundLimitTests(unittest.TestCase):
     not just the flag's presence in the source."""
 
     def _env(self, call, max_rounds):
-        return definitions("chat.py", {"run", "_detect_leaked_call"}, dict(
+        return definitions("chat.py", {"run", "_detect_leaked_call"}, dict(own_output=own_output,
             json=json, re=re, MAX_TOOL_ROUNDS=max_rounds, call_via_chain=call,
             _resolve_model=lambda workspace_id: (None, None),
             DEFAULT_MODEL="x-ai/grok-4.3",
@@ -236,6 +239,18 @@ class RoundLimitTests(unittest.TestCase):
         res = env["run"]({"workspace_id": 1}, 1, "Test", max_rounds=3)
         self.assertTrue(res["hit_round_limit"])
         self.assertIn("hit the 3-step tool-call limit", res["text"])
+
+    def test_a_copied_app_aside_never_reaches_the_reply(self):
+        """Seen live (2026-10-21): the app's "why you said this" aside, copied by the model onto the end of a proactive ping and shown in the chat."""
+        aside = ("(internal note to self -- not part of what you actually said, and this note itself never appears anywhere they can see: "
+                 "the real reason you said this was a calendar event starting in about 0 min: \"Work\". If they ever ask why...)")
+        for text in ("Work starts now.\n" + aside,
+                     "Work starts now.\n(app note, not part of what you said: the real reason you said this was x)"):
+            env = self._env(Mock(return_value=dict(content=text, tool_calls=[])), max_rounds=3)
+            self.assertEqual(env["run"]({"workspace_id": 1}, 1, "Test", max_rounds=3)["text"], "Work starts now.")
+        env = self._env(Mock(return_value=dict(content=aside, tool_calls=[])), max_rounds=3)
+        self.assertIn("returned nothing", env["run"]({"workspace_id": 1}, 1, "Test", max_rounds=3)["text"],
+                      "a reply that was only the aside is no reply")
 
     def test_hit_round_limit_false_on_normal_completion(self):
         call = Mock(return_value=dict(content="Done.", tool_calls=[]))

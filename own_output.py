@@ -52,6 +52,20 @@ _APP_FALLBACKS = (
 _ANNOTATION = re.compile(r"\[\s*(?:you|i|she|he|nori)\s+sent\b[^\]\n]*\](?:\s*with:.*)?", re.I)
 
 
+# The app's own aside about why she sent a self-started message (conversation.message_text adds it to the prompt only). The model COPIES it
+# into its replies -- seen live: the aside, verbatim, trailing a proactive ping in the chat itself -- under the old "(internal note to self ..."
+# wording and the current "(app note, not part of what you said: ..." one. It always trails, so everything from a line that starts with
+# either form to the end of the text goes. A quotation ("> (internal note ...)") doesn't start a line, so a message ABOUT the note survives.
+_ASIDE = re.compile(r"(?:^|\n)[ \t]*\(\s*(?:internal note to self|app note, not part of what (?:you|i) said)\b.*", re.S | re.I)
+
+
+def strip_aside(text):
+    """`text` without a copied app aside at its end. Pure text; anything that isn't a string comes back as it was."""
+    if not text or not isinstance(text, str):
+        return text
+    return _ASIDE.sub("", text).rstrip()
+
+
 def leak_pattern(tool_names: set[str], *, prose_verbs: bool = True) -> re.Pattern | None:
     """The shapes a tool call takes when the model types it out instead of calling it. `prose_verbs` includes the plain-sentence form ("using search_history"): right for
     judging a reply as it is generated (a whole reply that is that phrase is a leak), too blunt for cutting text out of stored history, where a real sentence such as "you can
@@ -138,5 +152,6 @@ def scrub(text, role: str = "assistant", names: set | None = None):
         if not m:
             break
         out = out[:m.start()] + out[m.end():]
+    out = strip_aside(out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out if out or not text.strip() else EMPTY
