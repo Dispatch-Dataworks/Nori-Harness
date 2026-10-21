@@ -387,7 +387,7 @@ class Approvals(unittest.TestCase):
         self.assertEqual(len(pend), 1)
         self.assertIn('click button "Send"', pend[0]["summary"])
         self.assertEqual(pend[0]["host"], "www.example.com")
-        self.assertTrue(any("Settings → Computer use" in m["content"] and m["kind"] == "proactive" for m in self._messages()))
+        self.assertTrue(any("Settings → Devices" in m["content"] and m["kind"] == "proactive" for m in self._messages()))
         self.assertEqual(len(self.browser.seen), 1, "nothing was re-sent while it waits")
 
     def test_approve_runs_it_with_the_fingerprint_and_reports_back(self):

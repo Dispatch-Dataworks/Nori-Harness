@@ -2959,7 +2959,7 @@ class Handler(BaseHTTPRequestHandler):
                             "/admin/contexttuning": "contexttuning", "/admin/persona": "persona",
                             "/admin/media": "media", "/admin/health": "health",
                             "/admin/memorybackend": "memorybackend", "/admin/sandbox": "sandbox",
-                            "/admin/computeruse": "computeruse"}
+                            "/admin/computeruse": "devices"}
         if path in settings_aliases:
             if sess["role"] != "admin":
                 return self.forbidden()
@@ -5076,29 +5076,43 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- admin: computer use / browser bridge (2026-10-05) -- see bridge.py / docs/computer-use.md
     def computeruse_admin_form(self, sess: dict, err: str = "", info: str = "", new_token: str = ""):
+        """Computer use no longer has a tab of its own (2026-10-21): it is a section of Settings -> Devices, next to
+        the browser it acts through. This wrapper (kept so the /admin/computeruse/* handlers and old links keep
+        working) renders that page. Admin only, as before."""
         if sess["role"] != "admin":
             return self.forbidden()
+        return self.devices_settings_form(sess, err=err, info=info, new_token=new_token)
+
+    def _computeruse_sections(self, sess: dict) -> str:
+        """The Computer use half of Settings -> Devices (admin only): the master switch and standing look, the
+        time-boxed session and its kill switch, approvals waiting for you, the allowed-sites list, and the audit
+        log of every command. The browser itself (pairing, its own switches, browsing time) is in the Browser
+        section above it; there is deliberately ONE list of paired browsers."""
         csrf = esc(sess["csrf"])
         uid, wsid = sess["user_id"], sess["workspace_id"]
-        e = f"<p class=err>{esc(err)}</p>" if err else ""
-        i = f"<p class=info>{esc(info)}</p>" if info else ""
         on = bridge.master_enabled(wsid)
         until = bridge.session_until(uid)
         active = bridge.session_active(uid, wsid)
         is_conn = bridge.connected(uid)
 
-        def post(action, body="", style=""):
-            return (f"<form method=post action='/admin/computeruse/{action}' style='display:inline;{style}'>"
+        def post(action, body=""):
+            return (f"<form method=post action='/admin/computeruse/{action}' style='display:inline'>"
                     f"<input type=hidden name=csrf value='{csrf}'>{body}")
 
         intro = (
-            "<div class=section><h2>computer use</h2>"
-            "<p class=muted>Lets Nori look at and use <b>your own browser</b> through a small extension, only "
+            "<div class=section id=computer-use><h2>computer use</h2>"
+            "<p class=muted>Lets Nori look at and use <b>your own browser</b> through the extension above, only "
             "while you've started a session, only on sites you list below. Risky actions (send, submit, buy, "
             "delete, a link to another site) pause for your approval; password and payment fields are never "
             "typed into or read; every page she reads is screened as untrusted; every action is logged.</p>"
-            + post("enabled", "<label><input type=checkbox name=bridge_enabled"
-                   f"{' checked' if on else ''}> allow computer use on this instance</label> "
+            + post("enabled",
+                   "<div class=field><label><input type=checkbox name=bridge_enabled"
+                   f"{' checked' if on else ''}> allow computer use on this instance</label></div>"
+                   "<div class=field><label><input type=checkbox name=bridge_standing_look"
+                   f"{' checked' if bridge.standing_look(uid) else ''}> standing look: she may read tabs and open "
+                   "new tabs on allowed sites <b>without</b> a session " + info_tip(
+                       "Read-only. Clicking and typing still need a session and your approval. The allowed sites "
+                       "are the list below.") + "</label></div>"
                    "<button class='btn btn-primary'>save</button></form>")
             + "</div>")
 
@@ -5110,40 +5124,14 @@ class Handler(BaseHTTPRequestHandler):
                          + post("stop", "<button class='btn btn-danger'>STOP NOW (kill switch)</button></form>"))
         else:
             opts = "".join(f"<option value={m}>{m} minutes</option>" for m in bridge.SESSION_CHOICES_MIN)
-            sess_body = ("<p><span class=chip>no session</span> <small class=muted>Nori has no browser tools "
+            ready = on and bridge.has_token(uid)
+            sess_body = ("<p><span class=chip>no session</span> <small class=muted>Nori has no acting browser tools "
                          "right now</small></p>"
                          + post("session", f"<select name=minutes>{opts}</select> "
-                                f"<button class='btn btn-primary'{'' if on and bridge.has_token(uid) else ' disabled'}>"
-                                "start a session</button></form>")
-                         + ("" if on and bridge.has_token(uid) else
-                            "<p class=muted>Turn the switch on and pair a browser first.</p>"))
+                                f"<button class='btn btn-primary'{'' if ready else ' disabled'}>start a session</button></form>")
+                         + ("" if ready else "<p class=muted>Turn the switch on and pair a browser first.</p>"))
         session_box = f"<div class=section><h2>session</h2>{sess_body}</div>"
 
-        # pairing
-        tok_rows = []
-        for t in bridge.list_tokens(uid):
-            seen = (time.strftime("%Y-%m-%d %H:%M", time.localtime(t["last_seen_ts"])) if t["last_seen_ts"] else "never")
-            state = "revoked" if t["revoked_ts"] else f"last seen {seen}"
-            tok_rows.append(
-                f"<div class=list-row><div class=list-meta><b>{esc(t['label'])}</b><small>{state}</small></div>"
-                + ("" if t["revoked_ts"] else
-                   "<div class=list-actions>" + post(f"revoke/{t['id']}", "<button class='btn btn-danger'>revoke</button></form>")
-                   + "</div>")
-                + "</div>")
-        shown = (f"<div class=section style='border:2px solid var(--accent,#c60)'><h2>new token -- copy it now</h2>"
-                 f"<p class=muted>It's shown only this once. Paste it into the extension's options, with this "
-                 f"server's address.</p><p><code style='word-break:break-all'>{esc(new_token)}</code></p></div>"
-                 ) if new_token else ""
-        pair_box = (
-            "<div class=section><h2>paired browsers</h2>"
-            + ("".join(tok_rows) or "<p class=muted>none yet</p>")
-            + post("pair", "<div class=field><input type=text name=label placeholder='label, e.g. Chrome on my PC' "
-                   "maxlength=60></div><button class='btn btn-primary'>create a token</button></form>")
-            + "<p class=muted>Install: in Chrome open <code>chrome://extensions</code>, turn on Developer mode, "
-              "<b>Load unpacked</b>, choose the <code>browser_extension</code> folder of this project, open its "
-              "options, paste the address and token.</p></div>")
-
-        # allowlist
         rule_rows = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(r['pattern'])}</b></div><div class=list-actions>"
             + post(f"rules/{r['id']}/delete", "<button class='btn'>remove</button></form>") + "</div></div>"
@@ -5157,7 +5145,6 @@ class Handler(BaseHTTPRequestHandler):
                    "placeholder='e.g. *.github.com'><button class='btn btn-primary'>add</button></div></form>")
             + "</div>")
 
-        # approvals
         pend = bridge.pending_approvals(uid)
         pend_rows = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(p['summary'] or p['action'])}</b>"
@@ -5169,18 +5156,18 @@ class Handler(BaseHTTPRequestHandler):
         approvals_box = ("<div class=section><h2>waiting for your approval</h2>"
                          + (pend_rows or "<p class=muted>nothing waiting</p>") + "</div>")
 
-        # activity
         def _row(r: dict) -> str:
             when = time.strftime("%m-%d %H:%M:%S", time.localtime(r["created_ts"]))
             extra = f" · {esc(r['error'])}" if r["error"] else ""
             appr = f" · approval: {esc(r['approval'])}" if r["approval"] != "none" else ""
+            where = "phone" if r.get("target") == "phone" else (esc(r['host'] or '-'))
             return (f"<div class=list-row><div class=list-meta><b>{esc(r['summary'] or r['action'])}</b>"
-                    f"<small>{when} · {esc(r['host'] or '-')} · {esc(r['status'])}{appr}{extra}</small></div></div>")
+                    f"<small>{when} · {where} · {esc(r['status'])}{appr}{extra}</small></div></div>")
         cmds = bridge.recent_commands()
-        log_box = ("<div class=section><h2>recent activity</h2>"
+        log_box = ("<div class=section><h2>recent actions</h2><p class=muted>Every command she sent your browser "
+                   "or phone, and how it ended.</p>"
                    + ("".join(_row(r) for r in cmds) if cmds else "<p class=muted>nothing yet</p>") + "</div>")
-        self._settings_response(sess, "computeruse",
-                                e + i + shown + intro + session_box + approvals_box + pair_box + rules_box + log_box)
+        return intro + session_box + approvals_box + rules_box + log_box
 
     def bridge_approval_post(self, sess: dict, form: dict):
         """Approve / Deny from the chat card (fetch, JSON back). Cookie session +
@@ -5210,6 +5197,7 @@ class Handler(BaseHTTPRequestHandler):
         if action == "enabled":
             on = "bridge_enabled" in form
             config.set("workspace", wsid, "bridge_enabled", on)
+            config.set("user", uid, "bridge_standing_look", "bridge_standing_look" in form)
             if not on:
                 bridge.stop_session(uid)  # switching it off ends any session
             return self.computeruse_admin_form(sess, info="saved")
@@ -7742,7 +7730,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     # -- Settings -> Devices (2026-10-21): the owner's own phone and browser, per account.
-    def devices_settings_form(self, sess: dict, err: str = "", info: str = "", new_code: tuple | None = None):
+    def devices_settings_form(self, sess: dict, err: str = "", info: str = "", new_code: tuple | None = None,
+                              new_token: str = ""):
         uid, csrf = sess["user_id"], esc(sess["csrf"])
         is_admin = sess["role"] == "admin"
         g = lambda k: config.get("user", uid, k)  # noqa: E731
@@ -7758,6 +7747,10 @@ class Handler(BaseHTTPRequestHandler):
                     f"{label} {info_tip(tip) if tip else ''}</label></div>")
 
         base = os.environ.get("NORI_PUBLIC_URL", "").rstrip("/") or f"https://{self.headers.get('Host', 'your-nori-address')}"
+        token_box = (f"<div class=section style='border:2px solid var(--accent,#c60)'><h2>new token -- copy it now</h2>"
+                     f"<p class=muted>It's shown only this once. Paste it into the extension's options (\"I already have a "
+                     f"token\"), with this server's address.</p><p><code style='word-break:break-all'>{esc(new_token)}</code></p></div>"
+                     ) if new_token else ""
         code_box = ""
         if new_code:
             code, kind = new_code
@@ -7813,7 +7806,7 @@ class Handler(BaseHTTPRequestHandler):
                 + "<div class=field><label>most phone actions per hour</label>"
                   f"<input type=number name=phone_actions_per_hour min=1 max=200 value={int(g('phone_actions_per_hour') or 30)}></div>")
         phone_box = (
-            "<div class=section><h2>phone</h2>"
+            "<div class=section id=phone><h2>phone</h2>"
             "<p class=muted>The Nori Android app: real notifications, a share sheet, health data, places and (only in windows you open "
             "on the phone) actions. Everything but notifications is off until you turn it on here <b>and</b> in the app.</p>"
             + device_rows("phone")
@@ -7835,7 +7828,7 @@ class Handler(BaseHTTPRequestHandler):
             "<div class=list-actions>" + post(f"reminder/cancel/{r['id']}", "<button class='btn'>cancel</button></form>") + "</div></div>"
             for r in rem)
         places_box = (
-            "<div class=section><h2>places</h2><p class=muted>Save a place from the phone app (\"save here\"); ask her to remind you "
+            "<div class=section id=places><h2>places</h2><p class=muted>Save a place from the phone app (\"save here\"); ask her to remind you "
             "when you arrive or leave. Coordinates exist only because you saved the place.</p>"
             + (place_rows or "<p class=muted>no places saved yet</p>") + ev_html
             + (("<h3>place reminders</h3>" + rem_rows) if rem_rows else "") + "</div>")
@@ -7844,9 +7837,6 @@ class Handler(BaseHTTPRequestHandler):
             chk("browser_notifications_enabled", "desktop notifications through the extension")
             + chk("browser_activity_enabled", "passive browsing time (site names and seconds only)",
                   "Never titles, URLs or contents. Hidden sites below are never counted.")
-            + (chk("bridge_standing_look", "standing look: she may read tabs and open new tabs on allowed sites without a session",
-                   "Read-only. Clicking and typing still need a session and your approval. Allowed sites are set under Computer use.")
-               if is_admin else "")
             + "<div class=field><label>sites the extension never reports or shares (comma separated, *.example.com ok)</label>"
               f"<input type=text name=browser_hidden_hosts value='{esc(g('browser_hidden_hosts'))}'></div>"
             + "<div class=field><label>days to keep browsing-time totals</label>"
@@ -7859,21 +7849,34 @@ class Handler(BaseHTTPRequestHandler):
                      + (f"<ul>{today_rows}</ul>" if today_rows else "<p class=muted>nothing recorded today</p>")
                      + f"<p class=muted>last 7 days: {week_total // 60} min across {len({x['host'] for rows in day.values() for x in rows})} site(s)</p>"
                      + post("browsingtime/clear", "<button class='btn btn-danger'>forget all browsing time</button></form>")) if g("browser_activity_enabled") or day else ""
+        legacy_token = (
+            "<details style='margin-top:.6rem'><summary class=muted>advanced: pair with a token instead of a code</summary>"
+            "<form method=post action='/admin/computeruse/pair' style='margin-top:.4rem'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><input type=text name=label placeholder='label, e.g. Chrome on my PC' maxlength=60></div>"
+            "<button class='btn'>create a token</button></form></details>") if is_admin else ""
         browser_box = (
-            "<div class=section><h2>browser</h2>"
-            "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, and (if you "
-            "also use Computer use) a bridge she can act through. Install and pair it once.</p>"
+            "<div class=section id=browser><h2>browser</h2>"
+            "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, passive "
+            "browsing time, and -- if you use Computer use below -- a bridge she can act through. Install it once: in Chrome open "
+            "<code>chrome://extensions</code>, turn on Developer mode, <b>Load unpacked</b>, choose the project's "
+            "<code>browser_extension</code> folder, then pair it with a code from here.</p>"
             + device_rows("browser")
-            + post("pair/browser", "<button class='btn btn-primary'>pair a browser</button></form>")
+            + post("pair/browser", "<button class='btn btn-primary'>pair a browser</button></form>") + legacy_token
             + post("browser", browser_switches + "<button class='btn btn-primary'>save browser settings</button></form>")
             + time_html + "</div>")
+        computer_use = self._computeruse_sections(sess) if is_admin else ""
 
         acts = devices.recent_activity(uid, 12)
-        act_box = ("<div class=section><h2>recent device activity</h2><p class=muted>What your devices sent that landed somewhere "
+        act_box = ("<div class=section id=activity><h2>recent device activity</h2><p class=muted>What your devices sent that landed somewhere "
                    "(counts only, never content).</p>"
                    + ("".join(f"<div class=list-row><div class=list-meta><b>{esc(a['kind'])}</b><small>{esc(usertime.fmt(uid, a['ts'], '%b %d %H:%M'))} · {esc(a['detail'] or '')}</small></div></div>" for a in acts)
                       or "<p class=muted>nothing yet</p>") + "</div>")
-        self._settings_response(sess, "devices", e + i + code_box + phone_box + places_box + browser_box + act_box)
+        jump = ("<p class=muted>jump to: <a href='#phone'>phone</a> · <a href='#places'>places</a> · "
+                "<a href='#browser'>browser</a>" + (" · <a href='#computer-use'>computer use</a>" if is_admin else "")
+                + " · <a href='#activity'>activity</a></p>")
+        self._settings_response(sess, "devices", e + i + code_box + token_box + jump + phone_box + places_box
+                                + browser_box + computer_use + act_box)
 
     def devices_settings_post(self, sess: dict, path: str, form: dict):
         uid, ws = sess["user_id"], sess["workspace_id"]
@@ -7908,7 +7911,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.devices_settings_form(sess, err="actions per hour must be a number")
             return self.devices_settings_form(sess, info="phone settings saved")
         if act == "browser":
-            for k in ["browser_notifications_enabled", "browser_activity_enabled"] + (["bridge_standing_look"] if is_admin else []):
+            for k in ["browser_notifications_enabled", "browser_activity_enabled"]:
                 config.set("user", uid, k, k in form)
             hosts = [h for h in (bridge.normalize_pattern(x) for x in re.split(r"[,\s]+", form.get("browser_hidden_hosts", ""))) if h]
             config.set("user", uid, "browser_hidden_hosts", ",".join(hosts[:100]))
@@ -8243,7 +8246,6 @@ class Handler(BaseHTTPRequestHandler):
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
                                                ("sandbox", "Code sandbox"),
-                                               ("computeruse", "Computer use"),
                                                ("homeassistant", "Home Assistant"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
@@ -8366,6 +8368,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def settings_page(self, sess: dict, tab: str, err: str = "", info: str = "", *, invite_link: str = "",
                       edit_id: str = "", cat_filter: str = ""):
+        if tab == "computeruse":
+            tab = "devices"      # Computer use is a section of Settings -> Devices now (2026-10-21)
         if tab == "peers":
             if sess["role"] == "admin":
                 return self.peers_admin_form(sess, err=err, info=info)
@@ -8425,8 +8429,7 @@ class Handler(BaseHTTPRequestHandler):
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
                        "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
                        "memorybackend": self.memory_backend_admin_form,
-                       "sandbox": self.sandbox_admin_form,
-                       "computeruse": self.computeruse_admin_form}
+                       "sandbox": self.sandbox_admin_form}
         if tab in admin_pages or tab == "household":
             if sess["role"] != "admin":
                 return self.forbidden()

@@ -33,7 +33,7 @@ Needs Chrome 116 or newer for the side panel button (the rest works on older Man
 2. Click the extension's **Options** (popup → Options). Enter Nori's address and the code, optionally a name, press **Pair**.
 3. The popup now shows the status ("idle (no session)", "session running", ...). The code is not stored.
 
-Already have a token (Settings → Computer use → "create a token", starts with `nbr_`)? Use "I already have a token"
+Already have a token (Settings → Devices → Browser → "advanced: pair with a token", starts with `nbr_`)? Use "I already have a token"
 on the options page.
 
 If Nori later answers "unknown token" (you removed this browser in Settings → Devices) the popup says

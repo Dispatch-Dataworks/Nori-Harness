@@ -27,7 +27,7 @@ enforced in code, none depends on the model behaving:
   * Risky actions pause for the operator's approval -- the extension
     classifies the real element (submit/send/buy/delete..., a cross-site link)
     and answers "needs approval" instead of acting; nothing happens until the
-    operator approves in Settings -> Computer use. Password / card / one-time-
+    operator approves in Settings -> Devices. Password / card / one-time-
     code fields are never typed into and never read, approved or not.
   * Everything read from a page is untrusted: page text goes through the same
     injection screening as web_fetch, and a page the screener flags makes
@@ -460,7 +460,7 @@ def complete(token: dict, cmd_id: int, payload: dict) -> tuple[bool, str]:
              json.dumps({"reason": _clip(payload.get("reason"), 200)}), cmd_id)))
         mid = _notify(cmd["user_id"],
                       f"I'm paused waiting for your OK: I want to {cmd['action']} {desc} on {host or where}. "
-                      f"Approve or deny it below (or in Settings → {'Devices' if phone else 'Computer use'}).",
+                      f"Approve or deny it below (or in Settings → Devices).",
                       meta={"approval": {"id": cmd_id, "status": "pending", "action": cmd["action"],
                                          "summary": desc, "host": host or "",
                                          "reason": _clip(payload.get("reason"), 200)}})
@@ -535,7 +535,7 @@ def pending_approvals(user_id: int | None = None) -> list[dict]:
 
 def recent_commands(limit: int = 30) -> list[dict]:
     return [dict(r) for r in store.read(lambda c: c.execute(
-        "SELECT id, user_id, action, host, status, approval, summary, error, source, created_ts, done_ts "
+        "SELECT id, user_id, action, host, status, approval, summary, error, source, target, created_ts, done_ts "
         "FROM bridge_commands ORDER BY id DESC LIMIT ?", (limit,)).fetchall())]
 
 
@@ -543,7 +543,7 @@ def recent_commands(limit: int = 30) -> list[dict]:
 def _gate(session: dict, *, look: bool = False) -> dict | None:
     if not (look_enabled(session) if look else is_enabled(session)):
         return {"error": "computer use isn't on right now -- the operator starts a session in "
-                         "Settings → Computer use" + (" (or turns on 'standing look' there for read-only use)" if look else "")}
+                         "Settings → Devices" + (" (or turns on 'standing look' there for read-only use)" if look else "")}
     if not connected(session["user_id"]):
         return {"error": "the browser extension isn't connected (is the browser open, and the extension "
                          "paired and not paused?)"}
@@ -575,7 +575,7 @@ def run_command(session: dict, action: str, args: dict, *, summary: str, host: s
         _waiters.pop(cid, None)
         return {"pending_approval": True, "command_id": cid,
                 "note": ("This needs the operator's approval and is paused: they approve or deny it in the chat card "
-                         "or Settings → " + ("Devices" if target == "phone" else "Computer use") + " (I've told them). "
+                         "or Settings → Devices (I've told them). "
                          "Do NOT retry it; tell them what you're waiting on and carry on with something else.")}
     _waiters.pop(cid, None)
     if row["status"] == "done":
@@ -645,7 +645,7 @@ def _t_open(session: dict, url: str = "", new_tab: bool = True) -> dict:
         return {"error": "url must be a full http(s) address"}
     if not host_allowed(host, allowed_patterns()):
         return {"error": f"{host} isn't on the operator's allowed-sites list -- ask them to add it in "
-                         f"Settings → Computer use"}
+                         f"Settings → Devices"}
     # With no session (standing look) an existing tab is never navigated: always a NEW tab.
     new_tab = bool(new_tab) or not session_active(session["user_id"], session["workspace_id"])
     return run_command(session, "open", {"url": url[:2000], "new_tab": new_tab},

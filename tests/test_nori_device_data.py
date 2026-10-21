@@ -50,6 +50,11 @@ MEM = {"user_id": UID2, "workspace_id": WS, "role": "member", "csrf": "csrf-mem"
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 
 
+def _read_server():
+    with open(os.path.join(ROOT, "server.py"), encoding="utf-8") as fh:
+        return fh.read()
+
+
 def _calm(case):
     p = patch.object(devices, "in_quiet_hours", return_value=False)
     p.start()
@@ -767,7 +772,8 @@ class DevicesPage(unittest.TestCase):
                    browser_hidden_hosts="https://My.Bank.com/x, *.health.org, not a host, *.com", browser_day_keep_days="9999")
         g = lambda k, uid=UID: config.get("user", uid, k)  # noqa: E731
         self.assertEqual(g("browser_hidden_hosts"), "my.bank.com,*.health.org")
-        self.assertEqual((g("browser_activity_enabled"), g("bridge_standing_look"), g("browser_day_keep_days")), (True, True, 365))
+        self.assertEqual((g("browser_activity_enabled"), g("browser_day_keep_days")), (True, 365))
+        self.assertFalse(g("bridge_standing_look"), "standing look belongs to the Computer use section, not the browser form")
         self._post("browser", MEM, bridge_standing_look="on")
         self.assertFalse(g("bridge_standing_look", UID2), "standing look is the admin's")
 
@@ -799,6 +805,76 @@ class DevicesPage(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("recent device activity", page)
         self.assertIn("No app has been uploaded", page)
+
+    # ── one tab for everything (2026-10-21): Computer use is a SECTION of Devices, not a second tab ──────────────
+    def test_computer_use_is_a_section_of_the_devices_page_for_admins_only(self):
+        admin, member = self._form(), self._form(MEM)
+        for needle in ('id=computer-use', "allow computer use on this instance", "standing look", "STOP NOW" if False else "start a session",
+                       "allowed sites", "waiting for your approval", "recent actions", "href='#computer-use'"):
+            self.assertIn(needle, admin, needle)
+            self.assertNotIn(needle, member, "computer use is the admin's: " + needle)
+        for needle in ("jump to:", "href='#phone'", "href='#browser'", "href='#places'", "href='#activity'"):
+            self.assertIn(needle, member)
+
+    def test_there_is_no_separate_computer_use_tab_and_the_old_addresses_land_on_devices(self):
+        h = _H()
+        tabs = [t for _, items in h._settings_groups(SESS) for t, _ in items]
+        self.assertIn("devices", tabs)
+        self.assertNotIn("computeruse", tabs)
+        text = _read_server()
+        self.assertIn('"/admin/computeruse": "devices"', text, "the old URL redirects to the Devices tab")
+        self.assertRegex(text, r'if tab == "computeruse":\s+tab = "devices"', "?tab=computeruse too")
+        self.assertNotIn('"computeruse": self.computeruse_admin_form', text)
+
+    def test_one_list_of_paired_browsers_not_two(self):
+        _pair(UID, "browser", "My Chrome")
+        page = self._form()
+        self.assertEqual(page.count("<b>My Chrome</b>"), 1, "one device row (the activity log may also mention it)")
+        self.assertNotIn("paired browsers", page, "the old second list is gone")
+        self.assertIn("pair a browser", page)
+
+    def test_the_token_option_survives_as_an_advanced_choice_and_shows_the_token_once(self):
+        page = self._form()
+        self.assertIn("advanced: pair with a token", page)
+        h = _H()
+        h.computeruse_post(SESS, "/admin/computeruse/pair", {"csrf": SESS["csrf"], "label": "old way"})
+        self.assertIn("nbr_", h.page)
+        self.assertIn("shown only this once", h.page)
+        self.assertNotIn("nbr_", self._form(), "a later render never shows it again")
+        self.assertEqual(len(devices.devices_for(UID, "browser")), 1, "and it appears in the one device list")
+
+    def test_standing_look_lives_with_the_master_switch_and_saving_the_browser_form_does_not_clobber_it(self):
+        g = lambda: config.get("user", UID, "bridge_standing_look")  # noqa: E731
+        h = _H()
+        h.computeruse_post(SESS, "/admin/computeruse/enabled", {"csrf": SESS["csrf"], "bridge_enabled": "on", "bridge_standing_look": "on"})
+        self.assertTrue(g())
+        self._post("browser", browser_notifications_enabled="on")             # a browser-form save without that field
+        self.assertTrue(g(), "the browser form doesn't own standing look")
+        self.assertNotIn("bridge_standing_look", self._form().split("save browser settings")[0].split("id=browser")[1],
+                         "it isn't a field of the browser form")
+        h.computeruse_post(SESS, "/admin/computeruse/enabled", {"csrf": SESS["csrf"], "bridge_enabled": "on"})
+        self.assertFalse(g(), "and unticking it there turns it off")
+
+    def test_the_action_log_shows_phone_and_browser_commands_together(self):
+        bridge._enqueue(UID, "tabs", {}, summary="list the tabs", host="example.com", source="chat")
+        bridge._enqueue(UID, "open_url", {"url": "https://example.com"}, summary="open it on the phone", host=None,
+                        source="chat", target="phone")
+        page = self._form()
+        self.assertIn("list the tabs", page)
+        self.assertIn("open it on the phone · phone" if False else "open it on the phone", page)
+        self.assertIn(" · phone · ", page)
+
+    def test_old_computer_use_forms_still_work_and_render_the_merged_page(self):
+        h = _H()
+        h.computeruse_post(SESS, "/admin/computeruse/rules", {"csrf": SESS["csrf"], "pattern": "*.example.com"})
+        self.assertIn("*.example.com", h.page)
+        self.assertIn("id=phone", h.page, "the response is the whole Devices page, not a fragment")
+        h = _H()
+        h.computeruse_post(MEM, "/admin/computeruse/enabled", {"bridge_enabled": "on"})
+        self.assertEqual(h.sent[0]["code"], 403)
+        h = _H()
+        h.computeruse_admin_form(MEM)
+        self.assertEqual(h.sent[0]["code"], 403)
 
     def test_unknown_actions_are_404(self):
         h = _H()
