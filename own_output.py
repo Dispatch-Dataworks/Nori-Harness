@@ -59,6 +59,26 @@ _ANNOTATION = re.compile(r"\[\s*(?:you|i|she|he|nori)\s+sent\b[^\]\n]*\](?:\s*wi
 _ASIDE = re.compile(r"(?:^|\n)[ \t]*\(\s*(?:internal note to self|app note, not part of what (?:you|i) said)\b.*", re.S | re.I)
 
 
+# Staying quiet on a turn she started herself (a ping, a scheduled check): the reply is the token, and the harness -- not her good manners -- sends nothing.
+# Tolerant of the formatting a model wraps it in (**[silent]**, `SILENT`, "no action."), and of a short explanation after the bracketed form; a real
+# sentence that merely contains the word is NOT silence.
+SILENT_TOKEN = "[silent]"
+_SILENT_WORDS = r"(?:silent|stay(?:ing)? (?:silent|quiet)|no[ _-]?action|no[ _-]?message|no[ _-]?reply|nothing to say)"
+_SILENT_WHOLE = re.compile(rf"^[\s*_`\"'(\[<{{]*{_SILENT_WORDS}[\s*_`\"')\]>}}.!]*$", re.I)
+_SILENT_LEAD = re.compile(r"^[\s*_`\"']*\[\s*silent\s*\]", re.I)
+_NO_REPLY_FALLBACK = re.compile(r"^\(no reply .{1,3} the model returned nothing\)$")
+
+
+def is_silent(text) -> bool:
+    """True when `text` is her choosing to say nothing (or the app's own "the model returned nothing" fallback, which is no message either)."""
+    if not isinstance(text, str):
+        return False
+    t = text.strip()
+    if not t:
+        return True
+    return bool(_SILENT_WHOLE.match(t) or _SILENT_LEAD.match(t) or _NO_REPLY_FALLBACK.match(t))
+
+
 def strip_aside(text):
     """`text` without a copied app aside at its end. Pure text; anything that isn't a string comes back as it was."""
     if not text or not isinstance(text, str):

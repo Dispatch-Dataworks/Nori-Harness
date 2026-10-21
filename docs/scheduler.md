@@ -85,6 +85,19 @@ model is told explicitly to call `reminder_close` once the operator
 confirms it's handled — closing it is a real action, not implied by
 merely mentioning it.
 
+## Staying quiet on a turn she started herself
+
+A household-signal ping used to say "say something brief about it now", which left her no way to decline: with nothing to say she carried on
+her own last message, as if talking to herself (2026-10-21). Now the ping prompt makes speaking optional -- speak only about *this signal*, only
+if they don't already know it, never as a follow-up to her own last message -- and replying with exactly `[silent]` ends the turn with **nothing
+sent or stored** (`own_output.is_silent`; it also tolerates `**[silent]**`, `NO_ACTION`, `stay quiet`, and treats the app's "the model returned
+nothing" fallback as no message). That is enforced by the harness, not by her manners.
+
+A silent ping still spends the signal's cooldown (`mark_signal_fired`): it was a decision, so the same signal isn't put to her again next cycle.
+A ping that was merely queued behind a live turn does not. Scheduled tasks that speak to him get the same option, but only for conditional
+tasks ("check X, tell me only if Y") -- a task that asks her to tell him something is not conditional. Reminders never get it: a due reminder is
+delivered. The decision is logged (`scheduler: user N stayed quiet on ping (...)`).
+
 ## Why a self-initiated message says why
 
 Every proactive/scheduled/reminder turn sets a marker

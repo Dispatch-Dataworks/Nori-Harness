@@ -38,6 +38,7 @@ import config
 import conversation
 import emotion
 import memory
+import own_output
 import peers
 import reminders
 import schedules
@@ -211,6 +212,19 @@ def _recently_active(user_id: int) -> bool:
     return (time.time() - last_ts) / 60 < gap_min
 
 
+_PING_PROMPT = (
+    "Something came up on its own -- nobody asked you anything. Signal: {reason}.\n\n"
+    "First decide whether it is worth interrupting them. Speak only if you have something to say ABOUT THIS SIGNAL that they don't already know "
+    "and can use right now; then say that one brief thing, in character, without announcing that you're checking in.\n"
+    "Stay quiet if it was already covered in the recent conversation, if they're busy with something else, if the signal no longer applies, or if "
+    "all you'd be doing is following up or adding to your own last message. Never reply to yourself.\n"
+    "To stay quiet, reply with exactly {silent} -- nothing is sent, and that is a perfectly good outcome.")
+
+_SCHEDULE_QUIET_NOTE = (
+    " If this task is conditional (check something, tell them only if it matters) and the condition isn't met, reply with exactly {silent} and "
+    "nothing is sent. A task that asks you to tell them something is not conditional: say it.")
+
+
 def _send_proactive(user: dict, reason: str) -> str:
     """Returns an outcome tag for this cycle: 'sent', 'quiet', 'error: ...',
     or 'skipped_turn_in_progress' if blocked by this user's own in-flight
@@ -223,10 +237,7 @@ def _send_proactive(user: dict, reason: str) -> str:
     from scratch, including whether `reason` still holds -- the same
     natural retry the periodic design already provides, so this doesn't
     need its own queue."""
-    extra = {"role": "system",
-             "content": f"You're checking in on your own, unprompted -- nothing was asked. "
-                        f"Reason: {reason}. Say something brief and in character about it now; "
-                        f"don't announce that you're 'checking in', just say the thing."}
+    extra = {"role": "system", "content": _PING_PROMPT.format(reason=reason, silent=own_output.SILENT_TOKEN)}
     session = {"role": user["role"], "user_id": user["id"], "workspace_id": user["workspace_id"]}
 
     def _first():
@@ -238,6 +249,12 @@ def _send_proactive(user: dict, reason: str) -> str:
         except chat.ModelError as exc:
             turn.finish()
             return {"error": str(exc)}
+        if own_output.is_silent(res["text"]):
+            # Her choice (or nothing came back): no message, nothing to notify. The signal still counts as handled, so it isn't asked about again
+            # every cycle -- see run_cycle_once.
+            print(f"scheduler: user {user['id']} stayed quiet on ping ({reason})", flush=True)
+            turn.finish()
+            return {"ok": True, "silent": True}
         with turn.stage("persist_reply"):
             conversation.add_message(user["id"], "assistant", res["text"], kind="proactive",
                                      emotion=emotion.get_state(user["id"]),
@@ -276,7 +293,7 @@ def _send_proactive(user: dict, reason: str) -> str:
         return "skipped_turn_in_progress"
     if result.get("error"):
         return f"error: {result['error']}"
-    return "sent"
+    return "silent" if result.get("silent") else "sent"
 
 
 # ── general-purpose scheduled tasks (2026-09-15) -- see schedules.py's own
@@ -334,9 +351,10 @@ def _fire_schedule(user: dict, sched: dict) -> None:
                  " This one reports elsewhere, not to him directly -- don't say anything to him about "
                  "it unless it's genuinely urgent (message_user is still there for that).")
     reason = f"schedule #{sched['id']} ({sched['name']})"
+    silent_note = _SCHEDULE_QUIET_NOTE.format(silent=own_output.SILENT_TOKEN) if speaks_to_user else ""
     prompt = (f"A scheduled task is due now: \"{sched['name']}\". This is why you're getting a turn "
              f"right now, regardless of the time or your usual check-in schedule.\n\n"
-             f"Instruction: {sched['instruction']}{peer_note}{quiet_note}")
+             f"Instruction: {sched['instruction']}{peer_note}{quiet_note}{silent_note}")
     extra = {"role": "system", "content": prompt}
     # _schedule_context (mirrors _peer_context/_job_context) is what widens
     # message_user's own owner_check to this trigger too (see peers.py) --
@@ -357,7 +375,7 @@ def _fire_schedule(user: dict, sched: dict) -> None:
             schedules.advance(sched["id"], sched["schedule_type"], sched["interval_min"], sched["time_hour"],
                               sched["time_minute"], status="error", error=str(exc), user_id=sched["user_id"])
             return {"error": str(exc)}
-        if speaks_to_user:
+        if speaks_to_user and not own_output.is_silent(res["text"]):
             with turn.stage("persist_reply"):
                 conversation.add_message(user["id"], "assistant", res["text"], kind="scheduled",
                                          emotion=emotion.get_state(user["id"]),
@@ -614,9 +632,13 @@ def run_cycle_once() -> int:
         # last_fired_ts only advances on a CONFIRMED send, never on a
         # merely-selected candidate -- a queued/blocked turn must not
         # cost this signal its next real chance to fire.
-        if _send_proactive(user, outcome["reason"]) == "sent":
+        result = _send_proactive(user, outcome["reason"])
+        if result in ("sent", "silent"):
+            # "silent" is a decision, not a failure: it spends the signal's cooldown like a message would, so a ping she judged not worth
+            # sending isn't put to her again on the next cycle.
             mark_signal_fired(user["id"], outcome["key"], outcome["dedup_token"])
-            sent += 1
+            if result == "sent":
+                sent += 1
     return sent
 
 
