@@ -453,6 +453,16 @@ _register_tools()
 # Structured data straight from the provider -- no LLM needed, so this is
 # cheap enough to check every ping cycle (min_check_interval_seconds=None).
 _CALENDAR_LOOKAHEAD_MIN = 20
+# An event that began more than this long ago is IN PROGRESS, not "starting soon". Both providers' list calls select by OVERLAP with the
+# window (Google's timeMin filters on an event's END), so a 7AM-5PM block comes back at 4PM and used to be announced as "starting in about
+# 0 min" (real: "Work", 2026-10-21). A minute or two of grace keeps an event that has just begun worth a mention.
+_CALENDAR_STARTED_GRACE_S = 120
+
+
+def _already_underway(start_dt: "datetime.datetime", now: "datetime.datetime") -> bool:
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=datetime.timezone.utc)
+    return (now - start_dt).total_seconds() > _CALENDAR_STARTED_GRACE_S
 
 
 def _gcal_soonest_event(user_id: int, now: "datetime.datetime", lookahead: "datetime.datetime") -> "dict | None":
@@ -474,6 +484,8 @@ def _gcal_soonest_event(user_id: int, now: "datetime.datetime", lookahead: "date
         try:
             start_dt = datetime.datetime.fromisoformat(start)
         except ValueError:
+            continue
+        if _already_underway(start_dt, now):
             continue
         return {"id": e.get("id"), "summary": e.get("summary") or "(no title)", "start_dt": start_dt}
     return None
@@ -497,6 +509,8 @@ def _outlook_soonest_event(user_id: int, now: "datetime.datetime", lookahead: "d
         try:
             start_dt = datetime.datetime.fromisoformat(start).replace(tzinfo=datetime.timezone.utc)
         except ValueError:
+            continue
+        if _already_underway(start_dt, now):
             continue
         return {"id": e.get("id"), "summary": e.get("subject") or "(no title)", "start_dt": start_dt}
     return None

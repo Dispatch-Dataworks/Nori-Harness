@@ -411,6 +411,45 @@ class CalendarSignalTests(unittest.TestCase):
         with patch.object(connected_accounts, "authed_request", return_value=_authed_ok({"items": []})):
             self.assertIsNone(email_calendar.calendar_scheduler_signal(self.uid))
 
+    def test_an_event_already_underway_is_not_announced_as_starting(self):
+        """2026-10-21: "Work", 7AM-5PM, was announced at 4PM as "starting in about 0 min" -- the provider returns events that OVERLAP the window."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        began = (now - datetime.timedelta(hours=9)).isoformat()
+        data = {"items": [{"id": "evt-work", "summary": "Work", "start": {"dateTime": began}}]}
+        with patch.object(connected_accounts, "authed_request", return_value=_authed_ok(data)):
+            self.assertIsNone(email_calendar.calendar_scheduler_signal(self.uid))
+
+    def test_the_next_real_event_is_found_behind_one_that_is_underway(self):
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        data = {"items": [
+            {"id": "evt-work", "summary": "Work", "start": {"dateTime": (now - datetime.timedelta(hours=9)).isoformat()}},
+            {"id": "evt-dentist", "summary": "Dentist", "start": {"dateTime": (now + datetime.timedelta(minutes=12)).isoformat()}}]}
+        with patch.object(connected_accounts, "authed_request", return_value=_authed_ok(data)):
+            reason, token = email_calendar.calendar_scheduler_signal(self.uid)
+        self.assertEqual(token, "evt-dentist")
+        self.assertIn("Dentist", reason)
+
+    def test_an_event_that_began_a_moment_ago_still_counts_but_one_that_began_minutes_ago_does_not(self):
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for ago_s, fires in ((30, True), (600, False)):
+            data = {"items": [{"id": "e", "summary": "Standup", "start": {"dateTime": (now - datetime.timedelta(seconds=ago_s)).isoformat()}}]}
+            with patch.object(connected_accounts, "authed_request", return_value=_authed_ok(data)):
+                self.assertEqual(email_calendar.calendar_scheduler_signal(self.uid) is not None, fires, ago_s)
+
+    def test_outlook_events_already_underway_are_skipped_too(self):
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        fmt = "%Y-%m-%dT%H:%M:%S"      # Outlook gives UTC wall time with no offset
+        data = {"value": [
+            {"id": "o1", "subject": "Work", "start": {"dateTime": (now - datetime.timedelta(hours=3)).strftime(fmt)}},
+            {"id": "o2", "subject": "Call", "start": {"dateTime": (now + datetime.timedelta(minutes=8)).strftime(fmt)}}]}
+        with patch.object(connected_accounts, "authed_request", return_value=_authed_ok(data)):
+            event = email_calendar._outlook_soonest_event(self.uid, now, now + datetime.timedelta(minutes=20))
+        self.assertEqual(event["id"], "o2")
+
     def test_an_all_day_event_is_skipped_no_specific_time_to_be_soon(self):
         data = {"items": [{"id": "evt-1", "summary": "All-day thing", "start": {"date": "2026-09-27"}}]}
         with patch.object(connected_accounts, "authed_request", return_value=_authed_ok(data)):
