@@ -2899,6 +2899,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.photos_page(sess, urllib.parse.parse_qs(qs))
         if path == "/settings/devices/app.apk":
             return self.devices_apk_get(sess)
+        if path == "/settings/devices/extension.zip":
+            return self.devices_extension_get(sess)
         if path == "/settings":
             q = urllib.parse.parse_qs(qs)
             tab = q.get("tab", [""])[0]
@@ -7715,6 +7717,29 @@ class Handler(BaseHTTPRequestHandler):
         """GET /settings/devices/app.apk with the web session -- the first install, from the phone's browser."""
         return self._send_apk()
 
+    def devices_extension_get(self, sess: dict):
+        """GET /settings/devices/extension.zip -- the browser extension's files, zipped on the fly from the image."""
+        import io
+        import zipfile
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_extension")
+        if not os.path.isfile(os.path.join(root, "manifest.json")):
+            return self.send_json({"error": "the extension isn't bundled with this server"}, 404)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name in sorted(os.listdir(root)):
+                full = os.path.join(root, name)
+                if os.path.isfile(full):
+                    z.write(full, "nori-extension/" + name)
+        data = buf.getvalue()
+        self._timing_status = 200
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", "attachment; filename=\"nori-extension.zip\"")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _send_apk(self):
         path = devices.apk_path()
         if path is None:
@@ -7858,9 +7883,11 @@ class Handler(BaseHTTPRequestHandler):
         browser_box = (
             "<div class=section id=browser><h2>browser</h2>"
             "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, passive "
-            "browsing time, and -- if you use Computer use below -- a bridge she can act through. Install it once: in Chrome open "
-            "<code>chrome://extensions</code>, turn on Developer mode, <b>Load unpacked</b>, choose the project's "
-            "<code>browser_extension</code> folder, then pair it with a code from here.</p>"
+            "browsing time, and -- if you use Computer use below -- a bridge she can act through. Install it once: "
+            "<a href='/settings/devices/extension.zip'>download the extension</a> and unzip it somewhere permanent, open "
+            "<code>chrome://extensions</code>, turn on Developer mode, <b>Load unpacked</b>, choose the unzipped "
+            "<code>nori-extension</code> folder, then pair it with a code from here. To update, download it again, unzip over "
+            "the old folder and press reload on the extension.</p>"
             + device_rows("browser")
             + post("pair/browser", "<button class='btn btn-primary'>pair a browser</button></form>") + legacy_token
             + post("browser", browser_switches + "<button class='btn btn-primary'>save browser settings</button></form>")

@@ -826,6 +826,22 @@ class DevicesPage(unittest.TestCase):
         self.assertRegex(text, r'if tab == "computeruse":\s+tab = "devices"', "?tab=computeruse too")
         self.assertNotIn('"computeruse": self.computeruse_admin_form', text)
 
+    def test_the_extension_can_be_downloaded_as_a_zip_from_the_browser_section(self):
+        self.assertIn("href='/settings/devices/extension.zip'", self._form())
+        self.assertIn("href='/settings/devices/extension.zip'", self._form(MEM), "every account has its own browser")
+        h = _H()
+        h.devices_extension_get(SESS)
+        self.assertEqual(h.sent[-1]["code"], 200)
+        self.assertEqual(h.raw_headers["Content-Type"], "application/zip")
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(h.wfile.getvalue()))
+        names = z.namelist()
+        for n in ("manifest.json", "background.js", "lib.js", "options.html", "popup.html", "panel.html", "icon128.png"):
+            self.assertIn("nori-extension/" + n, names)
+        self.assertEqual(json.loads(z.read("nori-extension/manifest.json"))["manifest_version"], 3)
+        self.assertTrue(all(n.startswith("nori-extension/") for n in names), "unzips into one folder")
+        self.assertIsNone(z.testzip())
+
     def test_one_list_of_paired_browsers_not_two(self):
         _pair(UID, "browser", "My Chrome")
         page = self._form()
