@@ -25,7 +25,7 @@ The extension connects **out** to Nori (so nothing on your PC listens for connec
 
 1. `docker compose up -d --build`.
 2. *Settings → Devices*: under **Browser**, **pair a browser** (a one-time code; or the "advanced" token option); under **Computer use** on the same page, tick **allow computer use on this instance** and under **site access** add the **allowed sites** (e.g. `*.github.com`) -- or switch to *allow by default* and list only the sites to block (see below).
-3. In Chrome: *Settings → Devices → Browser → download the extension* (a zip served by Nori; unzip it somewhere permanent), then `chrome://extensions` → Developer mode → **Load unpacked** → the unzipped `nori-extension` folder (or the repo's `browser_extension` folder). Open the extension's options and paste Nori's address (e.g. `http://127.0.0.1:8877`) and the token. The popup shows "idle (no session)" when it's connected.
+3. In Chrome: *Settings → Devices → Browser → download the extension* (a zip served by Nori as `nori-extension-<version>.zip` -- the version is in the address and the file name, and the response is `no-store`, so a CDN such as Cloudflare, which caches `.zip` by default, can't hand back an older copy; unzip it somewhere permanent), then `chrome://extensions` → Developer mode → **Load unpacked** → the unzipped `nori-extension` folder (or the repo's `browser_extension` folder). Open the extension's options and paste Nori's address (e.g. `http://127.0.0.1:8877`) and the token. The popup shows "idle (no session)" when it's connected.
 
 ## Using it
 

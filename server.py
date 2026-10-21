@@ -2899,7 +2899,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.photos_page(sess, urllib.parse.parse_qs(qs))
         if path == "/settings/devices/app.apk":
             return self.devices_apk_get(sess)
-        if path == "/settings/devices/extension.zip":
+        if path == "/settings/devices/extension.zip":    # the old address: send people to the versioned one
+            return self.devices_extension_redirect()
+        if path.startswith("/settings/devices/nori-extension-") and path.endswith(".zip"):
             return self.devices_extension_get(sess)
         if path == "/settings":
             q = urllib.parse.parse_qs(qs)
@@ -7744,12 +7746,35 @@ class Handler(BaseHTTPRequestHandler):
         """GET /settings/devices/app.apk with the web session -- the first install, from the phone's browser."""
         return self._send_apk()
 
+    @staticmethod
+    def _extension_root() -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_extension")
+
+    def _extension_version(self) -> str | None:
+        try:
+            with open(os.path.join(self._extension_root(), "manifest.json"), encoding="utf-8") as fh:
+                v = str(json.load(fh).get("version") or "")
+        except (OSError, ValueError):
+            return None
+        return v if re.fullmatch(r"[0-9][0-9A-Za-z.]{0,19}", v) else None
+
+    def devices_extension_redirect(self):
+        """GET /settings/devices/extension.zip -> the same file under a name that carries its version. Edge caches
+        (Cloudflare caches .zip by default) key on the path, so a new version is a new address and an old copy can't be
+        served in its place."""
+        v = self._extension_version()
+        if v is None:
+            return self.send_json({"error": "the extension isn't bundled with this server"}, 404)
+        return self.send(303, b"", {"Location": f"/settings/devices/nori-extension-{v}.zip", "Cache-Control": "no-store"})
+
     def devices_extension_get(self, sess: dict):
-        """GET /settings/devices/extension.zip -- the browser extension's files, zipped on the fly from the image."""
+        """GET /settings/devices/nori-extension-<version>.zip -- the browser extension's files, zipped on the fly from the
+        image. Always the CURRENT files, whatever version the address names, and never cacheable."""
         import io
         import zipfile
-        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_extension")
-        if not os.path.isfile(os.path.join(root, "manifest.json")):
+        root = self._extension_root()
+        version = self._extension_version()
+        if version is None:
             return self.send_json({"error": "the extension isn't bundled with this server"}, 404)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -7762,7 +7787,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", "attachment; filename=\"nori-extension.zip\"")
+        self.send_header("Content-Disposition", f"attachment; filename=\"nori-extension-{version}.zip\"")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Extension-Version", version)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
@@ -7776,7 +7803,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.android.package-archive")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", "attachment; filename=\"nori-companion.apk\"")
+        ver = devices.apk_version() or "app"
+        self.send_header("Content-Disposition", f"attachment; filename=\"nori-companion-{ver}.apk\"")
+        self.send_header("Cache-Control", "private, no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
@@ -7840,7 +7869,7 @@ class Handler(BaseHTTPRequestHandler):
 
         apk = devices.app_info()
         apk_line = (f"<p class=muted>App version on this server: <b>{esc(apk['latest'])}</b> -- "
-                    "<a href='/settings/devices/app.apk'>download the APK</a> (open this page on the phone).</p>"
+                    f"<a href='/settings/devices/app.apk?v={esc(apk['latest'])}'>download the APK</a> (open this page on the phone).</p>"
                     if apk else "<p class=muted>No app has been uploaded to this server yet (<code>build.ps1 -Upload</code>).</p>")
         phone_switches = (
             chk("phone_notifications_enabled", "send me notifications on my phone")
@@ -7907,11 +7936,13 @@ class Handler(BaseHTTPRequestHandler):
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<div class=field><input type=text name=label placeholder='label, e.g. Chrome on my PC' maxlength=60></div>"
             "<button class='btn'>create a token</button></form></details>") if is_admin else ""
+        ext_v = self._extension_version()
         browser_box = (
             "<div class=section id=browser><h2>browser</h2>"
             "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, passive "
             "browsing time, and -- if you use Computer use below -- a bridge she can act through. Install it once: "
-            "<a href='/settings/devices/extension.zip'>download the extension</a> and unzip it somewhere permanent, open "
+            f"<a href='/settings/devices/nori-extension-{ext_v or 'latest'}.zip'>download the extension"
+            f"{' v' + ext_v if ext_v else ''}</a> and unzip it somewhere permanent, open "
             "<code>chrome://extensions</code>, turn on Developer mode, <b>Load unpacked</b>, choose the unzipped "
             "<code>nori-extension</code> folder, then pair it with a code from here. To update, download it again, unzip over "
             "the old folder and press reload on the extension.</p>"

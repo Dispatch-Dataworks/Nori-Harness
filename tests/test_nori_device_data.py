@@ -827,18 +827,30 @@ class DevicesPage(unittest.TestCase):
         self.assertNotIn('"computeruse": self.computeruse_admin_form', text)
 
     def test_the_extension_can_be_downloaded_as_a_zip_from_the_browser_section(self):
-        self.assertIn("href='/settings/devices/extension.zip'", self._form())
-        self.assertIn("href='/settings/devices/extension.zip'", self._form(MEM), "every account has its own browser")
+        with open(os.path.join(ROOT, "browser_extension", "manifest.json"), encoding="utf-8") as fh:
+            ver = json.load(fh)["version"]
+        link = f"href='/settings/devices/nori-extension-{ver}.zip'"
+        self.assertIn(link, self._form(), "the link names the version, so an edge cache can't hand back an older file")
+        self.assertIn(link, self._form(MEM), "every account has its own browser")
+        h = _H()
+        h.devices_extension_redirect()
+        self.assertEqual(h.sent[-1]["code"], 303, "the old address still works")
+        self.assertEqual(h.sent[-1]["extra"]["Location"], f"/settings/devices/nori-extension-{ver}.zip")
+        self.assertEqual(h.sent[-1]["extra"]["Cache-Control"], "no-store")
         h = _H()
         h.devices_extension_get(SESS)
         self.assertEqual(h.sent[-1]["code"], 200)
         self.assertEqual(h.raw_headers["Content-Type"], "application/zip")
+        self.assertEqual(h.raw_headers["Cache-Control"], "private, no-store")
+        self.assertEqual(h.raw_headers["Content-Disposition"], f'attachment; filename="nori-extension-{ver}.zip"')
+        self.assertEqual(h.raw_headers["X-Extension-Version"], ver)
         import zipfile
         z = zipfile.ZipFile(io.BytesIO(h.wfile.getvalue()))
         names = z.namelist()
         for n in ("manifest.json", "background.js", "lib.js", "options.html", "popup.html", "panel.html", "icon128.png"):
             self.assertIn("nori-extension/" + n, names)
         self.assertEqual(json.loads(z.read("nori-extension/manifest.json"))["manifest_version"], 3)
+        self.assertEqual(json.loads(z.read("nori-extension/manifest.json"))["version"], ver, "the zip is the current files")
         self.assertTrue(all(n.startswith("nori-extension/") for n in names), "unzips into one folder")
         self.assertIsNone(z.testzip())
 

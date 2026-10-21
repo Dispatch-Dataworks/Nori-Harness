@@ -158,6 +158,10 @@ class PhoneOverHttp(unittest.TestCase):
             status, body = call("/device/app.apk", token=self.token, method="GET")
             self.assertEqual((status, len(body)), (200, 5004))
             self.assertEqual(call("/device/app.apk", method="GET")[0], 401)
+            req = urllib.request.Request(BASE + "/device/app.apk", headers={"Authorization": "Bearer " + self.token})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                self.assertEqual(r.headers["Cache-Control"], "private, no-store", "an edge cache must not keep the APK")
+                self.assertEqual(r.headers["Content-Disposition"], 'attachment; filename="nori-companion-0.1.0.apk"')
             with patch.object(devices, "PHONE_POLL_WAIT_S", 0.1):
                 self.assertEqual(call("/device/poll", {}, self.token)[1]["app"], {"latest": "0.1.0", "apk_url": "/device/app.apk"})
         finally:
