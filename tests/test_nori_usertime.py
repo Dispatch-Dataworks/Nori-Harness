@@ -29,6 +29,8 @@ sys.path.insert(0, str(ROOT))
 
 _SCRATCH = tempfile.mkdtemp(prefix="nori_test_usertime_")
 os.environ["NORI_DATA_DIR"] = _SCRATCH
+os.environ["NORI_PROMPTS_DIR"] = tempfile.mkdtemp(prefix="nori_test_usertime_prompts_")
+os.environ["NORI_NO_LOGFILE"] = "1"
 
 import accounts  # noqa: E402
 import config  # noqa: E402
@@ -126,6 +128,38 @@ class UserTimeTests(unittest.TestCase):
         before = recurrence.mk(_NY, prev.year, prev.month, prev.day, 8, 0)
         after = recurrence.mk(_NY, d.year, d.month, d.day, 8, 0)
         self.assertEqual(after - before, 25 * 3600)  # fall back -- the day gets a real extra hour
+
+    # ── what she is told the time is (2026-10-21): it was the server's OS clock, UTC in the container, unlabelled -- at 4:34 PM EDT she said "8:34 PM" ──
+    def test_the_time_she_is_told_is_theirs_and_names_its_zone(self):
+        from unittest.mock import patch
+        import context
+        evening_utc = datetime.datetime(2026, 10, 21, 20, 34, tzinfo=datetime.timezone.utc).timestamp()
+        with patch("time.time", return_value=evening_utc):
+            header = context._system_parts(self.user_id, "Tester")[0][1]
+            self.assertIn("Wednesday 2026-10-21 16:34 EDT", header)
+            self.assertNotIn("20:34", header)
+            self.assertIn("for them", header)
+            config.set("user", self.user_id, "timezone", "Asia/Tokyo")
+            try:
+                self.assertIn("Thursday 2026-10-22 05:34 JST", context._system_parts(self.user_id, "Tester")[0][1])
+            finally:
+                config.set("user", self.user_id, "timezone", "America/New_York")
+
+    def test_the_dinner_signal_checks_their_today_not_the_servers(self):
+        """At 8:30 PM EDT the server's date is already tomorrow's -- it was looking for a dinner on the wrong day."""
+        from unittest.mock import patch
+        import meals
+        ws = store.read(lambda c: c.execute("SELECT workspace_id FROM users WHERE id=?", (self.user_id,)).fetchone())["workspace_id"]
+        store.write(lambda c: c.execute("DELETE FROM meal_plan"))
+        store.write(lambda c: c.execute(
+            "INSERT INTO meal_plan(workspace_id, meal_date, meal_type, description, updated_ts, updated_by) VALUES (?,?,?,?,?,?)",
+            (ws, "2026-10-21", "dinner", "tacos", 0, self.user_id)))
+        late_evening_utc = datetime.datetime(2026, 10, 22, 0, 30, tzinfo=datetime.timezone.utc).timestamp()   # 8:30 PM EDT on the 21st
+        with patch("time.time", return_value=late_evening_utc):
+            self.assertIsNone(meals.scheduler_signal(self.user_id), "tonight's dinner (the 21st) is planned")
+        store.write(lambda c: c.execute("DELETE FROM meal_plan"))
+        with patch("time.time", return_value=late_evening_utc):
+            self.assertIn("no dinner planned", meals.scheduler_signal(self.user_id))
 
 
 if __name__ == "__main__":

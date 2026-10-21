@@ -9051,8 +9051,8 @@ class Handler(BaseHTTPRequestHandler):
     # week navigation via a `start` query param. The default window begins
     # today; explicit dates allow browsing other weeks. Each row's form
     # preserves the selected start date when saving or clearing a meal.
-    def _week_start(self, start_param: str) -> "datetime.date":
-        today = datetime.date.today()
+    def _week_start(self, start_param: str, user_id: int | None = None) -> "datetime.date":
+        today = usertime.local_dt(user_id).date() if user_id is not None else datetime.date.today()
         if start_param:
             try:
                 return datetime.date.fromisoformat(start_param)
@@ -9061,14 +9061,14 @@ class Handler(BaseHTTPRequestHandler):
         return today
 
     def meals_page(self, sess: dict, start_param: str, err: str = "", info: str = ""):
-        start = self._week_start(start_param)
+        start = self._week_start(start_param, sess["user_id"])
         end = start + datetime.timedelta(days=6)
         rows = meals.list_meals(sess, start.isoformat(), end.isoformat())["meals"]
         by_day: dict[str, dict[str, str]] = {}
         for r in rows:
             by_day.setdefault(r["meal_date"], {})[r["meal_type"]] = r["description"]
         csrf = esc(sess["csrf"])
-        today = datetime.date.today()
+        today = usertime.local_dt(sess["user_id"]).date()
         sections = []
         for i in range(7):
             day = start + datetime.timedelta(days=i)

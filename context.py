@@ -30,9 +30,10 @@ import guidance
 import jobs
 import memory
 import persona
+import usertime
 
 _OPS = """Your name is {assistant_name}. You're messaging {name} directly, one to one, in a private \
-assistant app -- not a public or shared chat. It is {now} where the app is running. \
+assistant app -- not a public or shared chat. It is {now} for them. \
 Everything after this is your persona and operating context, not lines to recite."""
 
 
@@ -51,7 +52,9 @@ def _system_parts(user_id: int, display_name: str) -> list[tuple[str, str]]:
     import mcp_servers
     import peers
 
-    now = time.strftime("%A %Y-%m-%d %H:%M")
+    # In THEIR configured zone, with its name -- this used to be the server's own OS clock (UTC in the container), unlabelled, so at 4:34 PM EDT
+    # she reported "8:34 PM" (2026-10-21). usertime is the one place that knows the zone.
+    now = usertime.fmt(user_id, time.time(), "%A %Y-%m-%d %H:%M %Z")
     state = emotion.get_state(user_id)
     return [
         ("name/time header", _OPS.format(name=display_name, now=now,

@@ -19,6 +19,7 @@ import datetime
 import time
 
 import store
+import usertime
 
 MEAL_TYPES = ("breakfast", "lunch", "dinner")
 
@@ -90,7 +91,7 @@ def scheduler_signal(user_id: int) -> str | None:
     row = store.read(lambda c: c.execute("SELECT workspace_id FROM users WHERE id=?", (user_id,)).fetchone())
     if row is None:
         return None
-    today = datetime.date.today().isoformat()
+    today = usertime.local_dt(user_id).date().isoformat()     # their today, not the server's (UTC rolls over at 8PM EDT)
     existing = store.read(lambda c: c.execute(
         "SELECT 1 FROM meal_plan WHERE workspace_id=? AND meal_date=? AND meal_type='dinner'",
         (row["workspace_id"], today)).fetchone())
