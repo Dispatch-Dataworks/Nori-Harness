@@ -161,6 +161,43 @@ class UserTimeTests(unittest.TestCase):
         with patch("time.time", return_value=late_evening_utc):
             self.assertIn("no dinner planned", meals.scheduler_signal(self.user_id))
 
+    # ── every page timestamp follows the viewer's zone, never the server's OS clock (2026-10-21) ──
+    def test_page_timestamps_render_in_the_viewers_zone(self):
+        evening_utc = datetime.datetime(2026, 10, 21, 20, 34, tzinfo=datetime.timezone.utc).timestamp()
+        try:
+            usertime.set_viewer(self.user_id)
+            self.assertEqual(usertime.vfmt(evening_utc, "%b %d, %H:%M"), "Oct 21, 16:34")
+            config.set("user", self.user_id, "timezone", "Asia/Tokyo")
+            self.assertEqual(usertime.vfmt(evening_utc, "%b %d, %H:%M"), "Oct 22, 05:34")
+            usertime.set_viewer(None)
+            self.assertEqual(usertime.vfmt(evening_utc, "%b %d, %H:%M"), "Oct 21, 16:34", "no viewer: the default zone, not UTC")
+            self.assertEqual(usertime.vfmt(0), "")
+            self.assertEqual(usertime.vfmt(None), "")
+        finally:
+            config.set("user", self.user_id, "timezone", "America/New_York")
+            usertime.set_viewer(None)
+
+    def test_the_viewer_is_per_thread(self):
+        import threading
+        seen = {}
+        usertime.set_viewer(self.user_id)
+        t = threading.Thread(target=lambda: seen.update(v=getattr(usertime._viewer, "user_id", None)))
+        t.start()
+        t.join()
+        usertime.set_viewer(None)
+        self.assertIsNone(seen["v"], "another request's thread doesn't inherit this viewer")
+
+    def test_no_module_formats_a_timestamp_with_the_servers_own_clock(self):
+        """time.strftime(..., time.localtime(ts)) trusts the OS zone (UTC in the container). Use usertime.fmt / usertime.vfmt."""
+        import re
+        offenders = []
+        for f in sorted(ROOT.glob("*.py")):
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#", 1)[0]
+                if re.search(r"time\.localtime\(", code) and "strftime" in code and f.name not in ("boot.py", "custody.py", "usertime.py"):
+                    offenders.append(f"{f.name}:{n}")
+        self.assertEqual(offenders, [], "use usertime.fmt/vfmt so the page follows the user's timezone")
+
 
 if __name__ == "__main__":
     unittest.main()

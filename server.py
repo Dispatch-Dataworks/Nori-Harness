@@ -329,7 +329,7 @@ def _due_label(ts: float) -> str:
     overdue is called out explicitly rather than left to a plain date to
     imply, since that's the one thing worth a glance catching."""
     now = time.time()
-    when = time.strftime("%b %d, %H:%M" if ts - now < 86400 else "%b %d", time.localtime(ts))
+    when = usertime.vfmt(ts, "%b %d, %H:%M" if ts - now < 86400 else "%b %d")
     return f"overdue -- was due {when}" if ts < now else f"due {when}"
 
 
@@ -383,7 +383,7 @@ def _debug_text(debug: dict) -> str:
         f"Model: {debug.get('model_alias')} ({debug.get('model_name')})",
         f"Position: {debug.get('chain_position')} of {debug.get('chain_length')}",
         f"Request ID: {debug.get('request_id') or '—'}",
-        f"Time: {time.strftime('%b %d, %H:%M:%S', time.localtime(debug.get('ts') or time.time()))}",
+        f"Time: {usertime.vfmt(debug.get('ts') or time.time(), '%b %d, %H:%M:%S')}",
         f"Latency: {debug.get('latency_ms')} ms",
         f"Tokens: {debug.get('prompt_tokens', 0)} in / {debug.get('completion_tokens', 0)} out",
         "Cost: " + ("unavailable" if debug.get("cost_unavailable") else f"${debug.get('cost_usd', 0):.4f}"),
@@ -2802,6 +2802,12 @@ class Handler(BaseHTTPRequestHandler):
         csrf = form.get("csrf", "")
         return hmac.compare_digest(csrf if isinstance(csrf, str) else "", sess["csrf"])
 
+    def _load_session(self):
+        """The session for this request, and whose timezone the page's timestamps are rendered in (usertime.vfmt)."""
+        sess = accounts.get_session(self.token())
+        usertime.set_viewer(sess["user_id"] if sess else None)
+        return sess
+
     def send_json(self, data: dict, code: int = 200):
         return self.send(code, json.dumps(data, default=str).encode("utf-8"), ctype="application/json")
 
@@ -2813,6 +2819,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- GET --
     def do_GET(self):
+        usertime.set_viewer(None)
         # Request-level timing (2026-09-13, config.debug_timing_enabled)
         # -- wraps the WHOLE request, from routing through whichever
         # handler runs through the response actually being written, as
@@ -2877,7 +2884,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/invite/"):
             return self.invite_form(path.rsplit("/", 1)[1])
 
-        sess = accounts.get_session(self.token())
+        sess = self._load_session()
         if path == "/login":
             if sess:
                 return self.send(303, b"", {"Location": "/"})
@@ -2986,6 +2993,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- POST --
     def do_POST(self):
+        usertime.set_viewer(None)
         # Same request-level timing wrapper as do_GET -- see its own
         # comment.
         path = self.path.partition("?")[0]
@@ -3057,7 +3065,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             return self.login_post(form)
 
-        sess = accounts.get_session(self.token())
+        sess = self._load_session()
         # note-viewer's mark-read call (2026-09-17) is fetch()-driven, same
         # reasoning /send and /retry already document -- a stale/expired
         # session must come back as JSON the JS can actually read, not an
@@ -3641,7 +3649,7 @@ class Handler(BaseHTTPRequestHandler):
         if val is None:
             return "(none)"
         if field == "due_ts":
-            return esc(time.strftime("%b %d, %Y %H:%M", time.localtime(val)))
+            return esc(usertime.vfmt(val, "%b %d, %Y %H:%M"))
         if field == "needs_attention":
             return "yes" if val else "no"
         return esc(str(val))
@@ -3662,7 +3670,7 @@ class Handler(BaseHTTPRequestHandler):
         """Round-trips through tasks.parse_when -- what the edit form
         pre-fills the due field with is itself a valid value to resubmit
         unchanged, same as every other prefilled form field in this app."""
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+        return usertime.vfmt(ts, "%Y-%m-%d %H:%M") if ts else ""
 
     def _task_form(self, sess: dict, csrf: str, *, action: str, edit_row: dict | None = None) -> str:
         e = edit_row or {}
@@ -4269,7 +4277,7 @@ class Handler(BaseHTTPRequestHandler):
                    f"<small class=muted>{esc(task_preview)}</small></div></div>")
 
         def _interrupted_row(j: dict) -> str:
-            when = time.strftime("%b %d, %H:%M", time.localtime(j["finished_ts"]))
+            when = usertime.vfmt(j["finished_ts"], "%b %d, %H:%M")
             task_preview = j["task"][:100] + ("…" if len(j["task"]) > 100 else "")
             return (f"<div class=list-row><div class=list-icon>⚠️</div>"
                    f"<div class=list-meta><b>job #{j['id']} · {esc(j['agent_label'])}</b>"
@@ -4314,7 +4322,7 @@ class Handler(BaseHTTPRequestHandler):
                 bits.append(f"waited {d['waited_for_a_job_slot_ms'] / 1000:.0f}s for a slot")
             if d.get("stopped_during"):
                 bits.append(f"stopped during: {d['stopped_during']}")
-            when = time.strftime("%b %d, %H:%M", time.localtime(j["finished_ts"] or j["created_ts"]))
+            when = usertime.vfmt(j["finished_ts"] or j["created_ts"], "%b %d, %H:%M")
             return (f"<div class=list-row><div class=list-icon>⚠️</div>"
                     f"<div class=list-meta><b>job #{j['id']} · {esc(j['label'])} · {esc(j['status'])}</b>"
                     f"<small>{esc(when)} · {esc(' · '.join(bits) or 'no trace recorded (ran before tracing existed)')}</small>"
@@ -5015,7 +5023,7 @@ class Handler(BaseHTTPRequestHandler):
                 outcome = "<span class=ok>ok</span>" + (f" · {row['status']}" if row.get("status") else "")
             else:
                 outcome = "<span class=err>failed</span>" + (f" · {row['status']}" if row.get("status") else "")
-            when = time.strftime("%m-%d %H:%M:%S", time.localtime(row["ts"]))
+            when = usertime.vfmt(row["ts"], "%m-%d %H:%M:%S")
             meta = " · ".join(x for x in (
                 esc(row.get("method") or ""), esc(row.get("agent") or ""), when) if x)
             payload = (f"<div class=muted style='font-family:monospace;font-size:.75rem;"
@@ -5174,7 +5182,7 @@ class Handler(BaseHTTPRequestHandler):
         pend = bridge.pending_approvals(uid)
         pend_rows = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(p['summary'] or p['action'])}</b>"
-            f"<small>on {esc(p['host'] or '?')} · asked {time.strftime('%H:%M', time.localtime(p['created_ts']))}"
+            f"<small>on {esc(p['host'] or '?')} · asked {usertime.vfmt(p['created_ts'], '%H:%M')}"
             f"</small></div><div class=list-actions>"
             + post(f"approve/{p['id']}", "<button class='btn btn-primary'>approve</button></form>")
             + post(f"deny/{p['id']}", "<button class='btn btn-danger'>deny</button></form>")
@@ -5183,7 +5191,7 @@ class Handler(BaseHTTPRequestHandler):
                          + (pend_rows or "<p class=muted>nothing waiting</p>") + "</div>")
 
         def _row(r: dict) -> str:
-            when = time.strftime("%m-%d %H:%M:%S", time.localtime(r["created_ts"]))
+            when = usertime.vfmt(r["created_ts"], "%m-%d %H:%M:%S")
             extra = f" · {esc(r['error'])}" if r["error"] else ""
             appr = f" · approval: {esc(r['approval'])}" if r["approval"] != "none" else ""
             where = "phone" if r.get("target") == "phone" else (esc(r['host'] or '-'))
@@ -5292,7 +5300,7 @@ class Handler(BaseHTTPRequestHandler):
             "<button class='btn btn-primary'>save</button></form></div>")
 
         def _row(r: dict) -> str:
-            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"]))
+            when = usertime.vfmt(r["ts"], "%Y-%m-%d %H:%M:%S")
             who = f"job #{r['job_id']} ({esc(r['agent'] or '?')})" if r["source"] == "job" else "chat"
             res = esc(r["outcome"]) + (f" (exit {r['exit_code']})" if r["exit_code"] not in (None, 0) else "")
             if r["duration_ms"] is not None:
@@ -5614,7 +5622,7 @@ class Handler(BaseHTTPRequestHandler):
         def _log_row(row: dict) -> str:
             outcome = ("<span class=ok>ok</span>" if row["ok"]
                       else f"<span class=err>failed{' — ' + esc(row['reason']) if row['reason'] else ''}</span>")
-            when = time.strftime("%m-%d %H:%M:%S", time.localtime(row["ts"]))
+            when = usertime.vfmt(row["ts"], "%m-%d %H:%M:%S")
             meta = " · ".join(x for x in (
                 esc(row.get("agent") or ""), esc(row.get("service") or ""), when) if x)
             return (
@@ -5720,7 +5728,7 @@ class Handler(BaseHTTPRequestHandler):
         plain_actions = plain_actions or {}
         def _one(ev: dict) -> str:
             who = self._history_who(ev["actor"], ev.get("actor_peer_name"))
-            when = time.strftime("%b %d, %H:%M", time.localtime(ev["ts"]))
+            when = usertime.vfmt(ev["ts"], "%b %d, %H:%M")
             if ev["changes"]:
                 detail = "; ".join(
                     f"{field_labels.get(f, f)}: {fmt_fn(f, c['old'])} &rarr; {fmt_fn(f, c['new'])}"
@@ -5809,7 +5817,7 @@ class Handler(BaseHTTPRequestHandler):
                     status_note = (f"<div class=err style='margin-top:.2rem'>last run: "
                                    f"{esc(r['last_status'])}{' -- ' + esc(r['last_error']) if r.get('last_error') else ''}"
                                    f"</div>")
-                next_txt = time.strftime("%b %d, %H:%M", time.localtime(r["next_run_ts"]))
+                next_txt = usertime.vfmt(r["next_run_ts"], "%b %d, %H:%M")
                 return (
                     "<div class=list-row><div class=list-meta>"
                     f"<b>{esc(r['name'])}</b> "
@@ -6158,7 +6166,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             value_html = (f"<label>value<input type=text name=value_text required "
                          f"value='{esc(e.get('value_text') or '')}'></label>")
-        ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(e["ts"])) if e.get("ts") else ""
+        ts_str = usertime.vfmt(e["ts"], "%Y-%m-%d %H:%M") if e.get("ts") else ""
         hidden_type_id = f"<input type=hidden name=type_id value='{type_row['id']}'>" if edit_entry else ""
         return (
             f"<form method=post action='{action}'>"
@@ -6206,7 +6214,7 @@ class Handler(BaseHTTPRequestHandler):
             hist = trackers.history_for_type(sess, t["id"], since="365 days ago")
             entries = hist.get("entries", [])
             def _entry_row(en: dict) -> str:
-                when = time.strftime("%b %d, %H:%M", time.localtime(en["ts"]))
+                when = usertime.vfmt(en["ts"], "%b %d, %H:%M")
                 val = self._tracker_value_str(t, value_1=en["value_1"], value_2=en["value_2"],
                                               value_text=en["value_text"])
                 note_html = f" &middot; {esc(en['note'])}" if en.get("note") else ""
@@ -6651,7 +6659,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = medialog.recent_log(wsid)
         if rows:
             log_rows = "".join(
-                f"<tr><td class=muted style='white-space:nowrap'>{time.strftime('%m-%d %H:%M', time.localtime(r['ts']))}</td>"
+                f"<tr><td class=muted style='white-space:nowrap'>{usertime.vfmt(r['ts'], '%m-%d %H:%M')}</td>"
                 f"<td>{esc(r['purpose'])}</td>"
                 f"<td>{'<span class=ok>ok</span>' if r['ok'] else '<span class=err>failed</span>'}</td>"
                 f"<td class=muted>{esc((r['prompt'] or '')[:80])}</td>"
@@ -6746,7 +6754,7 @@ class Handler(BaseHTTPRequestHandler):
                 status_txt = ("<span class=ok>ok</span>" if r["status"] == "ok"
                              else "<span class=err>" + esc(r["status"]) + "</span>")
                 return (f"<tr><td class=muted style='white-space:nowrap'>"
-                       f"{time.strftime('%m-%d %H:%M', time.localtime(r['ts']))}</td>"
+                       f"{usertime.vfmt(r['ts'], '%m-%d %H:%M')}</td>"
                        f"<td>{esc(r.get('app', ''))}</td><td>{esc(r.get('action', ''))}</td>"
                        f"<td>{status_txt}</td><td class=muted>{esc(r.get('name', ''))}</td>"
                        f"<td class=muted>{size_txt}</td>"
@@ -6845,7 +6853,7 @@ class Handler(BaseHTTPRequestHandler):
         entries = integration_health.get_all()
 
         def _row(entry):
-            checked = (time.strftime("%m-%d %H:%M", time.localtime(entry["checked_ts"]))
+            checked = (usertime.vfmt(entry["checked_ts"], "%m-%d %H:%M")
                       if entry.get("checked_ts") else "never")
             explain = esc(entry.get("explain") or "")[:300]
             detail = esc(entry.get("detail") or "")[:200]
@@ -7246,7 +7254,7 @@ class Handler(BaseHTTPRequestHandler):
                 who = f"{esc(x['peer'])} · " if x["peer"] else ""
                 detail = f"<br><span class=muted>{esc(x['detail'])}</span>" if x["detail"] else ""
                 return (f"<tr><td class=muted style='white-space:nowrap'>"
-                        f"{time.strftime('%m-%d %H:%M:%S', time.localtime(x['ts']))}</td>"
+                        f"{usertime.vfmt(x['ts'], '%m-%d %H:%M:%S')}</td>"
                         f"<td>{mark}</td><td class=muted style='white-space:nowrap'>{esc(x['source'])}</td>"
                         f"<td>{who}{esc(x['title'])}{detail}</td></tr>")
             body = f"<div class=table-scroll><table>{''.join(_row(x) for x in evs)}</table></div>"
@@ -8056,7 +8064,7 @@ class Handler(BaseHTTPRequestHandler):
         # dropped connection, not a readable 500. Same style as the
         # inline strftime calls already used elsewhere in this file
         # (meals_page's day/week labels), not a new convention.
-        return time.strftime("%b %d, %H:%M", time.localtime(ts))
+        return usertime.vfmt(ts, "%b %d, %H:%M")
 
     def _peer_messages_panel(self, sess: dict, *, open_log: bool = False) -> str:
         csrf = esc(sess["csrf"])
@@ -9229,7 +9237,7 @@ class Handler(BaseHTTPRequestHandler):
         through workfiles' own name validation, so it can't escape or
         use a bad name. No relpath = the plain single-file form."""
         want_json = self.headers.get("X-Nori-Upload") == "json"
-        sess = accounts.get_session(self.token())
+        sess = self._load_session()
         if sess is None:
             if want_json:
                 return self.send_json({"ok": False, "error": "your session expired -- reload and sign in"}, 401)
@@ -9600,7 +9608,7 @@ class Handler(BaseHTTPRequestHandler):
         # the number that actually explains a slow STT call; upload_receive
         # already reports its own ms, which is the upload-speed signal.
         pt = getattr(self, "_timing_turn", timing.NULL_TURN)
-        sess = accounts.get_session(self.token())
+        sess = self._load_session()
         if sess is None:
             return self.send_json({"ok": False, "error": "not signed in"}, 401)
         if not config.get("user", sess["user_id"], "voice_input_enabled"):
@@ -10544,7 +10552,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             meta = {}
         fid = esc(str(meta.get("file_id", "")))
-        ts_txt = time.strftime("%b %d, %Y %H:%M", time.localtime(m["ts"]))
+        ts_txt = usertime.vfmt(m["ts"], "%b %d, %Y %H:%M")
         cap = f"<figcaption>{esc(m['content'])}</figcaption>" if m.get("content") else ""
         # Same chatimage button the chat page uses (2026-09-15) -- one
         # modal, opened from both entry points, not two viewers to keep
@@ -10752,7 +10760,7 @@ class Handler(BaseHTTPRequestHandler):
         this turn, so the fallback always exists and future renders
         never re-run the vision call. Errors come back as JSON, not a
         page -- this is a chat action, not a form navigation."""
-        sess = accounts.get_session(self.token())
+        sess = self._load_session()
         if sess is None:
             return self.send(303, b"", {"Location": "/login"})
         n = int(self.headers.get("Content-Length", 0) or 0)

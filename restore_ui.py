@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import html
 import time
+import usertime
 
 
 def esc(s) -> str:
@@ -22,7 +23,7 @@ def esc(s) -> str:
 
 
 def when(ts: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    return usertime.vfmt(ts, "%Y-%m-%d %H:%M")
 
 
 def age(ts: float, now: float | None = None) -> str:

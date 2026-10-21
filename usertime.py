@@ -29,6 +29,7 @@ a restart.
 from __future__ import annotations
 
 import datetime
+import threading
 
 import config
 
@@ -103,6 +104,28 @@ def fmt(user_id: int, ts: float, pattern: str = "%Y-%m-%d %H:%M") -> str:
     if not ts:
         return ""
     return local_dt(user_id, ts).strftime(pattern)
+
+
+# The viewer of the page being rendered (2026-10-21, "everything should follow the timezone"): the admin/UI pages format dozens of stamps and most
+# have no user at hand, so the request handler records whose request this is and vfmt() renders in THEIR zone. No viewer (a background thread, a
+# page with no session) falls back to the default zone, never to the server's OS clock, which is UTC in the container.
+_viewer = threading.local()
+
+
+def set_viewer(user_id: int | None) -> None:
+    _viewer.user_id = user_id
+
+
+def vfmt(ts, pattern: str = "%Y-%m-%d %H:%M") -> str:
+    """fmt() for whoever the current request is for."""
+    if not ts:
+        return ""
+    uid = getattr(_viewer, "user_id", None)
+    if uid is None:
+        from zoneinfo import ZoneInfo
+        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(ZoneInfo(_FALLBACK_TZ))
+        return dt.strftime(pattern)
+    return fmt(uid, ts, pattern)
 
 
 def maybe_set_from_calendar(user_id: int, calendar_tz_name: str) -> None:

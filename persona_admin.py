@@ -29,6 +29,7 @@ from __future__ import annotations
 import html
 import re
 import time
+import usertime
 
 import persona
 import restore_ui
@@ -43,7 +44,7 @@ def _e(s) -> str:
 
 
 def _when(ts: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    return usertime.vfmt(ts, "%Y-%m-%d %H:%M")
 
 
 def status() -> dict:

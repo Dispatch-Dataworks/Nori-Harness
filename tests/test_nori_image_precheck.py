@@ -20,6 +20,7 @@ import config
 import imagegen
 import medialog
 import store
+import usertime
 
 store.init()
 USER = accounts.bootstrap_admin("Tester", "testpass123")
@@ -36,7 +37,7 @@ def handler():
     cls.body = [n for n in cls.body if getattr(n, "name", None) in
                 {"media_admin_form", "media_admin_post"}]
     env = dict(config=config, imagegen=imagegen, medialog=medialog,
-               esc=html.escape, info_tip=lambda text: text, time=time)
+               esc=html.escape, info_tip=lambda text: text, time=time, usertime=usertime)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), "server.py", "exec"), env)
     instance = env["Handler"]()
     instance._settings_response = Mock()

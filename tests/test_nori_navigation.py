@@ -94,7 +94,9 @@ def handler(role="admin"):
                # settings_page's notify tab reads this for the timezone
                # field's own placeholder value (2026-09-18).
                usertime=SimpleNamespace(zone_name=lambda uid: "America/New_York",
-                                        is_valid_zone=lambda tz: True),
+                                        is_valid_zone=lambda tz: True,
+                                        set_viewer=lambda uid: None,
+                                        vfmt=lambda ts, pattern="": ""),
                emotion=SimpleNamespace(STATES=("neutral",)),
                # subagents_admin_form reads these four constants and calls
                # jobs.running_jobs()/recently_interrupted() and
@@ -142,7 +144,7 @@ def handler(role="admin"):
     # real body -- which reads the real backup/oauth/integration_health
     # modules -- ever actually runs in this harness).
     cls.body = [n for n in cls.body if getattr(n, "name", None) in {
-        "do_GET", "_do_GET_inner", "_hdr_menu", "_hdr_back", "_app_header", "_settings_groups",
+        "do_GET", "_do_GET_inner", "_load_session", "_hdr_menu", "_hdr_back", "_app_header", "_settings_groups",
         "_settings_rail", "_settings_shell", "settings_menu_page",
         "_settings_response", "settings_page", "_household_members", "invite_admin_form", "invite_admin_post",
         "subagents_admin_form", "mcp_admin_form", "peers_admin_form", "tools_admin_form",
