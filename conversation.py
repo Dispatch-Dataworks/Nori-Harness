@@ -168,6 +168,32 @@ def cost_meta(usage: dict) -> dict:
             "completion_tokens": usage.get("completion_tokens", 0)}
 
 
+def debug_panel(res: dict | None, meta: dict, *, trigger: str | None = None) -> dict | None:
+    """What a message's (i) button shows (server._debug_text). A reply to the user gets it in server.py; this is the same panel for a message she
+    started herself -- a ping, a scheduled task, a reminder, a job result -- which had no (i) at all, so there was nowhere to see what triggered it
+    or which model wrote it (2026-10-22). `trigger` is the reason the turn ran. None when there is neither a model call nor a trigger to show."""
+    dm = (res or {}).get("dispatch_meta")
+    if not dm and not trigger:
+        return None
+    d = {**(dm or {}), "ts": time.time()}
+    if dm:
+        d.update({"tool_calls": (res or {}).get("tool_calls") or [], "cost_usd": meta.get("cost_usd"),
+                  "cost_unavailable": meta.get("cost_unavailable"), "prompt_tokens": meta.get("prompt_tokens", 0),
+                  "completion_tokens": meta.get("completion_tokens", 0)})
+    if trigger:
+        d["trigger"] = trigger
+    return d
+
+
+def turn_meta(res: dict, *, reason: str | None = None, **extra) -> dict:
+    """The meta for a message a self-started turn produced: its reason, anything the caller adds, the turn's cost, and the (i) panel."""
+    meta = {**({"reason": reason} if reason else {}), **extra, **cost_meta(res["usage"])}
+    panel = debug_panel(res, meta, trigger=reason)
+    if panel:
+        meta["debug"] = panel
+    return meta
+
+
 def attach_cost_since(user_id: int, after_id: int, usage: dict) -> None:
     """Merges cost_meta(usage) into every kind='peer_proactive' row this
     user gained after after_id -- for a peer-motivated turn, where the row

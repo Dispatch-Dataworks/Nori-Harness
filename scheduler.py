@@ -258,7 +258,7 @@ def _send_proactive(user: dict, reason: str) -> str:
         with turn.stage("persist_reply"):
             conversation.add_message(user["id"], "assistant", res["text"], kind="proactive",
                                      emotion=emotion.get_state(user["id"]),
-                                     meta={"reason": reason, **conversation.cost_meta(res["usage"])})
+                                     meta=conversation.turn_meta(res, reason=reason))
         turn.finish()
         return {"ok": True}
 
@@ -379,8 +379,7 @@ def _fire_schedule(user: dict, sched: dict) -> None:
             with turn.stage("persist_reply"):
                 conversation.add_message(user["id"], "assistant", res["text"], kind="scheduled",
                                          emotion=emotion.get_state(user["id"]),
-                                         meta={"reason": reason, "schedule_id": sched["id"],
-                                              **conversation.cost_meta(res["usage"])})
+                                         meta=conversation.turn_meta(res, reason=reason, schedule_id=sched["id"]))
         turn.finish()
         schedules.record_run(sched["id"], sched["instruction"], status="ok")
         schedules.advance(sched["id"], sched["schedule_type"], sched["interval_min"], sched["time_hour"],
@@ -485,8 +484,7 @@ def _fire_reminder(user: dict, rem: dict) -> None:
         with turn.stage("persist_reply"):
             conversation.add_message(user["id"], "assistant", res["text"], kind="reminder",
                                      emotion=emotion.get_state(user["id"]),
-                                     meta={"reason": reason, "reminder_id": rem["id"],
-                                          **conversation.cost_meta(res["usage"])})
+                                     meta=conversation.turn_meta(res, reason=reason, reminder_id=rem["id"]))
         turn.finish()
         reminders.mark_nagged(rem["id"], fired_ts=now)
         return {"ok": True}

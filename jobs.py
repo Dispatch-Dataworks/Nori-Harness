@@ -971,8 +971,7 @@ def _trigger_turn_for_job(job_id: int, user_id: int, agent_label: str, task: str
         with turn.stage("persist_reply"):
             conversation.add_message(user_id, "assistant", text, kind="job_proactive",
                                      emotion=emotion.get_state(user_id),
-                                     meta={"job_agent": agent_label, "job_id": job_id, "reason": reason,
-                                           **conversation.cost_meta(res["usage"])})
+                                     meta=conversation.turn_meta(res, reason=reason, job_agent=agent_label, job_id=job_id))
         turn.finish()
         return {"ok": True}
 

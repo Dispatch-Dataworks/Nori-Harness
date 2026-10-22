@@ -378,16 +378,24 @@ def _debug_text(debug: dict) -> str:
     rendered bubble (_bubble()) and the client-side JS builder
     (makeDebugBtn() in APP_JS) so the two never drift apart -- built once
     here, the JS version is a straight line-for-line port."""
-    lines = [
-        f"Provider: {debug.get('provider_label')} ({debug.get('provider_type')})",
-        f"Model: {debug.get('model_alias')} ({debug.get('model_name')})",
-        f"Position: {debug.get('chain_position')} of {debug.get('chain_length')}",
-        f"Request ID: {debug.get('request_id') or '—'}",
-        f"Time: {usertime.vfmt(debug.get('ts') or time.time(), '%b %d, %H:%M:%S')}",
-        f"Latency: {debug.get('latency_ms')} ms",
-        f"Tokens: {debug.get('prompt_tokens', 0)} in / {debug.get('completion_tokens', 0)} out",
-        "Cost: " + ("unavailable" if debug.get("cost_unavailable") else f"${debug.get('cost_usd', 0):.4f}"),
-    ]
+    lines = []
+    if debug.get("trigger"):
+        # A message she started herself: what started it (the reason the turn ran), before the model details.
+        lines.append(f"Triggered by: {debug['trigger']}")
+    if debug.get("provider_type"):
+        lines += [
+            f"Provider: {debug.get('provider_label')} ({debug.get('provider_type')})",
+            f"Model: {debug.get('model_alias')} ({debug.get('model_name')})",
+            f"Position: {debug.get('chain_position')} of {debug.get('chain_length')}",
+            f"Request ID: {debug.get('request_id') or '—'}",
+        ]
+    lines.append(f"Time: {usertime.vfmt(debug.get('ts') or time.time(), '%b %d, %H:%M:%S')}")
+    if debug.get("provider_type"):
+        lines += [
+            f"Latency: {debug.get('latency_ms')} ms",
+            f"Tokens: {debug.get('prompt_tokens', 0)} in / {debug.get('completion_tokens', 0)} out",
+            "Cost: " + ("unavailable" if debug.get("cost_unavailable") else f"${(debug.get('cost_usd') or 0):.4f}"),
+        ]
     failed = debug.get("failed_attempts") or []
     if failed:
         lines.append("Failed attempts:")
@@ -1711,15 +1719,16 @@ CHAT_JS = (
     # info-wrap/info-btn/info-pop reuse the same generic toggle (TIP_JS,
     # above) that every settings-page info_tip() already relies on --
     # zero new JS wiring needed for the toggle itself.
-    "function debugText(d){var lines=["
-    "'Provider: '+d.provider_label+' ('+d.provider_type+')',"
+    "function debugText(d){var lines=[];"
+    "if(d.trigger){lines.push('Triggered by: '+d.trigger);}"
+    "if(d.provider_type){lines.push('Provider: '+d.provider_label+' ('+d.provider_type+')',"
     "'Model: '+d.model_alias+' ('+d.model_name+')',"
     "'Position: '+d.chain_position+' of '+d.chain_length,"
-    "'Request ID: '+(d.request_id||'\\u2014'),"
-    "'Time: '+new Date((d.ts||Date.now()/1000)*1000).toLocaleString(),"
-    "'Latency: '+d.latency_ms+' ms',"
+    "'Request ID: '+(d.request_id||'\\u2014'));}"
+    "lines.push('Time: '+new Date((d.ts||Date.now()/1000)*1000).toLocaleString());"
+    "if(d.provider_type){lines.push('Latency: '+d.latency_ms+' ms',"
     "'Tokens: '+(d.prompt_tokens||0)+' in / '+(d.completion_tokens||0)+' out',"
-    "'Cost: '+(d.cost_unavailable?'unavailable':'$'+(d.cost_usd||0).toFixed(4))];"
+    "'Cost: '+(d.cost_unavailable?'unavailable':'$'+(d.cost_usd||0).toFixed(4)));}"
     "if(d.failed_attempts&&d.failed_attempts.length){lines.push('Failed attempts:');"
     "d.failed_attempts.forEach(function(f){lines.push('  '+f.alias+' ('+f.provider_type+'): '+f.error);});}"
     "if(d.tool_calls&&d.tool_calls.length){lines.push('Tool calls:');"

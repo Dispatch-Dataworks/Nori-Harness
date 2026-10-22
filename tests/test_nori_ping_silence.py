@@ -157,5 +157,74 @@ class ScheduledTaskTests(unittest.TestCase):
         self.assertNotIn("[silent]", run.call_args.kwargs["extra_message"]["content"])
 
 
+DISPATCH = {"provider_type": "openai_oauth", "provider_label": "OpenAI", "model_alias": "GPT", "model_name": "gpt-x", "chain_position": "primary",
+            "chain_length": 2, "request_id": "resp_1", "reasoning": None, "latency_ms": 5, "failed_attempts": []}
+
+
+def _model_with_dispatch(text):
+    return Mock(return_value={"text": text, "usage": {"prompt_tokens": 10, "completion_tokens": 2, "cost": None}, "hit_round_limit": False,
+                              "dispatch_meta": dict(DISPATCH), "tool_calls": [{"round": 1, "name": "set_emotion", "args": {"state": "x"}}]})
+
+
+def _last_meta(kind):
+    import json
+    row = store.read(lambda c: c.execute("SELECT meta FROM messages WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT 1", (UID, kind)).fetchone())
+    return json.loads(row["meta"])
+
+
+class InfoPanelTests(unittest.TestCase):
+    """2026-10-22: messages she started herself had no (i) button, so there was nowhere to see what triggered them or which model wrote them."""
+
+    def setUp(self):
+        store.write(lambda c: c.execute("DELETE FROM messages"))
+
+    def test_a_ping_message_carries_the_info_panel_with_its_trigger(self):
+        with patch.object(chat, "run", _model_with_dispatch("Flea and tick meds in 12 minutes.")):
+            scheduler._send_proactive(USER, "a calendar event starting in about 12 min: \"Flea and tick meds\"")
+        meta = _last_meta("proactive")
+        self.assertEqual(meta["reason"], "a calendar event starting in about 12 min: \"Flea and tick meds\"")
+        d = meta["debug"]
+        self.assertEqual(d["trigger"], meta["reason"])
+        self.assertEqual((d["provider_type"], d["model_name"], d["request_id"]), ("openai_oauth", "gpt-x", "resp_1"))
+        self.assertEqual((d["prompt_tokens"], d["completion_tokens"], d["cost_unavailable"]), (10, 2, True))
+        self.assertEqual(d["tool_calls"][0]["name"], "set_emotion")
+        self.assertEqual(meta["prompt_tokens"], 10, "the existing cost fields are unchanged")
+
+    def test_the_panel_text_names_the_trigger_first(self):
+        import server
+        with patch.object(chat, "run", _model_with_dispatch("x")):
+            scheduler._send_proactive(USER, "overdue tasks: Helen's desk")
+        text = server._debug_text(_last_meta("proactive")["debug"])
+        self.assertTrue(text.startswith("Triggered by: overdue tasks: Helen's desk"), text)
+        self.assertIn("Model: GPT (gpt-x)", text)
+        self.assertIn("Cost: unavailable", text)
+
+    def test_a_panel_with_only_a_trigger_renders_without_provider_noise(self):
+        import server
+        text = server._debug_text({"trigger": "peer asked", "ts": 1792613315})
+        self.assertIn("Triggered by: peer asked", text)
+        self.assertNotIn("Provider", text)
+        self.assertNotIn("None", text)
+
+    def test_a_chat_reply_panel_is_unchanged(self):
+        import server
+        text = server._debug_text({**DISPATCH, "ts": 1792613315, "cost_unavailable": True, "prompt_tokens": 3, "completion_tokens": 4, "tool_calls": []})
+        self.assertNotIn("Triggered by", text)
+        self.assertIn("Provider: OpenAI (openai_oauth)", text)
+
+    def test_scheduled_and_reminder_messages_get_it_too(self):
+        sched = {**ScheduledTaskTests.SCHED, "instruction": "Say good morning."}
+        with patch.object(chat, "run", _model_with_dispatch("Good morning.")), patch.object(scheduler.schedules, "record_run"),                 patch.object(scheduler.schedules, "advance"):
+            scheduler._fire_schedule(USER, sched)
+        d = _last_meta("scheduled")["debug"]
+        self.assertEqual(d["trigger"], "schedule #7 (check the garage)")
+        self.assertEqual(_last_meta("scheduled")["schedule_id"], 7)
+
+    def test_a_turn_with_no_model_call_and_no_trigger_has_no_panel(self):
+        import conversation as cv
+        self.assertIsNone(cv.debug_panel({"usage": USAGE}, {}))
+        self.assertEqual(cv.turn_meta({"usage": USAGE}).keys(), cv.cost_meta(USAGE).keys())
+
+
 if __name__ == "__main__":
     unittest.main()

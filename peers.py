@@ -882,6 +882,8 @@ def _message_user_impl(session: dict, text: str) -> dict:
     # jobs._trigger_turn_for_job -- so message_user is never offered in
     # one, and there is exactly one message, not two.)
     meta = {"peer": session.get("_peer_context"), "reason": session.get("_turn_reason")}
+    if meta["reason"]:
+        meta["debug"] = {"trigger": meta["reason"], "ts": time.time()}     # the (i) button: what started this (the model details aren't known here)
     conversation.add_message(user_id, "assistant", text, kind="peer_proactive",
                              emotion=emotion.get_state(user_id), meta=meta)
     return {"ok": True}

@@ -866,7 +866,12 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
     for m in messages:
         role = m.get("role")
         if role == "system":
-            system_parts.append(m.get("content") or "")
+            if input_items:
+                # Not the standing prompt: an instruction that arrives MID-conversation (a ping's reason, a peer's message, a limit note). Hoisting it
+                # into `instructions` put it far from the end of the conversation, so the model saw only her own last reply and carried on with it.
+                input_items.append({"role": "system", "content": m.get("content") or ""})
+            else:
+                system_parts.append(m.get("content") or "")
         elif role == "tool":
             input_items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
                                "output": m.get("content") or ""})
@@ -1013,6 +1018,9 @@ def _call_xai_api_key(entry: dict, messages: list[dict], *, tools=None, tool_cho
 _ANTHROPIC_CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 
 
+_APP_NOTE_PREFIX = "(From the app, not from the user: "
+
+
 def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool = False) -> tuple[list[dict], list[dict]]:
     """Nori's messages are OpenAI-chat-completions-shaped (a "system" role
     message, "tool" role results, assistant tool_calls); Anthropic's
@@ -1033,7 +1041,12 @@ def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool =
     for m in messages:
         role = m.get("role")
         if role == "system":
-            system_blocks.append({"type": "text", "text": m.get("content") or ""})
+            if out:
+                # Mid-conversation: keep it at the end of what came before, as a user-role note from the app (Anthropic has no such role), instead
+                # of hoisting it to the top-level system prompt -- see the same fix in _call_openai_oauth.
+                out.append({"role": "user", "content": _APP_NOTE_PREFIX + (m.get("content") or "") + ")"})
+            else:
+                system_blocks.append({"type": "text", "text": m.get("content") or ""})
         elif role == "tool":
             out.append({"role": "user", "content": [{
                 "type": "tool_result", "tool_use_id": m.get("tool_call_id"),
@@ -1199,7 +1212,13 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
     for m in messages:
         role = m.get("role")
         if role == "system":
-            system_parts.append(m.get("content") or "")
+            if input_items:
+                # A system message after the conversation has started (a ping's reason and the like) stays where it is, as a developer-role item.
+                # Hoisted into `instructions` it sat far from the end, and on a ping she saw only her own last reply and repeated it (2026-10-22,
+                # reproduced live: hoisted -> she carried on the chat; in place -> she answered the signal, or stayed [silent]).
+                input_items.append({"role": "developer", "content": m.get("content") or ""})
+            else:
+                system_parts.append(m.get("content") or "")
         elif role == "tool":
             input_items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
                                "output": m.get("content") or ""})

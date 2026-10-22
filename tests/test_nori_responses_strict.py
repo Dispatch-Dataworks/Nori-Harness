@@ -96,5 +96,69 @@ class OpenAIOAuthRequest(unittest.TestCase):
         self.assertTrue(all(t["strict"] is False for t in sent))
 
 
+PING = {"role": "system", "content": "Something came up. Reply [silent] if it isn't worth interrupting."}
+CONVO = [{"role": "system", "content": "You are Nori."},
+         {"role": "user", "content": "We have a big tub."},
+         {"role": "assistant", "content": "That's ideal."}]
+
+
+class MidConversationSystemMessages(unittest.TestCase):
+    """2026-10-22: a ping's instruction is a system message appended AFTER the conversation. Every adapter that hoists all system messages to the top
+    (instructions / top-level system) moved it away from the end, so she saw only her own last reply and repeated it verbatim -- reproduced live on
+    OpenAI OAuth. A system message that arrives mid-conversation must stay where it is; the standing prompt still goes to the top."""
+
+    def _sent_body(self, messages):
+        seen = {}
+
+        def fake_run_call(fn, req, timeout, *, what):
+            seen["body"] = json.loads(req.data)
+            return {"output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}], "usage": {}}
+
+        entry = {"model_name": "gpt-x", "reasoning_effort": None,
+                 "provider": {"account_meta": {"account_id": "acct"}, "type": "openai_oauth"}}
+        with patch.object(chat, "_run_call", fake_run_call), patch.object(providers, "access_token_for", return_value="tok"):
+            try:
+                chat._call_openai_oauth(entry, messages)
+            except Exception as exc:  # noqa: BLE001
+                if "body" not in seen:
+                    self.skipTest(f"couldn't reach the request build without live credentials: {exc!r}")
+        return seen["body"]
+
+    def test_openai_oauth_keeps_the_ping_at_the_end_and_the_standing_prompt_on_top(self):
+        body = self._sent_body(CONVO + [PING])
+        self.assertEqual(body["instructions"], "You are Nori.", "only the standing prompt is hoisted")
+        self.assertEqual(body["input"][-1], {"role": "developer", "content": PING["content"]})
+        self.assertEqual([i["role"] for i in body["input"]], ["user", "assistant", "developer"])
+
+    def test_openai_oauth_leading_system_messages_are_still_all_instructions(self):
+        body = self._sent_body([{"role": "system", "content": "A"}, {"role": "system", "content": "B"}] + CONVO[1:])
+        self.assertEqual(body["instructions"], "A\n\nB")
+        self.assertEqual([i["role"] for i in body["input"]], ["user", "assistant"])
+
+    def test_a_note_between_tool_rounds_stays_in_place(self):
+        msgs = CONVO + [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "function": {"name": "demo", "arguments": "{}"}}]},
+                        {"role": "tool", "tool_call_id": "c1", "content": "{}"}, {"role": "system", "content": "NOTE"}]
+        body = self._sent_body(msgs)
+        self.assertEqual(body["input"][-1], {"role": "developer", "content": "NOTE"})
+        self.assertEqual(body["input"][-2]["type"], "function_call_output")
+
+    def test_the_shared_responses_helper_does_the_same(self):
+        instructions, items = chat._messages_to_responses_input(CONVO + [PING])
+        self.assertEqual(instructions, "You are Nori.")
+        self.assertEqual(items[-1], {"role": "system", "content": PING["content"]})
+
+    def test_anthropic_keeps_the_ping_at_the_end_as_a_marked_note_from_the_app(self):
+        system, msgs = chat._messages_to_anthropic(CONVO + [PING])
+        self.assertEqual([b["text"] for b in system], ["You are Nori."])
+        self.assertEqual(msgs[-1]["role"], "user")
+        self.assertEqual(msgs[-1]["content"], "(From the app, not from the user: " + PING["content"] + ")")
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "user"])
+
+    def test_anthropic_leading_system_messages_stay_in_the_system_prompt(self):
+        system, msgs = chat._messages_to_anthropic([{"role": "system", "content": "A"}, {"role": "system", "content": "B"}] + CONVO[1:])
+        self.assertEqual([b["text"] for b in system], ["A", "B"])
+        self.assertEqual(len(msgs), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
