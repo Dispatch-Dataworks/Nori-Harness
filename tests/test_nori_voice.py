@@ -19,6 +19,7 @@ import ast
 import json
 from pathlib import Path
 import sys
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -73,6 +74,7 @@ class VoiceTurnMetaTests(unittest.TestCase):
 
         env = dict(
             json=json,
+            time=time,
             conversation=SimpleNamespace(
                 add_message=self.add_message,
                 max_id=lambda uid: max(self.rows) if self.rows else 0,

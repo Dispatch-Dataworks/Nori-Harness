@@ -960,6 +960,11 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 .msg.assistant{align-self:flex-start;background:var(--surface-2);border-bottom-left-radius:5px}
 .msg-meta{display:flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text-mute);align-self:flex-start;
   margin:0 2px}
+/* Message times (2026-10-24): a small clock under each message, and a centred day label whenever the date changes. */
+.msg-time{display:block;margin-top:.25rem;font-size:.66rem;line-height:1;opacity:.6;white-space:nowrap}
+.msg.user .msg-time{text-align:right;opacity:.8}
+.daysep{align-self:center;margin:.7rem 0 .3rem;padding:.1rem .6rem;font-size:.7rem;color:var(--text-mute);
+  background:var(--surface-2);border-radius:999px}
 .msg-meta i{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
 /* Copy button (2026-09-15) -- sits under the text, inside the same
    bubble, its own line (display:block, not inline after the last word)
@@ -1789,6 +1794,21 @@ CHAT_JS = (
     "if(names.length<=TOOL_RUN_SHOW_MAX)return 'used '+names.join(', ');"
     "return 'used '+names.slice(0,TOOL_RUN_SHOW_MAX).join(', ')+' and '+(names.length-TOOL_RUN_SHOW_MAX)+' more';}"
 
+    # Message times / day labels (2026-10-24), in the user's own configured zone (cfg.tz) -- the same labels _bubble() draws on page load.
+    "var TZ=cfg.tz||undefined,lastDay=cfg.last_day||'';"
+    "function dayKey(ts){try{return new Intl.DateTimeFormat('en-CA',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(ts*1000));}"
+    "catch(e){return new Date(ts*1000).toDateString();}}"
+    "function clockText(ts){try{return new Intl.DateTimeFormat('en-US',{timeZone:TZ,hour:'numeric',minute:'2-digit'}).format(new Date(ts*1000));}"
+    "catch(e){return new Date(ts*1000).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}}"
+    "function fullTimeText(ts){try{return new Intl.DateTimeFormat('en-US',{timeZone:TZ,weekday:'long',year:'numeric',month:'short',day:'numeric',"
+    "hour:'numeric',minute:'2-digit'}).format(new Date(ts*1000));}catch(e){return new Date(ts*1000).toLocaleString();}}"
+    "function dayLabel(ts){var k=dayKey(ts),now=Date.now()/1000;if(k===dayKey(now))return 'Today';if(k===dayKey(now-86400))return 'Yesterday';"
+    "var o={timeZone:TZ,weekday:'long',month:'short',day:'numeric'};if(k.slice(0,4)!==dayKey(now).slice(0,4))o.year='numeric';"
+    "try{return new Intl.DateTimeFormat('en-US',o).format(new Date(ts*1000));}catch(e){return k;}}"
+    "function dayBreak(ts){var k=dayKey(ts);if(k===lastDay)return;lastDay=k;"
+    "var d=document.createElement('div');d.className='daysep';d.textContent=dayLabel(ts);msglist.appendChild(d);}"
+    "function timeEl(ts){var t=document.createElement('time');t.className='msg-time';t.dateTime=new Date(ts*1000).toISOString();"
+    "t.title=fullTimeText(ts);t.textContent=clockText(ts);return t;}"
     "function addMessage(m){"
     "if(m.id!=null){if(seenIds.has(m.id))return null;seenIds.add(m.id);if(m.id>last)last=m.id;}"
     "if(m.kind==='tool'&&(m.content||'').trim()==='used set_emotion')return null;"
@@ -1801,8 +1821,10 @@ CHAT_JS = (
     "if(last_&&last_.className==='toolline'&&last_._toolNames){"
     "last_._toolNames.push(name);last_.textContent=toolRunLine(last_._toolNames);"
     "scrollDown();return last_;}"
+    "dayBreak(m.ts||Date.now()/1000);"
     "var t=document.createElement('div');t.className='toolline';t._toolNames=[name];"
     "t.textContent=toolRunLine([name]);msglist.appendChild(t);scrollDown();return t;}"
+    "dayBreak(m.ts||Date.now()/1000);"
     "if(m.role==='assistant'&&m.emotion){var meta=document.createElement('div');meta.className='msg-meta';"
     "var dot=document.createElement('i');dot.style.background=stateColor(m.emotion);"
     "meta.appendChild(dot);meta.appendChild(document.createTextNode(m.emotion));msglist.appendChild(meta);}"
@@ -1825,6 +1847,7 @@ CHAT_JS = (
     "if(m.content){var cap=document.createElement('div');cap.className='msg-caption';"
     "cap.textContent=m.content;b.appendChild(cap);"
     "if(m.role==='assistant')b.appendChild(makeCopyBtn(m.content));}"
+    "b.appendChild(timeEl(m.ts||Date.now()/1000));"
     "msglist.appendChild(b);scrollDown();"
     "if(voiceModalOpen){vAppendTurn(m.role,m.content);if(m.role==='assistant')vSpeak(m.id);}"
     "return b;}"
@@ -1833,6 +1856,7 @@ CHAT_JS = (
     "b.textContent=m.content;"
     "if(m.meta&&m.meta.approval)b.appendChild(approvalBox(m.meta.approval));"
     "var acts=msgActions(m);if(acts)b.appendChild(acts);"
+    "b.appendChild(timeEl(m.ts||Date.now()/1000));"
     "msglist.appendChild(b);scrollDown();"
     # Voice mode mirror -- the ONE hook that makes voice mode's transcript
     # and auto-playback work regardless of what triggered the message
@@ -10116,19 +10140,40 @@ class Handler(BaseHTTPRequestHandler):
             return f"used {shown} and {len(names) - _TOOL_RUN_SHOW_MAX} more"
 
         def _group_tool_runs(rows: list) -> list:
-            grouped, run = [], []
+            grouped, run, run_ts = [], [], None
             for m in rows:
                 if m["kind"] == "tool":
                     content = m["content"] or ""
                     run.append(content[5:] if content.startswith("used ") else content)
+                    run_ts = run_ts or m.get("ts")
                     continue
                 if run:
-                    grouped.append({"kind": "tool", "content": _tool_run_line(run)})
-                    run = []
+                    grouped.append({"kind": "tool", "content": _tool_run_line(run), "ts": run_ts})
+                    run, run_ts = [], None
                 grouped.append(m)
             if run:
-                grouped.append({"kind": "tool", "content": _tool_run_line(run)})
+                grouped.append({"kind": "tool", "content": _tool_run_line(run), "ts": run_ts})
             return grouped
+
+        uid_ = sess["user_id"]
+        _today = usertime.local_dt(uid_).date()
+
+        def _clock(ts) -> str:
+            return usertime.fmt(uid_, ts, "%I:%M %p").lstrip("0")
+
+        def _day_label(day) -> str:
+            if day == _today:
+                return "Today"
+            if day == _today - datetime.timedelta(days=1):
+                return "Yesterday"
+            label = f"{day.strftime('%A, %b')} {day.day}"
+            return label if day.year == _today.year else f"{label}, {day.year}"
+
+        def _time_el(ts) -> str:
+            if not ts:
+                return ""
+            return (f"<time class=msg-time datetime='{esc(usertime.fmt(uid_, ts, '%Y-%m-%dT%H:%M:%S'))}' "
+                    f"title='{esc(usertime.fmt(uid_, ts, '%A, %b %d, %Y %I:%M %p'))}'>{esc(_clock(ts))}</time>")
 
         def _bubble(m):
             if m["kind"] == "tool":
@@ -10148,7 +10193,7 @@ class Handler(BaseHTTPRequestHandler):
                 prompt_attr = f" data-prompt='{esc(prompt)}'" if prompt else ""
                 return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])} msg-image'>"
                        f"<button type=button class=chatimage aria-label='View image full screen'{prompt_attr}>"
-                       f"<img src='/image/{fid}' alt='' loading=lazy></button>{cap}{copy_btn}</div>")
+                       f"<img src='/image/{fid}' alt='' loading=lazy></button>{cap}{copy_btn}{_time_el(m.get('ts'))}</div>")
             copy_btn = _copy_btn(m["content"]) if m["role"] == "assistant" and m.get("content") else ""
             debug_btn = ""
             if m["role"] == "assistant" and m.get("meta"):
@@ -10167,7 +10212,7 @@ class Handler(BaseHTTPRequestHandler):
             hid_cls = " msg-hidden" if hid else ""
             hid_title = " title='Hidden from her -- she can no longer see this message'" if hid else ""
             return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}{hid_cls}'{hid_title}>"
-                   f"{esc(m['content'])}{card}{actions}</div>")
+                   f"{esc(m['content'])}{card}{actions}{_time_el(m.get('ts'))}</div>")
 
         # the state shown on the LAST page load, before whatever just
         # happened (a new reply, or nothing if this is a plain reload) --
@@ -10182,7 +10227,16 @@ class Handler(BaseHTTPRequestHandler):
         state_changed = prev_state != current_state
         last_id = msgs[-1]["id"] if msgs else 0
 
-        bubbles = "".join(_bubble(m) for m in _group_tool_runs(msgs)) or "<p class=muted>say something to get started.</p>"
+        parts, last_day = [], None
+        for m in _group_tool_runs(msgs):
+            if m.get("ts"):
+                day = usertime.local_dt(uid_, m["ts"]).date()
+                if day != last_day:
+                    parts.append(f"<div class=daysep>{esc(_day_label(day))}</div>")
+                    last_day = day
+            parts.append(_bubble(m))
+        bubbles = "".join(parts) or "<p class=muted>say something to get started.</p>"
+        last_day_key = last_day.isoformat() if last_day else ""
         color = emotion.COLORS.get(current_state, "#95a5a6")
         assistant_name = config.get("workspace", sess["workspace_id"], "assistant_name")
         hdr_left = (f"<div class=hdr-left><button type=button class=avatar-chip id=avatarChip aria-label='View {esc(assistant_name)} avatar'>"
@@ -10200,7 +10254,8 @@ class Handler(BaseHTTPRequestHandler):
         # token (neither can actually contain one, but this costs nothing
         # and every other piece of embedded JSON in this app does the same).
         chat_cfg = json.dumps({"csrf": sess["csrf"], "state": current_state, "last_id": last_id,
-                              "colors": emotion.COLORS, "assistant_name": assistant_name}).replace("</", "<\\/")
+                              "colors": emotion.COLORS, "assistant_name": assistant_name,
+                              "tz": usertime.zone_name(sess["user_id"]), "last_day": last_day_key}).replace("</", "<\\/")
         notify_cfg = json.dumps({
             "enabled": bool(config.get("user", sess["user_id"], "notify_enabled")),
             "quiet_start": config.get("user", sess["user_id"], "notify_quiet_start"),
@@ -10650,14 +10705,14 @@ class Handler(BaseHTTPRequestHandler):
         for r in conversation.since(user["id"], before_id, include_tool=True):
             if r["kind"] == "tool":
                 tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"],
-                                 "emotion": None, "kind": "tool"})
+                                 "emotion": None, "kind": "tool", "ts": r["ts"]})
             elif r["kind"] == "image":
                 try:
                     img_meta = json.loads(r["meta"]) if r.get("meta") else None
                 except (ValueError, TypeError):
                     img_meta = None
                 tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"],
-                                 "emotion": r.get("emotion"), "kind": "image", "meta": img_meta})
+                                 "emotion": r.get("emotion"), "kind": "image", "meta": img_meta, "ts": r["ts"]})
         # Read AFTER chat.run() -- if she called set_emotion this turn, the
         # message gets tagged with the state she ended the turn in.
         state = emotion.get_state(user["id"])
@@ -10683,7 +10738,8 @@ class Handler(BaseHTTPRequestHandler):
             aid = conversation.add_message(user["id"], "assistant", reply, emotion=state, meta=reply_meta)
         turn.finish()
         return {"ok": True, "messages": tool_msgs + [{"id": aid, "role": "assistant", "content": reply,
-                                                       "emotion": state, "kind": "chat", "meta": reply_meta}],
+                                                       "emotion": state, "kind": "chat", "meta": reply_meta,
+                                                       "ts": time.time()}],
                "state": state}
 
     def send_msg(self, sess: dict, form: dict):
@@ -10846,7 +10902,7 @@ class Handler(BaseHTTPRequestHandler):
                                   include_tool=config.get("user", sess["user_id"], "show_tool_calls"))
         return self.send_json({
             "messages": [{"id": r["id"], "role": r["role"], "content": r["content"],
-                         "emotion": r.get("emotion"), "kind": r.get("kind"),
+                         "emotion": r.get("emotion"), "kind": r.get("kind"), "ts": r.get("ts"),
                          "meta": json.loads(r["meta"]) if r.get("meta") else None} for r in rows],
             "state": emotion.get_state(sess["user_id"]),
             "board_count": self._board_count(sess),
