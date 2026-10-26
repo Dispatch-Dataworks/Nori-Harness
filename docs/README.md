@@ -55,6 +55,7 @@ Everything else here goes deeper once it's up.
   | [Settings model](settings.md) | How a setting is declared, scoped, and kept secret-safe by construction |
   | [Auth & roles](auth-and-roles.md) | Accounts, sessions, invites, admin vs. member, secrets-at-rest |
   | [Deployment & supervision](deployment-and-watchdog.md) | Running this for real, `nori_ctl.ps1`, crash recovery |
+  | [Updates](updates.md) | How an install learns a new release exists, how to update, and how to cut a release |
   | [Compatibility](compatibility.md) | What's promised to survive an upgrade: config keys and the `nori.db` schema, by version type |
 
 ## The PACI specification

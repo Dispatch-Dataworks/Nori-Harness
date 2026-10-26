@@ -2,6 +2,13 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-26 — "a newer Nori is available"
+
+Anyone can self-host this now, so a fix on GitHub has to reach them. Once a day Nori asks GitHub's releases API whether a newer **published release**
+exists and, if so, shows the admin a header pill and a Settings → Updates tab (release notes, the exact update commands, a skip button). It never
+updates or restarts itself and sends nothing about the instance; it can be switched off. The running version is the new `VERSION` file
+(`0.10.0-beta`). See [Updates](updates.md).
+
 ## 2026-09-25 — 0.9.0-beta: the repo's public home, a configurable instance name, an emotion off switch
 
 The repo's home is decided: `https://github.com/Dispatch-Dataworks/Nori-Harness`.

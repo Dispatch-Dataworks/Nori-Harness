@@ -247,6 +247,12 @@ _SPEC: dict[str, tuple] = {
     # browser_* tools exist ONLY while it's in the future -- a deliberate,
     # time-boxed "she may use my browser now", ended early by the kill switch.
     "bridge_enabled": (False, bool, "workspace", False, "let the paired browser extension take commands from her"),
+    # "A newer Nori is available" (2026-10-26, updates.py): a daily GET to GitHub's releases API, shown to admins as a header chip and an Updates tab.
+    # On by default (most installs would otherwise never hear about fixes); nothing about the instance is sent. Pre-releases count while the
+    # project is in beta. update_dismissed_version remembers the release the admin chose to skip.
+    "update_check_enabled": (True, bool, "workspace", False, "check GitHub once a day for a newer Nori release"),
+    "update_include_prereleases": (True, bool, "workspace", False, "include pre-releases (beta) when checking for updates"),
+    "update_dismissed_version": ("", str, "workspace", False, "the release the admin chose to skip"),
     # Which sites she may touch (2026-10-21): "deny_default" = only the sites on the allow list; "allow_default" =
     # any site except those on the block list. The operator's hidden hosts and private windows stay off limits in both.
     "bridge_site_mode": ("deny_default", str, "workspace", False, "site access mode (deny_default/allow_default)"),

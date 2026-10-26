@@ -461,6 +461,16 @@ CREATE TABLE IF NOT EXISTS bridge_commands (
     force_approval INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_bridge_commands_user ON bridge_commands(user_id, status);
+-- "A newer Nori is available" (2026-10-26, updates.py): the last answer from GitHub's releases API, one row. etag lets the next daily
+-- check be a bodiless 304; next_check_ts spaces checks out (and retries after an error).
+CREATE TABLE IF NOT EXISTS update_check (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    checked_ts    REAL NOT NULL DEFAULT 0,
+    next_check_ts REAL NOT NULL DEFAULT 0,
+    etag          TEXT NOT NULL DEFAULT '',
+    releases      TEXT NOT NULL DEFAULT '[]',
+    error         TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS bridge_site_rules (
     id          INTEGER PRIMARY KEY,
     pattern     TEXT NOT NULL UNIQUE,

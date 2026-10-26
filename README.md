@@ -54,6 +54,10 @@ you actually edit the persona; until then she runs on the shipped default.
 
 **Without Docker:** see [Quick start](docs/quickstart.md).
 
+**Updating.** Once a day Nori checks GitHub for a newer *release* and, if there is one, shows the admin a pill in the header with the release notes and
+the exact commands (`git fetch --tags`, `git checkout <tag>`, `docker compose up -d --build`). It never updates itself. The check sends nothing about
+your instance and can be switched off. See [Updates](docs/updates.md).
+
 **Bringing an existing install's data in?** See [IMPORT.md](IMPORT.md).
 
 ## What's genuinely hard about self-hosting this

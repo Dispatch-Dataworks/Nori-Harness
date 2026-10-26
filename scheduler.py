@@ -583,6 +583,16 @@ def _maybe_run_backup() -> None:
         print(f"backup run_daily raised: {exc}", flush=True)
 
 
+def _maybe_check_updates() -> None:
+    """Instance-wide, like the backup and health checks above: once a day, ask GitHub whether a newer release exists (updates.py). Never lets a
+    network or parsing problem take the cycle down."""
+    try:
+        import updates
+        updates.maybe_check()
+    except Exception as exc:  # noqa: BLE001
+        print(f"update check raised: {exc}", flush=True)
+
+
 def _maybe_run_integration_health() -> None:
     """Instance-wide, not per-user -- same reuse-this-tick-loop reasoning
     as _maybe_run_backup just above (see integration_health.py's own
@@ -601,6 +611,7 @@ def run_cycle_once() -> int:
     wait on the real interval."""
     _maybe_run_backup()
     _maybe_run_integration_health()
+    _maybe_check_updates()
     sent = 0
     for user in accounts.all_active_users():
         _maybe_reflect(user["id"])

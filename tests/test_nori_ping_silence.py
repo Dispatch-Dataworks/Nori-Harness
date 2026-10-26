@@ -103,7 +103,7 @@ class PingTests(unittest.TestCase):
         config.set("user", UID, "ping_enabled", True)
         fired = Mock()
         reasons = {"reason": "r", "key": "meal_planning", "dedup_token": ""}
-        with patch.multiple(scheduler, _maybe_run_backup=Mock(), _maybe_run_integration_health=Mock(), _maybe_reflect=Mock(), _maybe_compact=Mock(),
+        with patch.multiple(scheduler, _maybe_run_backup=Mock(), _maybe_run_integration_health=Mock(), _maybe_reflect=Mock(), _maybe_compact=Mock(), _maybe_check_updates=Mock(),
                             _check_due_schedules=Mock(), _check_due_reminders=Mock(), _recently_active=Mock(return_value=False),
                             _within_window=Mock(return_value=True), outstanding_reason=Mock(return_value=reasons), mark_signal_fired=fired), \
                 patch.object(scheduler.turns, "in_flight", return_value=False), \
@@ -115,7 +115,7 @@ class PingTests(unittest.TestCase):
         config.set("user", UID, "ping_enabled", True)
         fired = Mock()
         reasons = {"reason": "r", "key": "meal_planning", "dedup_token": ""}
-        with patch.multiple(scheduler, _maybe_run_backup=Mock(), _maybe_run_integration_health=Mock(), _maybe_reflect=Mock(), _maybe_compact=Mock(),
+        with patch.multiple(scheduler, _maybe_run_backup=Mock(), _maybe_run_integration_health=Mock(), _maybe_reflect=Mock(), _maybe_compact=Mock(), _maybe_check_updates=Mock(),
                             _check_due_schedules=Mock(), _check_due_reminders=Mock(), _recently_active=Mock(return_value=False),
                             _within_window=Mock(return_value=True), outstanding_reason=Mock(return_value=reasons), mark_signal_fired=fired), \
                 patch.object(scheduler.turns, "in_flight", return_value=False), \

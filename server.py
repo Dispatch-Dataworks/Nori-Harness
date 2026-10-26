@@ -183,6 +183,7 @@ import device_data
 import devices
 import phone_tools  # noqa: F401  (registers the phone_* / place_reminder_* tools)
 import sandbox
+import updates
 import webtools
 import workfiles
 
@@ -469,6 +470,14 @@ input::placeholder,textarea::placeholder{color:var(--text-mute)}
 .btn-danger:active{background:var(--danger);color:var(--surface)}
 .btn-block{width:100%}
 .chip-row{display:flex;gap:.4rem;flex-wrap:wrap;margin:0 0 1rem}
+/* "A newer Nori is available" (2026-10-26): an admin-only pill in the header that opens Settings -> Updates. */
+.update-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.3rem .65rem;border-radius:99px;font-size:.78rem;
+  background:var(--accent);color:var(--on-accent);font-weight:600;white-space:nowrap}
+.update-chip:hover{background:var(--accent-strong)}
+.cmdblock{margin:.4rem 0 .8rem;padding:.6rem .8rem;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);
+  font:.82rem/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;user-select:all}
+.release-notes{margin:.4rem 0 .8rem;padding:.6rem .8rem;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);
+  font-size:.85rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:22rem;overflow:auto}
 .chip{padding:.4rem .8rem;border-radius:99px;background:var(--surface-2);border:1px solid var(--border);
   color:var(--text-dim);font-size:.82rem;font-weight:600}
 .chip.active{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
@@ -3251,6 +3260,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.homeassistant_exposure_post(sess, form)
         if path == "/admin/sandbox/enabled":
             return self.sandbox_enabled_post(sess, form)
+        if path.startswith("/admin/updates/"):
+            return self.updates_post(sess, path, form)
         if path.startswith("/admin/computeruse/"):
             return self.computeruse_post(sess, path, form)
         if path == "/bridge/approval":
@@ -3501,7 +3512,13 @@ class Handler(BaseHTTPRequestHandler):
             badge = f"<span class=badge id=boardCount{hidden}>{n}</span>"
             board = ("<button type=button class=icon-btn id=boardBtn aria-label=Board aria-controls=board aria-expanded=false>"
                      f"🗂{badge}</button>")
-        return f"{left_html}<div class=hdr-spacer></div>{board}{self._hdr_menu(sess)}"
+        chip = ""
+        if sess.get("role") == "admin":
+            rel = updates.banner_for(sess["workspace_id"])
+            if rel:
+                chip = (f"<a class=update-chip href='/settings?tab=updates' title='Nori {esc(rel['tag'])} is available'>"
+                        f"↑ Update</a>")
+        return f"{left_html}<div class=hdr-spacer></div>{chip}{board}{self._hdr_menu(sess)}"
 
     # -- the board: open tasks as cards, plus an extensible "add" menu --
     def _task_card(self, t: dict) -> str:
@@ -5303,6 +5320,88 @@ class Handler(BaseHTTPRequestHandler):
         return self.not_found()
 
     # -- admin: code sandbox (2026-10-04) -- see sandbox.py / docs/sandbox.md
+    def updates_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        """Settings -> Updates (admin): what's running, whether a newer release exists, its notes, the exact commands, and the switches.
+        Nothing here changes the running code -- see updates.py."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        csrf = esc(sess["csrf"])
+        st = updates.status(sess["workspace_id"])
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+
+        def post(action, body=""):
+            return (f"<form method=post action='/admin/updates/{action}' style='display:inline'>"
+                    f"<input type=hidden name=csrf value='{csrf}'>{body}")
+
+        rel = st["release"]
+        if st["available"]:
+            notes = (f"<details style='margin:.4rem 0'><summary class=muted>what's new in {esc(rel['tag'])}</summary>"
+                     f"<div class=release-notes>{esc(rel['notes'] or '(no release notes)')}</div></details>") if rel else ""
+            link = (f" · <a href='{esc(rel['url'])}' target=_blank rel='noopener noreferrer'>view on GitHub</a>"
+                    if rel and rel.get("url") else "")
+            published = f" · published {esc(rel['published'][:10])}" if rel and rel.get("published") else ""
+            headline = (f"<p><span class='chip active'>update available</span> <b>{esc(st['latest'])}</b>"
+                        f"{' (pre-release)' if rel and rel['prerelease'] else ''} · you're on <b>{esc(st['current'])}</b>"
+                        f"{published}{link}</p>{notes}"
+                        + ("<p class=muted>You skipped this release; the chip in the header is hidden until a newer one appears.</p>"
+                           if st["dismissed"] else ""))
+            steps = updates.update_steps(st["latest"])
+            how = ("<div class=section><h2>how to update</h2>"
+                   "<p class=muted>Nori never updates or restarts itself -- you do, in two steps. Your data (chats, memory, settings, files) "
+                   "lives in its own volume and is kept; the database upgrades itself on start. Take a backup first if you like "
+                   "(Settings → Backups).</p>"
+                   "<p><b>Docker</b> (from the folder you cloned Nori into):</p>"
+                   f"<div class=cmdblock>{esc(chr(10).join(steps['docker']))}</div>"
+                   "<p><b>Without Docker</b>:</p>"
+                   f"<div class=cmdblock>{esc(chr(10).join(steps['plain']))}</div>"
+                   "<p class=muted>After a <code>git checkout</code> of a tag you're on a fixed version; run <code>git checkout main</code> "
+                   "later to follow the latest again.</p></div>")
+            actions = ("" if st["dismissed"] else post("dismiss", "<button class='btn'>skip this release</button></form> "))
+        else:
+            if st["checked_ts"]:
+                headline = (f"<p><span class=chip>up to date</span> you're on <b>{esc(st['current'])}</b>"
+                            f" · last checked {esc(usertime.fmt(sess['user_id'], st['checked_ts'], '%b %d, %H:%M'))}</p>")
+            else:
+                headline = f"<p>You're on <b>{esc(st['current'])}</b>. Not checked yet.</p>"
+            how = ""
+            actions = ""
+        if st["error"]:
+            headline += f"<p class=err>The last check failed: {esc(st['error'])}</p>"
+        controls = (
+            "<div class=section><h2>checking for updates</h2>"
+            "<p class=muted>Once a day Nori asks GitHub whether a newer <b>release</b> exists (a tagged version, never every code push). "
+            "The only thing sent is that request, so GitHub sees this server's address; nothing about your instance, chats or settings. "
+            f"Watching <code>{esc(st['repo'])}</code>.</p>"
+            + post("settings",
+                   "<div class=field><label><input type=checkbox name=update_check_enabled"
+                   f"{' checked' if st['enabled'] else ''}> check for new releases once a day</label></div>"
+                   "<div class=field><label><input type=checkbox name=update_include_prereleases"
+                   f"{' checked' if st['include_prereleases'] else ''}> include pre-releases (beta) "
+                   + info_tip("Nori is in beta, so its releases are marked pre-release. Turn this off to hear only about final releases.")
+                   + "</label></div><button class='btn btn-primary'>save</button></form> ")
+            + post("check", "<button class='btn'>check now</button></form> ") + actions + "</div>")
+        intro = "<div class=section><h2>updates</h2>" + headline + "</div>"
+        self._settings_response(sess, "updates", e + i + intro + how + controls)
+
+    def updates_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        action = path[len("/admin/updates/"):].strip("/")
+        if action == "settings":
+            config.set("workspace", wsid, "update_check_enabled", "update_check_enabled" in form)
+            config.set("workspace", wsid, "update_include_prereleases", "update_include_prereleases" in form)
+            return self.updates_admin_form(sess, info="saved")
+        if action == "check":
+            res = updates.check()
+            if not res["ok"]:
+                return self.updates_admin_form(sess, err=f"couldn't reach GitHub: {res['error']}")
+            return self.updates_admin_form(sess, info="checked")
+        if action == "dismiss":
+            return self.updates_admin_form(sess, info="skipped" if updates.dismiss(wsid) else "nothing to skip")
+        return self.not_found()
+
     def sandbox_admin_form(self, sess: dict, err: str = "", info: str = ""):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -8371,7 +8470,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("subagents", "Sub-agents"), ("mcp", "MCP servers"),
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
-                                               ("sandbox", "Code sandbox"),
+                                               ("sandbox", "Code sandbox"), ("updates", "Updates"),
                                                ("homeassistant", "Home Assistant"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
@@ -8555,7 +8654,7 @@ class Handler(BaseHTTPRequestHandler):
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
                        "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
                        "memorybackend": self.memory_backend_admin_form,
-                       "sandbox": self.sandbox_admin_form}
+                       "sandbox": self.sandbox_admin_form, "updates": self.updates_admin_form}
         if tab in admin_pages or tab == "household":
             if sess["role"] != "admin":
                 return self.forbidden()
