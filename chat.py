@@ -882,6 +882,11 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
                                    "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
         else:
             input_items.append({"role": role, "content": m.get("content") or ""})
+    if not input_items and len(system_parts) > 1:
+        # A turn with no conversation yet (onboarding's opening message, a ping on an empty history): the only thing sent is system text, and these
+        # endpoints refuse a request with no input at all (400, "one of input ... must be provided"). The last system part goes as a user-role
+        # note from the app instead.
+        input_items.append({"role": "user", "content": _APP_NOTE_PREFIX + system_parts.pop() + ")"})
     instructions = "\n\n".join(p for p in system_parts if p) or None
     return instructions, input_items
 
@@ -1065,6 +1070,11 @@ def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool =
             out.append({"role": "assistant", "content": blocks})
         else:
             out.append({"role": role, "content": m.get("content") or ""})
+    own = 1 if claude_code_identity else 0
+    if not out and len(system_blocks) > own + 1:
+        # Only system text so far (onboarding's opening turn, a ping on an empty history): Anthropic wants at least one message, so the last system
+        # block goes as a user-role note from the app.
+        out.append({"role": "user", "content": _APP_NOTE_PREFIX + system_blocks.pop()["text"] + ")"})
     return system_blocks, out
 
 
@@ -1229,6 +1239,11 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
                                    "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
         else:
             input_items.append({"role": role, "content": m.get("content") or ""})
+    if not input_items and len(system_parts) > 1:
+        # A turn with no conversation yet (onboarding's opening message, a ping on an empty history): the only thing sent is system text, and these
+        # endpoints refuse a request with no input at all (400, "one of input ... must be provided"). The last system part goes as a user-role
+        # note from the app instead.
+        input_items.append({"role": "user", "content": _APP_NOTE_PREFIX + system_parts.pop() + ")"})
     # store:false is REQUIRED, not optional, on this endpoint -- found
     # live (2026-09-30): omitting it (the public Responses API's own
     # default, store:true) 400s with "Store must be set to false" on the

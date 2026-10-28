@@ -54,6 +54,15 @@ def status() -> dict:
             "baseline": persona.has_baseline(), "baseline_ts": persona.baseline_saved_ts(), "history": persona.history()}
 
 
+def is_customised() -> bool:
+    return persona.is_customised()
+
+
+def compose(body: str) -> str:
+    """The full persona file text for a draft `body` (see persona.with_body). Pure; saving is act("save", ...)."""
+    return persona.with_body(body)
+
+
 def act(action: str, form: dict) -> tuple[bool, str]:
     """Do one persona action. `form` carries `text` (save) or `name` (restore). Returns (ok, message). Never raises on bad input: an unknown action or a non-string field is
     a refusal, not a crash. A refused action changes nothing."""

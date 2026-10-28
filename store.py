@@ -461,6 +461,18 @@ CREATE TABLE IF NOT EXISTS bridge_commands (
     force_approval INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_bridge_commands_user ON bridge_commands(user_id, status);
+-- Onboarding (2026-10-26, onboarding.py): where each user is in the getting-set-up chat. status pending/active/done/skipped; steps is JSON
+-- (name, timezone, persona, tour stops); draft_persona is a DRAFT persona body she proposed: inert until the admin presses Apply on its card in the
+-- chat (an authenticated admin route), draft_card_id is the chat message that card belongs to.
+CREATE TABLE IF NOT EXISTS onboarding (
+    user_id       INTEGER PRIMARY KEY REFERENCES users(id),
+    status        TEXT NOT NULL DEFAULT 'pending',
+    steps         TEXT NOT NULL DEFAULT '{}',
+    started_ts    REAL,
+    finished_ts   REAL,
+    draft_persona TEXT,
+    draft_card_id INTEGER
+);
 -- "A newer Nori is available" (2026-10-26, updates.py): the last answer from GitHub's releases API, one row. etag lets the next daily
 -- check be a bodiless 304; next_check_ts spaces checks out (and retries after an error).
 CREATE TABLE IF NOT EXISTS update_check (

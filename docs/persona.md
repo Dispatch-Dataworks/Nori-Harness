@@ -75,6 +75,12 @@ setting the settings tool can read or write names a prompt. The tests
 (`tests/test_nori_persona_admin.py`) fail if that changes. See
 [Enforcement model](enforcement-model.md) for what "enforced" means across the app.
 
+**One deliberate exception, and what it still cannot do** (2026-10-26, [Onboarding](onboarding.md)): while she is getting set up with the admin she
+may *propose* a persona with `onboarding_propose_persona`. That tool only stores an **inert draft** and shows it to the admin in the chat as a card
+with **Apply** and **Discard** buttons; it imports none of the persona code, and a test pins that. Applying is the admin pressing the button, an
+authenticated POST that goes through this same page's save (so the previous text is snapshotted and restorable below). She cannot apply it, and
+neither can a prompt injection: no model-callable path changes the live persona.
+
 ## What it doesn't do
 
 - It does not record *who* made an edit; history is a list of versions and times. In a household with

@@ -53,6 +53,8 @@ import time
 
 import store
 
+PRONOUNS = ("she/her", "he/him", "they/them")
+
 _SPEC: dict[str, tuple] = {
     # Single source of truth for "what timezone is he in" (2026-09-18,
     # real bug: every site that needed local time used to call
@@ -322,6 +324,14 @@ _SPEC: dict[str, tuple] = {
     # The harness/product identity (the repo, the PACI specification, server_version, the Nori-PACI User-Agent) is NOT
     # this setting and never reads it -- that's software identification, not the assistant's own name.
     "assistant_name": ("Nori", str, "workspace", False, "her name, as far as she and the UI are concerned"),
+    # Her pronouns (2026-10-28, first-run setup): one of PRONOUNS below, she/her unless the admin chooses otherwise. Told to her in the
+    # name header of every prompt so she knows how the people around her refer to her; the UI's own copy stays she/her.
+    "assistant_pronouns": ("she/her", str, "workspace", False, "her pronouns (she/her, he/him or they/them)"),
+    # First-run setup (2026-10-28, firstrun.py): `setup_complete` ends the guided connect-a-model / name / pronouns pass; `setup_identity` records
+    # that the admin confirmed her name and pronouns there, so the getting-to-know-you chat doesn't ask again. Neither is in the settings tool's
+    # allowlist, so no model call can flip them.
+    "setup_complete": (False, bool, "workspace", False, "the guided first-run setup was finished or skipped"),
+    "setup_identity": (False, bool, "workspace", False, "her name and pronouns were confirmed in first-run setup"),
     # Pluggable memory backend (2026-09-25) -- "local" is the only one that exists today and the
     # only value this accepts; memory.py falls back to it for anything unrecognized rather than
     # erroring, same posture schema_for() already takes for a stale name. Exists now, ahead of a
@@ -466,6 +476,8 @@ def set(scope: str, scope_id: int, key: str, value) -> None:
         if current == "off" and value == "real":
             raise ValueError("writes must pass through 'simulated' before 'real' -- "
                              "set simulated first, then real, as two separate deliberate steps")
+    if key == "assistant_pronouns" and value not in PRONOUNS:
+        raise ValueError(f"assistant_pronouns must be one of: {', '.join(PRONOUNS)}")
     if key == "assistant_name":
         if not value.strip():
             raise ValueError("assistant_name cannot be empty")

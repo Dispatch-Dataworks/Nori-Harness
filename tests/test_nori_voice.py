@@ -75,6 +75,9 @@ class VoiceTurnMetaTests(unittest.TestCase):
         env = dict(
             json=json,
             time=time,
+            onboarding=SimpleNamespace(guide_message=lambda user, **kw: None, DRAFT_KIND="persona_draft"),
+            persona_admin=SimpleNamespace(is_customised=lambda: False),
+            _persona_customised_for=lambda sess: False,
             conversation=SimpleNamespace(
                 add_message=self.add_message,
                 max_id=lambda uid: max(self.rows) if self.rows else 0,

@@ -154,6 +154,26 @@ class MidConversationSystemMessages(unittest.TestCase):
         self.assertEqual(msgs[-1]["content"], "(From the app, not from the user: " + PING["content"] + ")")
         self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "user"])
 
+    def test_an_empty_conversation_sends_the_last_system_part_as_a_user_note(self):
+        """The opening turn of onboarding (and a ping on an empty history) has only system text; these endpoints 400 on a request with no input."""
+        only_system = [{"role": "system", "content": "You are Nori."}, {"role": "system", "content": "Begin now."}]
+        body = self._sent_body(only_system)
+        self.assertEqual(body["instructions"], "You are Nori.")
+        self.assertEqual(body["input"], [{"role": "user", "content": "(From the app, not from the user: Begin now.)"}])
+        instructions, items = chat._messages_to_responses_input(only_system)
+        self.assertEqual((instructions, items[0]["role"]), ("You are Nori.", "user"))
+        system, msgs = chat._messages_to_anthropic(only_system)
+        self.assertEqual([b["text"] for b in system], ["You are Nori."])
+        self.assertEqual(msgs, [{"role": "user", "content": "(From the app, not from the user: Begin now.)"}])
+        system, msgs = chat._messages_to_anthropic(only_system, claude_code_identity=True)
+        self.assertEqual(len(system), 2, "the identity block and the standing prompt stay; only the opener moves")
+        self.assertEqual(len(msgs), 1)
+
+    def test_a_lone_standing_prompt_is_never_turned_into_a_user_message(self):
+        body = self._sent_body([{"role": "system", "content": "You are Nori."}])
+        self.assertEqual(body["input"], [])
+        self.assertEqual(chat._messages_to_anthropic([{"role": "system", "content": "You are Nori."}])[1], [])
+
     def test_anthropic_leading_system_messages_stay_in_the_system_prompt(self):
         system, msgs = chat._messages_to_anthropic([{"role": "system", "content": "A"}, {"role": "system", "content": "B"}] + CONVO[1:])
         self.assertEqual([b["text"] for b in system], ["A", "B"])

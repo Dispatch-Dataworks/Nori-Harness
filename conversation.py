@@ -345,6 +345,18 @@ def since(user_id: int, after_id: int, limit: int = 200, *, include_tool: bool =
     return [dict(r) for r in rows]
 
 
+def count_assistant_chat_since(user_id: int, ts: float) -> int:
+    """How many of her chat replies this user has had since `ts` (onboarding ends itself after too many)."""
+    return store.read(lambda c: c.execute(
+        "SELECT COUNT(*) FROM messages WHERE user_id=? AND role='assistant' AND kind='chat' AND ts>=?", (user_id, ts)).fetchone())[0]
+
+
+def workspace_has_messages(workspace_id: int) -> bool:
+    """Has anyone in this workspace ever said anything? (first-run setup is skipped for an instance that has.)"""
+    return bool(store.read(lambda c: c.execute(
+        "SELECT 1 FROM messages m JOIN users u ON u.id = m.user_id WHERE u.workspace_id=? LIMIT 1", (workspace_id,)).fetchone()))
+
+
 def get_own(user_id: int, msg_id: int) -> dict | None:
     """A single row, but ONLY if it belongs to this user -- POST /retry's
     ownership check. A wrong or someone-else's id reads as "no such

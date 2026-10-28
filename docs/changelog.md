@@ -2,6 +2,23 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-28 — first-run setup: model, fallback, name and pronouns before she says hello
+
+A fresh instance used to open on a card telling the admin to go and find Settings -> Model config, and nothing prompted for her name. Now the admin of a
+new instance lands on a guided **/first-run** page: (1) connect a provider (an API key, or sign in with a Claude, ChatGPT or Copilot subscription),
+(2) pick a primary model and fallbacks, with a **test** button per model so a wrong key shows up now, and a warning when there is no fallback or the
+fallback is on the same provider, (3) her name and her **pronouns** (she/her by default, he/him or they/them; they are in the name header of every prompt).
+Finishing it hands over to the getting-to-know-you chat, which no longer asks for what setup already settled and now also asks what they expect of her.
+Each step is done because the data says so, so it resumes where it was left; an instance that already has history is never sent through it. "Skip setup
+for now" and **Settings -> About -> open setup** are there too. See [Onboarding](onboarding.md).
+
+## 2026-10-26 — onboarding: she introduces herself
+
+Nothing used to meet a new user: a fresh instance opened on an empty chat. Now, once a model is connected, she speaks first and sets herself up with
+them: what to call each other, their timezone, what she learns about them (saved as memories), when she may message them, her own persona (she proposes a
+draft card; only the admin's Apply button makes it live, and the old one is kept), and a tour of the settings and features with each one's live state. Members get
+a short version; existing instances are never greeted ("Meet her again" is in Settings -> About). See [Onboarding](onboarding.md).
+
 ## 2026-10-26 — "a newer Nori is available"
 
 Anyone can self-host this now, so a fix on GitHub has to reach them. Once a day Nori asks GitHub's releases API whether a newer **published release**

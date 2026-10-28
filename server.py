@@ -182,6 +182,8 @@ import bridge
 import device_data
 import devices
 import phone_tools  # noqa: F401  (registers the phone_* / place_reminder_* tools)
+import firstrun
+import onboarding
 import sandbox
 import updates
 import webtools
@@ -471,6 +473,20 @@ input::placeholder,textarea::placeholder{color:var(--text-mute)}
 .btn-block{width:100%}
 .chip-row{display:flex;gap:.4rem;flex-wrap:wrap;margin:0 0 1rem}
 /* "A newer Nori is available" (2026-10-26): an admin-only pill in the header that opens Settings -> Updates. */
+.msg-draft{border:1px solid var(--accent)}
+.draft-head{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:.35rem}
+.draft-actions{display:flex;gap:.5rem;margin-top:.7rem}
+.draft-done{margin-top:.5rem;font-size:.74rem;color:var(--text-mute)}
+.welcome-card{align-self:center;max-width:34rem;margin:2rem auto;padding:1.1rem 1.2rem;border-radius:16px;background:var(--surface-2);
+  border:1px solid var(--border);line-height:1.5}
+.welcome-card h3{margin:0 0 .4rem}
+.stepper{display:flex;gap:.4rem;flex-wrap:wrap;list-style:none;margin:0 0 1.2rem;padding:0}
+.stepper li{padding:.35rem .8rem;border-radius:99px;border:1px solid var(--border);background:var(--surface-2);font-size:.82rem;color:var(--text-mute)}
+.stepper li.cur{border-color:var(--accent);color:var(--text);font-weight:600}
+.stepper li.ok::before{content:"\2713  ";color:var(--accent)}
+.stepper a{color:inherit;text-decoration:none}
+.pronoun-row{display:flex;gap:.6rem;flex-wrap:wrap;margin:.3rem 0 .9rem}
+.pronoun-row label{display:flex;align-items:center;gap:.4rem;padding:.5rem .8rem;border:1px solid var(--border);border-radius:12px;cursor:pointer}
 .update-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.3rem .65rem;border-radius:99px;font-size:.78rem;
   background:var(--accent);color:var(--on-accent);font-weight:600;white-space:nowrap}
 .update-chip:hover{background:var(--accent-strong)}
@@ -1865,6 +1881,12 @@ CHAT_JS = (
     "b.textContent=m.content;"
     "if(m.meta&&m.meta.approval)b.appendChild(approvalBox(m.meta.approval));"
     "var acts=msgActions(m);if(acts)b.appendChild(acts);"
+    # A persona draft that arrives live: the same card the page draws on load (Apply / Discard post to /onboarding/persona).
+    "if(m.kind==='persona_draft'){b.classList.add('msg-draft');var dh=document.createElement('div');dh.className='draft-head';dh.textContent='Persona draft';"
+    "b.insertBefore(dh,b.firstChild);var df=document.createElement('form');df.className='draft-actions';df.method='post';df.action='/onboarding/persona';"
+    "var dc=document.createElement('input');dc.type='hidden';dc.name='csrf';dc.value=CSRF;df.appendChild(dc);"
+    "[['apply','Apply this persona','btn btn-primary'],['discard','Discard','btn']].forEach(function(x){var bt=document.createElement('button');"
+    "bt.name='action';bt.value=x[0];bt.textContent=x[1];bt.className=x[2];df.appendChild(bt);});b.appendChild(df);}"
     "b.appendChild(timeEl(m.ts||Date.now()/1000));"
     "msglist.appendChild(b);scrollDown();"
     # Voice mode mirror -- the ONE hook that makes voice mode's transcript
@@ -2126,6 +2148,13 @@ CHAT_JS = (
     "onBoardCount(d.board_count);}"
     "catch(e){}polling=false;}"
     "setInterval(poll,15000);"
+    # Onboarding (2026-10-26): for a user who hasn't met her yet, ask the server to have her speak first.
+    "async function beginOnboarding(){if(sending)return;sending=true;setSendDisabled(true);typing(true);"
+    "try{var r=await fetch('/onboarding/begin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:'csrf='+encodeURIComponent(CSRF)});var d=await r.json();typing(false);"
+    "(d.messages||[]).forEach(function(m){addMessage(m);});if(d.state)applyState(d.state);onBoardCount(d.board_count);}"
+    "catch(e){typing(false);}sending=false;setSendDisabled(false);}"
+    "if(cfg.onboarding==='begin'){beginOnboarding();}"
 
     # Voice conversation mode (2026-09-13, replaces the old per-message
     # play button + inline hold-to-record mic entirely). micBtn (composer)
@@ -2935,7 +2964,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(303, b"", {"Location": "/login"})
 
         if path == "/":
+            if self._first_run_redirect(sess):
+                return
             return self.chat_page(sess)
+        if path == "/first-run":
+            return self.first_run_page(sess, step=urllib.parse.parse_qs(qs).get("step", [""])[0])
         if path == "/poll":
             return self.poll_get(sess, urllib.parse.parse_qs(qs).get("since", ["0"])[0])
         if path == "/board/fragment":
@@ -3228,9 +3261,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.models_chain_post(sess, form)
         if path.startswith("/admin/models/"):
             parts = path.split("/")
-            if len(parts) == 5 and parts[4] in ("toggle", "effort", "delete"):
+            if len(parts) == 5 and parts[4] in ("toggle", "effort", "delete", "test"):
                 handler = {"toggle": self.models_toggle_post, "effort": self.models_effort_post,
-                          "delete": self.models_delete_post}[parts[4]]
+                          "delete": self.models_delete_post, "test": self.models_test_post}[parts[4]]
                 return handler(sess, parts[3], form)
         if path == "/admin/providers":
             return self.providers_create_post(sess, form)
@@ -3262,6 +3295,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.sandbox_enabled_post(sess, form)
         if path.startswith("/admin/updates/"):
             return self.updates_post(sess, path, form)
+        if path == "/first-run/identity":
+            return self.first_run_identity_post(sess, form)
+        if path == "/first-run/skip":
+            return self.first_run_skip_post(sess, form)
+        if path == "/onboarding/begin":
+            return self.onboarding_begin_post(sess, form)
+        if path == "/onboarding/persona":
+            return self.onboarding_persona_post(sess, form)
+        if path == "/settings/onboarding/restart":
+            onboarding.request_restart(sess["user_id"])
+            return self.send(303, b"", {"Location": "/"})
         if path.startswith("/admin/computeruse/"):
             return self.computeruse_post(sess, path, form)
         if path == "/bridge/approval":
@@ -4622,6 +4666,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.forbidden()
         e = f"<p class=err>{esc(err)}</p>" if err else ""
         i = f"<p class=info>{esc(info)}</p>" if info else ""
+        sec = self._models_sections(sess, browse)
+        self._settings_response(sess, "models", f"{e}{i}{sec['providers']}{sec['browse']}{sec['models']}{sec['chain']}")
+
+    def _models_sections(self, sess: dict, browse: dict | None = None) -> dict:
+        """The four blocks of the model page as HTML -- providers, browse results, the model roster, the primary/fallback chain -- plus `catalogue`
+        (a "list models" button per connected provider). Settings -> Model config shows them all; the first-run wizard (first_run_page) shows the
+        ones each step needs. Their forms post to the /admin/... routes either way."""
         csrf = esc(sess["csrf"])
         wsid = sess["workspace_id"]
 
@@ -4790,7 +4841,10 @@ class Handler(BaseHTTPRequestHandler):
                          for v in ("", "minimal", "low", "medium", "high", "xhigh", "max"))
                 + "</select><button class=btn>save</button></form>"
                 "</div>"
-                f"<div class=list-actions><form method=post action='/admin/models/{m['id']}/toggle'>"
+                f"<div class=list-actions><form method=post action='/admin/models/{m['id']}/test'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<button class=btn>test</button></form>"
+                f"<form method=post action='/admin/models/{m['id']}/toggle'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<button class=btn>{'disable' if m['enabled'] else 'enable'}</button></form>"
                 f"<form method=post action='/admin/models/{m['id']}/delete'>"
@@ -4846,7 +4900,12 @@ class Handler(BaseHTTPRequestHandler):
             f"{chain_form}</div>"
         )
 
-        self._settings_response(sess, "models", f"{e}{i}{main_provider}{main_browse}{main_models}{main_chain}")
+        catalogue = "".join(
+            f"<form method=post action='/admin/providers/{p['id']}/models' style='display:inline-block;margin:0 .4rem .4rem 0'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            f"<button class=btn>list models on {esc(p['label'])}</button></form>"
+            for p in enabled_providers)
+        return {"providers": main_provider, "browse": main_browse, "models": main_models, "chain": main_chain, "catalogue": catalogue}
 
     def providers_create_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4856,22 +4915,22 @@ class Handler(BaseHTTPRequestHandler):
         wsid = sess["workspace_id"]
         if ptype in providers.API_KEY_TYPES:
             ok, msg = providers.create_api_key(wsid, ptype, label, form.get("api_key") or "", sess["user_id"])
-            return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+            return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
         if ptype in ("anthropic_oauth", "openai_oauth"):
             ok, result = providers.begin_oauth_manual(wsid, ptype, label, sess["user_id"])
             if not ok:
-                return self.models_admin_form(sess, err=result)
+                return self._models_view(sess, form, err=result)
             # The authorize link itself now shows persistently under the
             # provider's own row (see pending_display() in models_admin_form)
             # -- a real, copyable link/button, not a long URL crammed into
             # this one-shot flash message the way it used to be.
-            return self.models_admin_form(sess, info="added -- see below to connect")
+            return self._models_view(sess, form, info="added -- see below to connect")
         if ptype in ("github_copilot", "xai_oauth"):
             ok, msg, data = providers.begin_device_flow(wsid, ptype, label, sess["user_id"])
             if not ok:
-                return self.models_admin_form(sess, err=msg)
-            return self.models_admin_form(sess, info="added -- see below to connect")
-        return self.models_admin_form(sess, err="pick a provider type")
+                return self._models_view(sess, form, err=msg)
+            return self._models_view(sess, form, info="added -- see below to connect")
+        return self._models_view(sess, form, err="pick a provider type")
 
     def providers_delete_post(self, sess: dict, provider_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4879,9 +4938,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pid = int(provider_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         providers.delete(pid)
-        return self.models_admin_form(sess, info="removed")
+        return self._models_view(sess, form, info="removed")
 
     def providers_list_models_post(self, sess: dict, provider_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4889,14 +4948,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pid = int(provider_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         provider = providers.get(pid)
         if provider is None:
-            return self.models_admin_form(sess, "no such provider")
+            return self._models_view(sess, form, "no such provider")
         ok, result = providers.list_models(provider)
         browse = {"provider_id": pid, "provider_label": provider["label"], "q": form.get("q") or "",
                  "ok": ok, "items": result if ok else None, "error": result if not ok else None}
-        return self.models_admin_form(sess, browse=browse)
+        return self._models_view(sess, form, browse=browse)
 
     def providers_oauth_complete_post(self, sess: dict, provider_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4904,9 +4963,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pid = int(provider_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         ok, msg = providers.complete_oauth_manual(pid, form.get("pasted") or "")
-        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
 
     def providers_oauth_check_post(self, sess: dict, provider_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4914,9 +4973,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pid = int(provider_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         ok, msg = providers.check_device_flow(pid)
-        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
 
     def models_create_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4924,10 +4983,41 @@ class Handler(BaseHTTPRequestHandler):
         try:
             provider_id = int(form.get("provider_id") or 0)
         except ValueError:
-            return self.models_admin_form(sess, "bad provider")
+            return self._models_view(sess, form, "bad provider")
         ok, msg = models.create(form.get("alias") or "", provider_id, form.get("model_name") or "",
                                 form.get("reasoning_effort"))
-        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        if ok and form.get("from") == "firstrun" and not models.get_chain(sess["workspace_id"]):
+            # Nothing is chosen yet, so the first model added is her primary: a wizard that leaves her mute until a second form is saved is a trap.
+            mine = [m for m in models.list_all() if m["provider_id"] == provider_id and m["model_name"] == (form.get("model_name") or "").strip()]
+            if mine:
+                models.set_chain(sess["workspace_id"], [max(mine, key=lambda m: m["id"])["id"]])
+                msg = "added, and set as her primary model"
+        return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
+
+    def _models_view(self, sess: dict, form: dict, err: str = "", info: str = "", browse: dict | None = None):
+        """Re-render whichever page the model form came from: the first-run wizard marks its forms with from=firstrun, Settings -> Model config doesn't."""
+        if form.get("from") == "firstrun":
+            return self.first_run_page(sess, step=form.get("step") or "", err=err, info=info, browse=browse)
+        return self.models_admin_form(sess, err=err, info=info, browse=browse)
+
+    def models_test_post(self, sess: dict, model_id: str, form: dict):
+        """Ask one model for a one-word reply, so a wrong key, a model name the provider doesn't know or a lapsed subscription shows up now rather than as
+        a silent failure in her first message."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            mid = int(model_id)
+        except ValueError:
+            return self._models_view(sess, form, "bad id")
+        entry = models.get_with_provider(mid)
+        if entry is None:
+            return self._models_view(sess, form, "that model is disabled or its provider isn't connected")
+        try:
+            result = chat.call_for_model(entry, [{"role": "user", "content": "Reply with the single word: ready."}], tools=None, timeout=60)
+        except chat.ModelError as exc:
+            return self._models_view(sess, form, err=f"{entry['alias']} did not answer: {exc}")
+        reply = (result.get("content") or "").strip() or "(an empty reply)"
+        return self._models_view(sess, form, info=f"{entry['alias']} answered: {reply[:120]}")
 
     def models_toggle_post(self, sess: dict, model_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4935,12 +5025,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             mid = int(model_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         row = models.get(mid)
         if row is None:
-            return self.models_admin_form(sess, "no such model")
+            return self._models_view(sess, form, "no such model")
         models.set_enabled(mid, not row["enabled"])
-        return self.models_admin_form(sess)
+        return self._models_view(sess, form)
 
     def models_delete_post(self, sess: dict, model_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4948,9 +5038,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             mid = int(model_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         models.delete(mid)
-        return self.models_admin_form(sess, info="deleted")
+        return self._models_view(sess, form, info="deleted")
 
     def models_effort_post(self, sess: dict, model_id: str, form: dict):
         if sess["role"] != "admin":
@@ -4958,9 +5048,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             mid = int(model_id)
         except ValueError:
-            return self.models_admin_form(sess, "bad id")
+            return self._models_view(sess, form, "bad id")
         ok, msg = models.set_reasoning_effort(mid, form.get("reasoning_effort"))
-        return self.models_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
+        return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
 
     def models_chain_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":
@@ -4972,7 +5062,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     ids.append(int(v))
                 except ValueError:
-                    return self.models_admin_form(sess, "bad model id")
+                    return self._models_view(sess, form, "bad model id")
         # de-dupe, preserving order -- the same model picked twice (e.g.
         # left as both primary and a fallback slot) would otherwise violate
         # model_chain's own (workspace_id, priority) shape for no benefit,
@@ -4980,7 +5070,7 @@ class Handler(BaseHTTPRequestHandler):
         seen = set()
         ids = [i for i in ids if not (i in seen or seen.add(i))]
         models.set_chain(sess["workspace_id"], ids)
-        return self.models_admin_form(sess, info="saved")
+        return self._models_view(sess, form, info="saved")
 
     # -- admin: web search/fetch domain rules (2026-09-14) --------------------
     def webtools_admin_form(self, sess: dict, err: str = "", info: str = ""):
@@ -5319,7 +5409,153 @@ class Handler(BaseHTTPRequestHandler):
             return self.computeruse_admin_form(sess, err=("" if ok else msg), info=(msg if ok else ""))
         return self.not_found()
 
+    # -- first-run setup (2026-10-28) -- see firstrun.py / docs/onboarding.md
+    def first_run_page(self, sess: dict, step: str = "", err: str = "", info: str = "", browse: dict | None = None):
+        """GET /first-run (admin): connect a provider, choose a primary model and fallbacks, name her and give her pronouns, then hand over to the
+        getting-to-know-you chat. Each step shows as done because the data says so; the admin can move back and forth with the steps at the top."""
+        if sess["role"] != "admin":
+            return self.send(303, b"", {"Location": "/"})
+        wsid = sess["workspace_id"]
+        csrf = esc(sess["csrf"])
+        done = firstrun.done(wsid)
+        step = step if step in firstrun.STEPS else firstrun.next_step(wsid)
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        sec = self._models_sections(sess, browse)
+        origin = f"<input type=hidden name=from value=firstrun><input type=hidden name=step value={step}>"
+        csrf_input = f"<input type=hidden name=csrf value='{csrf}'>"
+
+        def mark(html: str) -> str:
+            """Tag every form in a shared section so its POST comes back to this page, not Settings."""
+            return html.replace(csrf_input, csrf_input + origin)
+
+        stepper = "<ol class=stepper>" + "".join(
+            f"<li class='{'cur' if k == step else ''} {'ok' if done[k] else ''}'><a href='/first-run?step={k}'>{n}. {esc(firstrun.STEP_TITLES[k])}</a></li>"
+            for n, k in enumerate(firstrun.STEPS, 1)) + "</ol>"
+
+        def go(label: str, target: str, ready: bool, why: str) -> str:
+            if ready:
+                return f"<p><a class='btn btn-primary' href='/first-run?step={target}'>{esc(label)}</a></p>"
+            return f"<p class=muted>{esc(why)}</p>"
+
+        if step == "connect":
+            body = (
+                "<h2>First, give her something to think with</h2>"
+                "<p class=muted>She runs on a language model that you connect. Pick whichever you already have: an <b>OpenRouter</b> key reaches most models "
+                "with one key; an <b>Anthropic</b>, <b>OpenAI</b> or <b>xAI</b> API key goes straight to that company; a <b>Claude</b>, <b>ChatGPT/Codex</b> or "
+                "<b>GitHub Copilot</b> subscription can be signed in instead of paying per token. You can connect more than one now, and a second is a good "
+                "fallback. Keys are stored encrypted and never shown again.</p>"
+                f"{mark(sec['providers'])}"
+                + go("Continue: choose models", "models", done["connect"], "Connect at least one provider to continue (a subscription sign-in shows its "
+                                                                          "steps under the provider once you add it)."))
+        elif step == "models":
+            chain = models.get_chain(wsid)
+            if not done["connect"]:
+                body = "<h2>Choose her models</h2><p class=muted>Connect a provider first.</p>" + go("Back", "connect", True, "")
+            else:
+                if not chain:
+                    warn = "<p class=err>No primary model yet. Add one below, or pick one from the lists, and she can speak.</p>"
+                elif len(chain) == 1:
+                    warn = ("<p class=muted>No fallback yet. If her primary model's provider has an outage or your key runs out, she goes quiet. A second model, "
+                            "ideally on a different provider, is the safety net.</p>")
+                else:
+                    same = len({c["provider_id"] for c in chain}) == 1
+                    warn = ("<p class=muted>A fallback is set, but on the same provider as the primary. That covers a model being down, not the provider "
+                            "being down.</p>" if same else "<p class=info>Primary and fallback are on different providers.</p>")
+                body = (
+                    "<h2>Pick her primary model, and a fallback</h2>"
+                    "<p class=muted>The <b>primary</b> answers every message. A <b>fallback</b> is tried only when the one before it fails. Browse what a "
+                    "provider offers, add the models you want, press <b>test</b> to check each one really answers, then set the order at the bottom.</p>"
+                    f"{warn}"
+                    f"<div class=section><h2>Browse</h2>{mark(sec['catalogue']) or '<p class=muted>nothing connected.</p>'}</div>"
+                    f"{mark(sec['browse'])}{mark(sec['models'])}{mark(sec['chain'])}"
+                    + go("Continue: name her", "identity", done["models"], "Choose a primary model to continue."))
+        else:
+            current = config.get("workspace", wsid, "assistant_name")
+            chosen = firstrun.pronouns(wsid)
+            radios = "".join(
+                f"<label><input type=radio name=pronouns value='{p}'{' checked' if p == chosen else ''}> {esc(p)}</label>" for p in config.PRONOUNS)
+            ready = done["models"]
+            body = (
+                "<h2>What should she be called?</h2>"
+                "<p class=muted>This is her name everywhere: the chat header, notifications, how she signs herself. The pronouns are how she is told "
+                "people refer to her. Both can be changed later in Settings.</p>"
+                "<form method=post action='/first-run/identity'>"
+                f"{csrf_input}"
+                f"<div class=field><label>her name</label><input type=text name=name maxlength={firstrun.NAME_MAX} required value='{esc(current)}'></div>"
+                f"<div class=field><label>her pronouns</label><div class=pronoun-row>{radios}</div></div>"
+                + ("<p class=muted>When you continue she will introduce herself and ask you a few questions: what to call you, how you like things done, "
+                   "when she may message you. She adjusts her own settings as you answer and can draft her persona for you to approve.</p>"
+                   "<button class='btn btn-primary'>Save, and meet her</button>" if ready
+                   else "<p class=err>Choose a primary model first (step 2), she can't speak without one.</p>"
+                        "<button class=btn disabled>Save, and meet her</button>")
+                + "</form>")
+        skip = (f"<form method=post action='/first-run/skip' style='margin-top:1.5rem'>{csrf_input}"
+                "<button class=btn>Skip setup for now</button> <small class=muted>You can come back from Settings → About.</small></form>")
+        self.send(200, page_app("Getting set up", "<div class=hdr-left><div class=hdr-title>Getting set up</div></div>",
+                                f"{stepper}{e}{i}{body}{skip}", content_max_width="760px"))
+
+    def _first_run_redirect(self, sess: dict) -> bool:
+        """The admin of an instance that has never been set up is sent to /first-run instead of an empty chat. Members are not: they are told on the
+        chat page that the admin has to finish first. True when the redirect was sent."""
+        if sess["role"] == "admin" and firstrun.needed(sess["workspace_id"]):
+            self.send(303, b"", {"Location": "/first-run"})
+            return True
+        return False
+
+    def first_run_identity_post(self, sess: dict, form: dict):
+        """Her name and pronouns, then straight to the chat where she introduces herself (finish() refuses while there is no model)."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        ok, msg = firstrun.save_identity(wsid, form.get("name") or "", form.get("pronouns") or "")
+        if not ok:
+            return self.first_run_page(sess, step="identity", err=msg)
+        ok, msg = firstrun.finish(wsid)
+        if not ok:
+            return self.first_run_page(sess, step="models", err=msg)
+        return self.send(303, b"", {"Location": "/"})
+
+    def first_run_skip_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        firstrun.skip(sess["workspace_id"])
+        return self.send(303, b"", {"Location": "/"})
+
     # -- admin: code sandbox (2026-10-04) -- see sandbox.py / docs/sandbox.md
+    def onboarding_begin_post(self, sess: dict, form: dict):
+        """POST /onboarding/begin -- the chat page calls this once for a user whose onboarding is pending: she speaks first. Same payload as /send."""
+        user_id = sess["user_id"]
+        user = accounts.get_user(user_id)
+        if user is None or onboarding.status(user_id) != onboarding.PENDING or not onboarding.has_model(user["workspace_id"]):
+            return self.send_json({"ok": True, "messages": []})
+        opener = onboarding.kickoff_message(user, persona_customised=_persona_customised_for(sess))         # activates it
+        payload = turns.run(user_id,
+                            lambda: self._run_turn(sess, user, extra_message=opener),
+                            lambda _orphan: self._run_turn(sess, user))
+        if not payload.get("ok", True) or payload.get("queued"):
+            onboarding.request_restart(user_id)           # she didn't get to speak: try again on the next visit
+        payload["board_count"] = self._board_count(sess)
+        return self.send_json(payload)
+
+    def onboarding_persona_post(self, sess: dict, form: dict):
+        """POST /onboarding/persona -- the admin presses Apply or Discard on the persona draft card in the chat. This is the ONLY way her draft becomes
+        her persona: an authenticated admin action that goes through persona_admin exactly like a Settings -> Persona save (the previous persona is
+        snapshotted and restorable). No model-callable tool can reach it."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        uid = sess["user_id"]
+        body = onboarding.get_draft(uid)
+        action = form.get("action")
+        if body and action == "apply":
+            ok, msg = persona_admin.act("save", {"text": persona_admin.compose(body)})
+            if not ok:
+                return self.send(400, page_simple("couldn't apply it", f"<p class=err>{esc(msg)}</p><p><a href='/'>back to the chat</a></p>"))
+            onboarding.settle_draft(uid, "applied")
+        elif body and action == "discard":
+            onboarding.settle_draft(uid, "discarded")
+        return self.send(303, b"", {"Location": "/"})
+
     def updates_admin_form(self, sess: dict, err: str = "", info: str = ""):
         """Settings -> Updates (admin): what's running, whether a newer release exists, its notes, the exact commands, and the switches.
         Nothing here changes the running code -- see updates.py."""
@@ -7203,6 +7439,7 @@ class Handler(BaseHTTPRequestHandler):
         body = (
             "<div class=section><h2>this instance</h2>"
             "<table>"
+            f"<tr><td>version</td><td class=muted>{esc(updates.current_version())}</td></tr>"
             f"<tr><td>build</td><td class=muted>{esc(build)}</td></tr>"
             f"<tr><td>uptime</td><td class=muted>{esc(uptime_txt)}</td></tr>"
             f"<tr><td>model</td><td class=muted>{esc(model_txt)}</td></tr>"
@@ -7210,6 +7447,14 @@ class Handler(BaseHTTPRequestHandler):
             f"<tr><td>database</td><td class=muted>{esc(self._fmt_bytes(db_bytes))}</td></tr>"
             f"<tr><td>working folder</td><td class=muted>{esc(self._fmt_bytes(work_bytes))}</td></tr>"
             "</table></div>"
+            + ("<div class=section><h2>first-time setup</h2>"
+               "<p class=muted>The guided pass for connecting a provider, choosing a primary model and fallbacks, and naming her. Safe to reopen: "
+               "it shows what is already done.</p><p><a class=btn href='/first-run'>open setup</a></p></div>" if sess["role"] == "admin" else "")
+            + "<div class=section><h2>meet her again</h2>"
+            "<p class=muted>She introduces herself, asks a few questions, saves what she learns, and (for the admin) can refresh her persona and show you around. "
+            "Nothing changes until you answer; a persona draft is only applied after you reply, and the old one can be restored in Settings → Persona.</p>"
+            f"<form method=post action='/settings/onboarding/restart'><input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
+            "<button class='btn btn-primary'>start the introduction</button></form></div>"
             "<div class=section><h2>integrations</h2>"
             f"<p class=muted>{esc(integ_txt)}</p>"
             "<p><a href='/settings?tab=health'>full integration health -&gt;</a></p></div>"
@@ -10274,9 +10519,21 @@ class Handler(BaseHTTPRequestHandler):
             return (f"<time class=msg-time datetime='{esc(usertime.fmt(uid_, ts, '%Y-%m-%dT%H:%M:%S'))}' "
                     f"title='{esc(usertime.fmt(uid_, ts, '%A, %b %d, %Y %I:%M %p'))}'>{esc(_clock(ts))}</time>")
 
+        draft_card = onboarding.draft_card_id(sess["user_id"])
+
         def _bubble(m):
             if m["kind"] == "tool":
                 return f"<div class=toolline>{esc(m['content'])}</div>"
+            if m["kind"] == onboarding.DRAFT_KIND:
+                # Her persona draft, shown verbatim with Apply / Discard for the admin; nothing she can call applies it (onboarding.py).
+                if draft_card is not None and m["id"] == draft_card and sess["role"] == "admin":
+                    foot = (f"<form class=draft-actions method=post action='/onboarding/persona'><input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
+                            "<button class='btn btn-primary' name=action value=apply>Apply this persona</button>"
+                            "<button class=btn name=action value=discard>Discard</button></form>")
+                else:
+                    foot = "<div class=draft-done>no longer pending</div>"
+                return (f"<div id='message-{m['id']}' class='msg assistant msg-draft'><div class=draft-head>Persona draft</div>"
+                        f"{esc(m['content'])}{foot}{_time_el(m.get('ts'))}</div>")
             marker = self._msg_marker(m["emotion"]) if m.get("emotion") else ""
             if m["kind"] == "image":
                 meta = json.loads(m["meta"]) if m.get("meta") else {}
@@ -10334,7 +10591,20 @@ class Handler(BaseHTTPRequestHandler):
                     parts.append(f"<div class=daysep>{esc(_day_label(day))}</div>")
                     last_day = day
             parts.append(_bubble(m))
-        bubbles = "".join(parts) or "<p class=muted>say something to get started.</p>"
+        ob_status = onboarding.status(sess["user_id"])
+        if parts:
+            bubbles = "".join(parts)
+        elif ob_status == onboarding.PENDING and not onboarding.has_model(sess["workspace_id"]):
+            # A fresh instance has no model until the admin connects one, so she can't introduce herself yet.
+            if sess["role"] == "admin":
+                bubbles = ("<div class=welcome-card><h3>Welcome.</h3><p>Before we can meet, I need a model to think with. Connect a provider and choose a primary model in "
+                           "<a href='/first-run'>setup</a> (OpenRouter with your own key, or sign in with an OpenAI, "
+                           "Anthropic or GitHub Copilot subscription). Then come back here and I'll introduce myself.</p></div>")
+            else:
+                bubbles = ("<div class=welcome-card><h3>Welcome.</h3><p>Setup isn't finished yet: the household admin needs to connect a model first. "
+                           "Come back once they have.</p></div>")
+        else:
+            bubbles = "<p class=muted>say something to get started.</p>"
         last_day_key = last_day.isoformat() if last_day else ""
         color = emotion.COLORS.get(current_state, "#95a5a6")
         assistant_name = config.get("workspace", sess["workspace_id"], "assistant_name")
@@ -10354,7 +10624,8 @@ class Handler(BaseHTTPRequestHandler):
         # and every other piece of embedded JSON in this app does the same).
         chat_cfg = json.dumps({"csrf": sess["csrf"], "state": current_state, "last_id": last_id,
                               "colors": emotion.COLORS, "assistant_name": assistant_name,
-                              "tz": usertime.zone_name(sess["user_id"]), "last_day": last_day_key}).replace("</", "<\\/")
+                              "tz": usertime.zone_name(sess["user_id"]), "last_day": last_day_key,
+                              "onboarding": "begin" if onboarding.should_begin(sess["user_id"], sess["workspace_id"]) else ""}).replace("</", "<\\/")
         notify_cfg = json.dumps({
             "enabled": bool(config.get("user", sess["user_id"], "notify_enabled")),
             "quiet_start": config.get("user", sess["user_id"], "notify_quiet_start"),
@@ -10762,6 +11033,9 @@ class Handler(BaseHTTPRequestHandler):
         introducing turn) is passed straight through to chat.run()'s own
         param of the same name -- see that function's docstring."""
         before_id = conversation.max_id(user["id"])
+        if extra_message is None:
+            # While she is getting set up with this user, the onboarding guide rides as the last system message (onboarding.py).
+            extra_message = onboarding.guide_message(user, persona_customised=_persona_customised_for(sess))
         # Timing instrumentation (2026-09-13, config.debug_timing_enabled,
         # see timing.py) -- one Turn per answered message, spanning the
         # whole thing this function is responsible for: the model-turn
@@ -10805,6 +11079,9 @@ class Handler(BaseHTTPRequestHandler):
             if r["kind"] == "tool":
                 tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"],
                                  "emotion": None, "kind": "tool", "ts": r["ts"]})
+            elif r["kind"] == onboarding.DRAFT_KIND:
+                tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"], "emotion": None, "kind": r["kind"],
+                                  "meta": {"persona_draft": True}, "ts": r["ts"]})
             elif r["kind"] == "image":
                 try:
                     img_meta = json.loads(r["meta"]) if r.get("meta") else None
@@ -11006,6 +11283,11 @@ class Handler(BaseHTTPRequestHandler):
             "state": emotion.get_state(sess["user_id"]),
             "board_count": self._board_count(sess),
         })
+
+
+def _persona_customised_for(sess: dict) -> bool:
+    """Has the admin edited the persona? Only an admin's onboarding is told (it is the only one that can refine it); everyone else gets False."""
+    return sess.get("role") == "admin" and persona_admin.is_customised()
 
 
 def _device_turn_runner(user_id: int, extra_message: dict | None = None) -> dict:

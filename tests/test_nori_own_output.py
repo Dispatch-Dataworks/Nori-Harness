@@ -142,6 +142,7 @@ class SurfaceTriageTests(unittest.TestCase):
         "turns.py": ("no prompt", "counts and reads the user's unanswered messages"),
         "diagnostics.py": ("no prompt", "kind='tool' meta for the diagnostics page"),
         "bridge.py": ("no prompt", "reads one message's meta only to update its approval card's status; nothing is put in a prompt"),
+        "onboarding.py": ("no prompt", "counts her replies since onboarding began (to end it) and checks that a user message exists after a persona draft; no text is read"),
     }
 
     def readers(self):

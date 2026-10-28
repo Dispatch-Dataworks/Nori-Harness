@@ -317,8 +317,33 @@ class OperatorOnlyTests(unittest.TestCase):
             import server  # noqa: F401  -- registers every native tool
         except Exception:
             pass
+        # The ONE exception, deliberate (2026-10-26, onboarding): a tool that stores an INERT draft. It cannot change the persona; only an authenticated admin
+        # POST (server.onboarding_persona_post -> persona_admin) applies a draft. test_the_one_persona_tool_only_stores_an_inert_draft pins that.
+        draft_only = {"onboarding_propose_persona"}
         for name, t in tools._REGISTRY.items():
+            if name in draft_only:
+                continue
             self.assertNotRegex(name, r"persona", name)
+
+    def test_the_one_persona_tool_only_stores_an_inert_draft(self):
+        src = (N / "onboarding.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        self.assertEqual(self.imports(tree) & {"persona", "persona_admin", "promptdoc", "guidance", "tuning_admin", "restore_ui"}, set(),
+                         "onboarding.py registers tools, so it must not import any persona/prompt code")
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        self.assertEqual(names & {"persona", "persona_admin", "promptdoc"}, set(), "no reference to the persona code in the tool module")
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_propose_persona")
+        body = ast.unparse(fn)
+        self.assertIn("add_message", body)
+        self.assertIn("_save(", body)
+        server_src = (N / "server.py").read_text(encoding="utf-8")
+        handler = ast.parse(server_src)
+        cls = next(n for n in handler.body if isinstance(n, ast.ClassDef) and n.name == "Handler")
+        apply_fn = ast.unparse(next(f for f in cls.body if isinstance(f, ast.FunctionDef) and f.name == "onboarding_persona_post"))
+        self.assertIn("sess['role'] != 'admin'", apply_fn)
+        self.assertIn("persona_admin.act('save'", apply_fn, "applying goes through the same admin save as Settings -> Persona")
+        callers = [f.name for f in cls.body if isinstance(f, ast.FunctionDef) and "settle_draft" in ast.unparse(f)]
+        self.assertEqual(callers, ["onboarding_persona_post"], "only the admin route settles a draft")
 
     def test_every_server_method_that_uses_the_editor_checks_for_an_admin(self):
         tree = ast.parse((N / "server.py").read_text(encoding="utf-8"))

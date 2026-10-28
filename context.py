@@ -32,7 +32,7 @@ import memory
 import persona
 import usertime
 
-_OPS = """Your name is {assistant_name}. You're messaging {name} directly, one to one, in a private \
+_OPS = """Your name is {assistant_name}. {pronouns} You're messaging {name} directly, one to one, in a private \
 assistant app -- not a public or shared chat. It is {now} for them. \
 Everything after this is your persona and operating context, not lines to recite."""
 
@@ -58,7 +58,8 @@ def _system_parts(user_id: int, display_name: str) -> list[tuple[str, str]]:
     state = emotion.get_state(user_id)
     return [
         ("name/time header", _OPS.format(name=display_name, now=now,
-                                         assistant_name=persona.assistant_name_for_user(user_id))),
+                                         assistant_name=persona.assistant_name_for_user(user_id),
+                                         pronouns=persona.pronoun_sentence_for_user(user_id))),
         ("persona", persona.load_prompt(user_id)),
         ("guidance", guidance.load_prompt()),
         # The mechanism (only changes via set_emotion, persists otherwise) is

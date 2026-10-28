@@ -51,6 +51,17 @@ def assistant_name_for_user(user_id: int | None) -> str:
     return assistant_name(user["workspace_id"]) if user is not None else "Nori"
 
 
+def pronoun_sentence_for_user(user_id: int | None) -> str:
+    """The pronoun line for the name header (context._OPS). No user (a test or an admin preview path) means the shipped default, same as the name."""
+    import accounts  # local: same reasoning as assistant_name_for_user()
+    import config
+    user = accounts.get_user(user_id) if user_id is not None else None
+    chosen = config.get("workspace", user["workspace_id"], "assistant_pronouns") if user is not None else config.PRONOUNS[0]
+    if chosen not in config.PRONOUNS:
+        chosen = config.PRONOUNS[0]
+    return f"Your pronouns are {chosen}: that is how the people around you refer to you."
+
+
 def _resolve_name(text: str, user_id: int | None) -> str:
     return text.replace(_NAME_PLACEHOLDER, assistant_name_for_user(user_id)) if _NAME_PLACEHOLDER in text else text
 
@@ -86,6 +97,21 @@ def default_text() -> str:
 
 def is_default() -> bool:
     return load_file().strip() == default_text().strip()
+
+
+def is_customised() -> bool:
+    """Is the live persona something other than the shipped default? Line endings are normalised: a checkout may have CRLF where a saved file has LF."""
+    norm = lambda t: t.replace(chr(13) + chr(10), chr(10)).strip()  # noqa: E731
+    return norm(load_file()) != norm(default_text())
+
+
+def with_body(body: str) -> str:
+    """The persona file text with `body` between the markers, keeping whatever surrounds them in the live file (or the shipped default). Used when
+    the admin applies a draft; it does not write anything."""
+    base = load_file() or default_text()
+    pre = base.split(promptdoc.START, 1)[0] if promptdoc.START in base else ""
+    post = base.split(promptdoc.END, 1)[1] if promptdoc.END in base else "\n"
+    return f"{pre}{promptdoc.START}\n{body.strip()}\n{promptdoc.END}{post}"
 
 
 def reset_to_default() -> tuple[bool, str]:
