@@ -681,6 +681,54 @@ def _list_models_openai(*, url: str, headers: dict) -> tuple[bool, list[dict] | 
                         key=lambda m: m["id"])
 
 
+# ── Image-capable model lists (Settings -> Images, avatar builder) ─────
+
+def list_image_models(provider: dict | None) -> tuple[bool, list[dict] | str]:
+    """Models that can draw pictures, for the Images settings dropdown. provider None = OpenRouter by the
+    connected key or the environment key. (True, [{"id","label"}]) or (False, message)."""
+    try:
+        ptype = provider["type"] if provider else "openrouter"
+        if ptype == "openrouter":
+            headers = {"Accept": "application/json"}
+            try:
+                key = api_key_for(provider) if provider else __import__("chat").openrouter_key()
+            except Exception:  # noqa: BLE001 -- the public list needs no key
+                key = ""
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            try:
+                data = _post_json(_OPENROUTER_MODELS_URL + "?output_modalities=image", None, headers=headers, method="GET")
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                return False, f"couldn't list models: {exc}"
+            out = []
+            for m in data.get("data") or []:
+                arch = m.get("architecture") or {}
+                if "image" not in (arch.get("output_modalities") or []) or not m.get("id"):
+                    continue
+                ref = " (takes a reference picture)" if "image" in (arch.get("input_modalities") or []) else ""
+                out.append({"id": m["id"], "label": (m.get("name") or m["id"]) + ref})
+            return True, sorted(out, key=lambda m: m["id"])
+        if ptype in ("openai_api_key", "xai_api_key"):
+            url = "https://api.openai.com/v1/models" if ptype == "openai_api_key" else "https://api.x.ai/v1/models"
+            ok, res = _list_models_openai(url=url, headers={"Authorization": f"Bearer {api_key_for(provider)}"})
+            if ptype == "xai_api_key":
+                try:
+                    data = _post_json("https://api.x.ai/v1/image-generation-models", None,
+                                      headers={"Accept": "application/json", "Authorization": f"Bearer {api_key_for(provider)}"}, method="GET")
+                    items = [{"id": m["id"], "label": m["id"]} for m in (data.get("models") or data.get("data") or []) if m.get("id")]
+                    if items:
+                        return True, sorted(items, key=lambda m: m["id"])
+                except Exception:  # noqa: BLE001 -- fall back to filtering the general list
+                    pass
+            if not ok:
+                return False, res
+            keys = ("gpt-image", "chatgpt-image", "dall-e") if ptype == "openai_api_key" else ("image", "imagine")
+            return True, [m for m in res if any(k in m["id"].lower() for k in keys)]
+        return False, "this provider type has no image service"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"couldn't list models: {exc}"
+
+
 def _list_models_anthropic(*, headers: dict) -> tuple[bool, list[dict] | str]:
     try:
         data = _post_json("https://api.anthropic.com/v1/models?limit=1000", None,

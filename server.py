@@ -3069,6 +3069,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.image_thumb_get(sess, path[len("/image-thumb/"):])
         if path.startswith("/image/"):
             return self.image_get(sess, path[len("/image/"):])
+        if path == "/admin/image-models":
+            return self.image_models_get(sess, urllib.parse.parse_qs(qs))
         if path == "/admin/persona/preview":
             return self.persona_preview_get(sess, urllib.parse.parse_qs(qs))
         if path == "/admin/contexttuning/preview":
@@ -7042,6 +7044,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.not_found()
         self._settings_response(sess, "persona", body)
 
+    def image_models_get(self, sess: dict, q: dict):
+        """JSON for the image-model dropdown: the models that can draw pictures for ?provider=ID (0 = OpenRouter)."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int((q.get("provider") or ["0"])[0] or 0)
+        except ValueError:
+            pid = 0
+        row = None
+        if pid:
+            row = providers.get(pid)
+            if not row or row["workspace_id"] != sess["workspace_id"] or row["type"] not in chat.IMAGE_PROVIDER_TYPES:
+                return self.send_json({"ok": False, "error": "not an image provider", "items": []})
+        ok, res = providers.list_image_models(row)
+        default = chat.IMAGE_DEFAULT_MODELS.get(row["type"] if row else "openrouter", "")
+        return self.send_json({"ok": ok, "items": res if ok else [], "error": "" if ok else res, "default": default})
+
     def context_preview_get(self, sess: dict, q: dict):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -7105,11 +7124,14 @@ class Handler(BaseHTTPRequestHandler):
             "<p class=muted>Which connection draws the pictures: OpenRouter, or an OpenAI or xAI API key you have connected under Model config. "
             "Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins have no image service. Changing the provider resets the model "
             "to that provider's default unless you also edit it.</p></div>"
-            "<div class=field><label>image model</label>"
-            f"<input type=text name=image_model value='{esc(model)}'>"
+            "<div class=field id=image-model-field><label>image model</label>"
+            "<select><option value='__other'>loading...</option></select>"
+            f"<input type=text name=image_model value='{esc(model)}' placeholder='model name'>"
+            "<p class='muted img-note'></p>"
             "<p class=muted>OpenRouter: for example <code>bytedance-seed/seedream-5-0-lite</code>. OpenAI: <code>gpt-image-1</code> (the organisation must be "
             "verified for image models). xAI: <code>grok-imagine-image-2.0</code>. It must accept a reference picture, which the selfie tool and the avatar "
             "builder use.</p></div>"
+            + __import__('image_model_ui').JS +
             f"<div class=field><label>daily budget (USD) {cap_tip}</label>"
             f"<input type=number name=image_daily_cap_usd value='{cap}' min=0 step=0.10></div>"
             f"<div class=field><label>per-image cost estimate (USD) {per_req_tip}</label>"
@@ -10324,8 +10346,10 @@ class Handler(BaseHTTPRequestHandler):
                 f"<form method=post action='/admin/avatars/build/model'>{csrf}"
                 "<div class=field><label>provider</label>"
                 f"<select name=image_provider>{options}</select></div>"
-                "<div class=field><label>image model (one that can take a reference picture; blank for the provider's default)</label>"
-                f"<input type=text name=image_model value='{esc(ready['model'])}'></div>"
+                "<div class=field id=image-model-field><label>image model (one that can take a reference picture)</label>"
+                "<select><option value='__other'>loading...</option></select>"
+                f"<input type=text name=image_model value='{esc(ready['model'])}' placeholder='model name'>"
+                "<p class='muted img-note'></p></div>" + __import__('image_model_ui').JS +
                 "<button class='btn btn-primary'>save</button></form>") if options else ""
             parts.append(
                 "<div class=section><h2>Connect an image model first</h2>"
