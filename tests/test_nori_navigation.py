@@ -10,6 +10,7 @@
 import ast
 import html
 import json
+import re
 from pathlib import Path
 import sys
 import time
@@ -79,12 +80,13 @@ def _fake_timing():
 
 def handler(role="admin"):
     sess = dict(role=role, user_id=1, workspace_id=1, csrf="test-csrf")
-    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, PWA_HEAD="", PWA_JS="",
+    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, re=re, PWA_HEAD="", PWA_JS="",
                AVATAR_DIR=Path("avatars"), timing=_fake_timing(), store=_fake_store(),
                accounts=SimpleNamespace(any_users_exist=lambda: True, get_session=lambda _: sess,
                                         get_workspace=lambda _: {"name": "Test household"},
                                         list_users=lambda _: [dict(display_name="Test user", role=role, status="active")],
-                                        create_invite=Mock(return_value=(2, "test-invite"))),
+                                        create_invite=Mock(return_value=(2, "test-invite")),
+                                        the_workspace_id=lambda: 1),
                config=SimpleNamespace(get=lambda *a: 0),
                # signal_registry() backs the "pings" tab's derived per-signal
                # toggles (2026-09-26) -- empty here is fine, this harness
@@ -123,7 +125,8 @@ def handler(role="admin"):
     # settings_page's chatvoice/notify/household tabs and subagents_admin_form
     # all call directly -- added in the same design pass that split Pings
     # into three tabs, never added here.
-    definitions("server.py", {"BASE_CSS", "APP_JS", "KEYBOARD_JS", "NOTIFY_STATUS_JS", "page_app", "info_tip"}, env)
+    definitions("server.py", {"BASE_CSS", "APP_JS", "KEYBOARD_JS", "NOTIFY_STATUS_JS", "page_app", "info_tip",
+                                  "_instance_name", "_tab_title", "_TITLE_TAIL_RE"}, env)
     tree = ast.parse((ROOT / "server.py").read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Handler")
     cls.bases = []
@@ -200,7 +203,7 @@ class NavigationTests(unittest.TestCase):
         status, body = h.send.call_args.args
         self.assertEqual(status, 200)
         text = body.decode()
-        self.assertIn("<title>Settings</title>", text)
+        self.assertIn("<title>Settings · Nori</title>", text)
         self.assertNotIn("aria-current=page", text)  # nothing is "active" on the menu screen
         self.assertIn("settings-group-label", text)
         self.assertIn("Pings", text)  # a real tab row, from the real grouping
@@ -270,7 +273,7 @@ class NavigationTests(unittest.TestCase):
             h, sess, _ = handler(role)
             h.settings_page(sess, "peers")
             text = h.send.call_args.args[1].decode()
-            self.assertIn("<title>Settings · Peer connections</title>", text)
+            self.assertIn("<title>Settings · Peer connections · Nori</title>", text)
             self.assertIn("<details class=peer-debug id=peer-debug>", text)
             self.assertIn("<summary>Peer messages (debug)</summary>", text)
             self.assertEqual("action='/admin/peers'" in text, role == "admin")

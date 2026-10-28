@@ -2594,6 +2594,29 @@ NOTE_VIEWER_JS = (
     "})();</script>"
 )
 
+def _instance_name() -> str:
+    """What this instance calls her, for pages that have no session (the tab title, the login page). Nori before anything is set up."""
+    wsid = accounts.the_workspace_id()
+    name = config.get("workspace", wsid, "assistant_name") if wsid is not None else None
+    return name if isinstance(name, str) and name.strip() else "Nori"
+
+
+_TITLE_TAIL_RE = re.compile(r"\s*[·|-]\s*nori$", re.I)
+
+
+def _tab_title(title: str) -> str:
+    """The browser tab / history title: "<page> · <her name>", or just her name for the chat. Call sites used to hardcode "nori" ("history · nori",
+    "nori"), so an instance called Iron still said nori in the tab; the product name is stripped here and her own name added, in one place. A title that
+    already contains her name is left alone."""
+    name = _instance_name()
+    t = _TITLE_TAIL_RE.sub("", (title or "").strip())
+    if not t or t.lower() == "nori":
+        return name
+    if name.lower() in t.lower():
+        return t
+    return f"{t} · {name}"
+
+
 def page_simple(title: str, inner: str, *, back_href: str = "/") -> bytes:
     """One-off error/status pages (403/404/429/CSRF-blocked) -- now the
     identical fixed shell page_app() gives every other page (2026-09-18,
@@ -2608,14 +2631,15 @@ def page_simple(title: str, inner: str, *, back_href: str = "/") -> bytes:
     promoting _hdr_back to a module-level function purely to share it,
     which would touch every one of its many existing call sites for a
     cosmetic-only refactor)."""
+    shown = _instance_name() if title.strip().lower() == "nori" else title
     header = (f"<div class=hdr-left><a class=hdr-back href='{esc(back_href)}'>‹</a>"
-             f"<div class=hdr-title>{esc(title)}</div></div>")
+             f"<div class=hdr-title>{esc(shown)}</div></div>")
     return page_app(title, header, f"<div class=auth-card>{inner}</div>")
 
 
 def page_app(title: str, header_inner: str, main_inner: str, footer_inner: str = "",
             *, split_main: bool = False, extra_js: str = "", chat_header: bool = False,
-            content_max_width: str | None = None) -> bytes:
+            content_max_width: str | None = None, raw_title: bool = False) -> bytes:
     """Every authenticated page -- the fixed shell. header/footer stay put;
     main scrolls (or, for chat's split layout, contains its own scrolling
     children instead of scrolling itself -- see .shell-main--split).
@@ -2643,7 +2667,9 @@ def page_app(title: str, header_inner: str, main_inner: str, footer_inner: str =
         "<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
         f"{PWA_HEAD}"
-        f"<title>{esc(title)}</title><style>{BASE_CSS}</style></head>"
+        f"<meta name=application-name content='{esc(_instance_name())}'>"
+        f"<meta name=apple-mobile-web-app-title content='{esc(_instance_name())}'>"
+        f"<title>{esc(title if raw_title else _tab_title(title))}</title><style>{BASE_CSS}</style></head>"
         "<body class=app>"
         f"<header class='{header_class}'>{header_inner}</header>"
         f"<main class='{main_class}'>{content}</main>"
@@ -3299,6 +3325,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.first_run_identity_post(sess, form)
         if path == "/first-run/skip":
             return self.first_run_skip_post(sess, form)
+        if path == "/settings/start-over":
+            return self.start_over_post(sess, form)
         if path == "/onboarding/begin":
             return self.onboarding_begin_post(sess, form)
         if path == "/onboarding/persona":
@@ -3433,7 +3461,7 @@ class Handler(BaseHTTPRequestHandler):
         # before signing in; the public about page is the one real
         # destination that makes sense here.
         self.send(200, page_simple("nori", (
-            "<h1>nori</h1>" + e +
+            f"<h1>{esc(_instance_name())}</h1>" + e +
             "<form method=post action='/login'>"
             "<div class=field><input type=text name=display_name placeholder=name required autofocus></div>"
             "<div class=field><input type=password name=password placeholder=password required "
@@ -3496,7 +3524,7 @@ class Handler(BaseHTTPRequestHandler):
         # page that's otherwise a dead end before signing in.
         header = (f"<div class=hdr-left><a class=hdr-back href='/login'>‹</a>"
                  f"<div class=hdr-title>About Nori</div></div>")
-        self.send(200, page_app("about nori", header, html))
+        self.send(200, page_app("about nori", header, html, raw_title=True))
 
     # -- invites --
     def invite_form(self, raw_token: str, err: str = ""):
@@ -3505,8 +3533,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, page_simple("invite", "<p>this invite link is invalid or has expired.</p>",
                                               back_href="/about"))
         e = f"<p class=err>{esc(err)}</p>" if err else ""
-        self.send(200, page_simple("join nori", (
-            f"<h1>join nori</h1><p>you've been invited as <b>{esc(inv['display_name'])}</b> "
+        self.send(200, page_simple(f"join {_instance_name()}", (
+            f"<h1>join {esc(_instance_name())}</h1><p>you've been invited as <b>{esc(inv['display_name'])}</b> "
             f"({esc(inv['role'])}). set your own password to finish — nobody else has seen or set it.</p>" + e +
             f"<form method=post action='/invite/{esc(raw_token)}'>"
             "<div class=field><input type=password name=password placeholder=password required "
@@ -5503,6 +5531,46 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _start_over_section(self, sess: dict) -> str:
+        """Settings -> About (admin): the two ways to see the first-time experience again. Reopening setup changes nothing; the reset deletes history."""
+        import backup
+        csrf = esc(sess["csrf"])
+        if backup.key_status()["ok"]:
+            bk = "An encrypted backup is taken first, and nothing is deleted if that backup fails."
+        else:
+            bk = "<b>No backup key is configured, so no backup will be taken first.</b>"
+        return (
+            "<div class=section><h2>first-time setup</h2>"
+            "<p class=muted>The guided pass for connecting a provider, choosing a primary model and fallbacks, and naming her. Safe to reopen: "
+            "it shows what is already done, and changes nothing until you press something. For her introduction on its own, use "
+            "<b>meet her again</b> below.</p><p><a class=btn href='/first-run'>open setup</a></p></div>"
+            "<div class=section><h2>start over</h2>"
+            "<p class=muted>See the whole first-time experience again: setup resumes at her name and pronouns, then she introduces herself and asks her questions. "
+            "<b>This permanently deletes every member's conversation history</b> (and its summaries and pictures) and forgets onboarding progress. "
+            "It keeps accounts, providers and keys, models and fallbacks, memories, her persona, files and all other settings. "
+            f"{bk}</p>"
+            "<form method=post action='/settings/start-over'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><label>type <b>reset</b> to confirm</label>"
+            "<input type=text name=confirm autocomplete=off required></div>"
+            "<button class='btn btn-danger'>delete history and start over</button></form></div>")
+
+    def start_over_post(self, sess: dict, form: dict):
+        """POST /settings/start-over (admin, CSRF-checked, typed confirmation): back up if a backup key is set, then firstrun.reset()."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        import backup
+        back = "/settings?tab=about"
+        if (form.get("confirm") or "").strip().lower() != "reset":
+            return self.send(400, page_simple("not reset", "<p class=err>Type reset to confirm. Nothing was deleted.</p>", back_href=back))
+        if backup.key_status()["ok"]:
+            rec = backup.create_backup()
+            if rec.get("status") != "ok":
+                return self.send(500, page_simple("not reset", f"<p class=err>The backup failed, so nothing was deleted: {esc(str(rec.get('error') or 'unknown error'))}</p>",
+                                                  back_href=back))
+        firstrun.reset(sess["workspace_id"])
+        return self.send(303, b"", {"Location": "/"})
+
     def first_run_identity_post(self, sess: dict, form: dict):
         """Her name and pronouns, then straight to the chat where she introduces herself (finish() refuses while there is no model)."""
         if sess["role"] != "admin":
@@ -7447,9 +7515,7 @@ class Handler(BaseHTTPRequestHandler):
             f"<tr><td>database</td><td class=muted>{esc(self._fmt_bytes(db_bytes))}</td></tr>"
             f"<tr><td>working folder</td><td class=muted>{esc(self._fmt_bytes(work_bytes))}</td></tr>"
             "</table></div>"
-            + ("<div class=section><h2>first-time setup</h2>"
-               "<p class=muted>The guided pass for connecting a provider, choosing a primary model and fallbacks, and naming her. Safe to reopen: "
-               "it shows what is already done.</p><p><a class=btn href='/first-run'>open setup</a></p></div>" if sess["role"] == "admin" else "")
+            + (self._start_over_section(sess) if sess["role"] == "admin" else "")
             + "<div class=section><h2>meet her again</h2>"
             "<p class=muted>She introduces herself, asks a few questions, saves what she learns, and (for the admin) can refresh her persona and show you around. "
             "Nothing changes until you answer; a persona draft is only applied after you reply, and the old one can be restored in Settings → Persona.</p>"

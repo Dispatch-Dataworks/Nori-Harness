@@ -351,6 +351,26 @@ def count_assistant_chat_since(user_id: int, ts: float) -> int:
         "SELECT COUNT(*) FROM messages WHERE user_id=? AND role='assistant' AND kind='chat' AND ts>=?", (user_id, ts)).fetchone())[0]
 
 
+def delete_all_for_workspace(workspace_id: int) -> dict:
+    """Permanently delete every message of every user in this workspace, their stored summaries (conversation_segments, which are made from those
+    messages) and the pictures that went with them. Start-over only (firstrun.reset); nothing reads a message's text here. Returns {"messages": n, "files": n}."""
+    user_ids = [r["id"] for r in store.read(lambda c: c.execute("SELECT id FROM users WHERE workspace_id=?", (workspace_id,)).fetchall())]
+    total = files = 0
+    for uid in user_ids:
+        while True:
+            ids = [r["id"] for r in store.read(lambda c: c.execute(
+                "SELECT id FROM messages WHERE user_id=? ORDER BY id LIMIT ?", (uid, MAX_EDIT_IDS)).fetchall())]
+            if not ids:
+                break
+            out = delete_messages(uid, ids)
+            if not out["ids"]:
+                break
+            total += len(out["ids"])
+            files += out["files"]
+        store.write(lambda c, u=uid: c.execute("DELETE FROM conversation_segments WHERE user_id=?", (u,)))
+    return {"messages": total, "files": files}
+
+
 def workspace_has_messages(workspace_id: int) -> bool:
     """Has anyone in this workspace ever said anything? (first-run setup is skipped for an instance that has.)"""
     return bool(store.read(lambda c: c.execute(

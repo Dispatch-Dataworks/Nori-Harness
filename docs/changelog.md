@@ -2,6 +2,14 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-28 — fix: Anthropic 400 "`tool_use` ids were found without `tool_result` blocks immediately after"
+
+Found on Iron (Claude Haiku 5.5): when the model made two tool calls in one message, the memory check that follows a consequential tool was appended between the two results. That was invisible while the adapters hoisted every system message to the top, and became a 400 once they kept mid-conversation messages in place (0.10.0). The loop now adds such notes only after every result of the round; the one function every provider call goes through (`chat.call_for_model`) also settles any list so a round's results are contiguous and a system message follows them; and the Anthropic translation puts parallel results in a single user message. The OpenAI-style APIs have the same rule, so they were exposed to the same shape. Tests in `tests/test_nori_tool_result_order.py` include a validator of Anthropic's rule and a check that the test fails without the fix.
+
+## 2026-10-28 — start over, and tab titles follow her name
+
+**Settings -> About** now has **start over** next to **open setup** and **meet her again**: it deletes every member's conversation history (and its summaries and pictures), forgets onboarding progress and re-opens setup, keeping accounts, providers, models, memories, persona and settings. Admin only, typed confirmation, and an encrypted backup first when a backup key is set (nothing is deleted if it fails). Also: the browser tab said "nori" on the chat, history and photos pages regardless of what she is called; every tab title, the installed-app labels, the login page and invitations now use her name (one rule in `page_app`), and only the public about page keeps the product name.
+
 ## 2026-10-28 — first-run setup: model, fallback, name and pronouns before she says hello
 
 A fresh instance used to open on a card telling the admin to go and find Settings -> Model config, and nothing prompted for her name. Now the admin of a

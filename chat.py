@@ -1053,9 +1053,12 @@ def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool =
             else:
                 system_blocks.append({"type": "text", "text": m.get("content") or ""})
         elif role == "tool":
-            out.append({"role": "user", "content": [{
-                "type": "tool_result", "tool_use_id": m.get("tool_call_id"),
-                "content": m.get("content") or ""}]})
+            block = {"type": "tool_result", "tool_use_id": m.get("tool_call_id"), "content": m.get("content") or ""}
+            prev = out[-1] if out else None
+            if prev and prev["role"] == "user" and isinstance(prev["content"], list) and all(b.get("type") == "tool_result" for b in prev["content"]):
+                prev["content"].append(block)       # the results of parallel calls go in ONE user message
+            else:
+                out.append({"role": "user", "content": [block]})
         elif role == "assistant" and m.get("tool_calls"):
             blocks = []
             if m.get("content"):
@@ -1348,6 +1351,29 @@ _PROVIDER_CALLERS = {
 }
 
 
+def _settle_tool_results(messages: list[dict]) -> list[dict]:
+    """Every provider wants the results of an assistant message's tool calls IMMEDIATELY after it, all of them, before anything else (Anthropic: 400
+    "`tool_use` ids were found without `tool_result` blocks immediately after"; the OpenAI-style APIs say the same). A system message that arrives
+    in the middle of that run (the memory check after a consequential tool, appended after the FIRST of two parallel calls) used to be harmless only
+    because the adapters hoisted every system message to the top; once they kept mid-conversation ones in place it split the results. Here, after an
+    assistant message with tool calls, the tool results come first, in order, and any system message that was among them follows. Anything else
+    (a user or assistant message) ends the run untouched, and a list that was already in order comes back equal."""
+    out: list[dict] = []
+    i, n = 0, len(messages)
+    while i < n:
+        m = messages[i]
+        out.append(m)
+        i += 1
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            results, notes = [], []
+            while i < n and messages[i].get("role") in ("tool", "system"):
+                (results if messages[i]["role"] == "tool" else notes).append(messages[i])
+                i += 1
+            out.extend(results)
+            out.extend(notes)
+    return out
+
+
 def call_for_model(entry: dict, messages: list[dict], **kw) -> dict:
     """Dispatch one completion call through a single resolved model
     (models.get_with_provider()'s shape -- a model row with "provider"
@@ -1361,7 +1387,7 @@ def call_for_model(entry: dict, messages: list[dict], **kw) -> dict:
     caller = _PROVIDER_CALLERS.get(provider["type"])
     if caller is None:
         raise ModelError(f"unknown provider type {provider['type']!r}")
-    return caller(entry, messages, **kw)
+    return caller(entry, _settle_tool_results(messages), **kw)
 
 
 def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
@@ -1565,6 +1591,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
                 print(f"chat.run round {rnd}: retry recovered with clean text", flush=True)
                 return _finish(retry_text or "(no reply — the model returned nothing)")
         messages.append({"role": "assistant", "content": result["content"] or None, "tool_calls": calls})
+        round_notes: list[str] = []          # a note must not land between two results of the same round (see _settle_tool_results)
         for tc in calls:
             fn = tc.get("function") or {}
             name = fn.get("name", "")
@@ -1617,7 +1644,8 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
                 import memory  # local: avoids a needless top-level dependency direction, same as elsewhere here
                 note = memory.preaction_check(session, name, args)
                 if note:
-                    messages.append({"role": "system", "content": note})
+                    round_notes.append(note)
+        messages.extend({"role": "system", "content": n} for n in round_notes)
     # Visible, not silent -- but also actionable: this used to just say "no
     # final reply", which read like a bug report, not a turn she "gave" you.
     # Found in real use: every real hit of this was a legitimate multi-step

@@ -131,6 +131,12 @@ def start(user_id: int) -> None:
     _save(user_id, status=ACTIVE, steps=_blank_steps(), started_ts=time.time(), finished_ts=None, draft_persona=None, draft_card_id=None)
 
 
+def reset_workspace(workspace_id: int) -> None:
+    """Forget every user's progress in this workspace (start over, firstrun.reset): each is pending again, as if never seen."""
+    store.write(lambda c: c.execute(
+        "DELETE FROM onboarding WHERE user_id IN (SELECT id FROM users WHERE workspace_id=?)", (workspace_id,)))
+
+
 def request_restart(user_id: int) -> None:
     """"Meet her again": back to pending; the chat page begins it on the next visit."""
     _save(user_id, status=PENDING, steps=_blank_steps(), started_ts=None, finished_ts=None, draft_persona=None, draft_card_id=None)

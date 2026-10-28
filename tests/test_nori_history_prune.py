@@ -547,6 +547,7 @@ class EveryReaderOfMessagesIsClassified(unittest.TestCase):
         "count_hidden": "a number for the UI",
         "assistant_messages_after": "notifications for the owner's own devices, not a prompt; still excludes hidden messages",
         "count_assistant_chat_since": "a number: onboarding ends itself after too many of her replies; no text is read",
+        "delete_all_for_workspace": "delete only (start over, firstrun.reset); no text is read",
         "workspace_has_messages": "a yes/no: first-run setup is skipped for an instance that already has history; no text is read",
         "add_message": "insert",
         "cost_summary": "cost reporting",

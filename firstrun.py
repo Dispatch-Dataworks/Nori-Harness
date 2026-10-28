@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import config
 import conversation
+import onboarding
 import providers
 
 STEPS = ("connect", "models", "identity")
@@ -91,6 +92,17 @@ def finish(workspace_id: int) -> tuple[bool, str]:
         return False, "choose a primary model first, she can't speak without one"
     config.set("workspace", workspace_id, "setup_complete", True)
     return True, "done"
+
+
+def reset(workspace_id: int) -> dict:
+    """Start over, to see the first-time experience again. Deletes every member's conversation history (and its summaries and pictures), forgets all
+    onboarding progress and re-opens setup. Keeps accounts, providers and keys, models and the fallback order, memories, her persona, files and every
+    other setting, so the wizard resumes at her name and pronouns and then she introduces herself. The caller confirms and takes a backup first."""
+    out = conversation.delete_all_for_workspace(workspace_id)
+    onboarding.reset_workspace(workspace_id)
+    config.set("workspace", workspace_id, "setup_complete", False)
+    config.set("workspace", workspace_id, "setup_identity", False)
+    return out
 
 
 def skip(workspace_id: int) -> None:
