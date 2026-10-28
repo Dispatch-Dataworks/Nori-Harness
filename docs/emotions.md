@@ -14,6 +14,8 @@ The tool that lets her set one (`set_emotion`) is enum-constrained
 against whatever that file currently lists, so she can never invent a
 state the configured set doesn't include.
 
+Each state may also carry a `"look"` — a short phrase describing the expression ("one eyebrow raised, a smirk pulled to one side") — which is only what the [avatar builder](avatar-builder.md) asks the image model to draw; nothing at runtime reads it.
+
 ## Persists, and decays — computed, never written back
 
 A turn with no `set_emotion` call just keeps whatever state was

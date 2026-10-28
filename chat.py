@@ -287,6 +287,31 @@ def _key() -> str:
     return k
 
 
+def openrouter_key() -> str:
+    """The key for the calls that are not a chat model (images, embeddings): the connected OpenRouter provider the admin added in Settings or the
+    first-run wizard, else OPENROUTER_API_KEY from the environment. These two calls used to read only the environment, so an instance set up through
+    the wizard (no .env key) could chat but could never draw. Raises ModelError when neither exists."""
+    try:
+        import accounts
+        import providers
+        wsid = accounts.the_workspace_id()
+        if wsid is not None:
+            for p in providers.list_all(wsid):
+                if p["type"] == "openrouter" and p["enabled"] and p["status"] == "connected":
+                    return providers.api_key_for(providers.get(p["id"]))
+    except Exception:  # noqa: BLE001 -- a provider-table problem must not hide the env key
+        pass
+    return _key()
+
+
+def has_openrouter_key() -> bool:
+    try:
+        openrouter_key()
+        return True
+    except ModelError:
+        return False
+
+
 def _check(data: dict) -> None:
     if data.get("error"):
         raise ModelError(f"api error: {str(data['error'])[:300]}", transient=True)
@@ -669,14 +694,14 @@ def openrouter_image(prompt: str, *, model: str, seed: int | None = None, n: int
     try:
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/images", data=json.dumps(body).encode("utf-8"),
-            method="POST", headers={"Authorization": f"Bearer {_key()}",
+            method="POST", headers={"Authorization": f"Bearer {openrouter_key()}",
                                     "Content-Type": "application/json", "X-Title": "nori"})
         with urllib.request.urlopen(req, timeout=IMAGE_TIMEOUT_S) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
         return {"ok": False, "reason": f"image API {exc.code}: {detail}"}
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ModelError) as exc:
         # "timed out" (2026-09-17) is a distinguishable marker, not just a
         # message flourish -- imagegen.clean_image_error() matches on it to
         # tell her (and through her, the operator) plainly that this was a
@@ -699,6 +724,150 @@ def openrouter_image(prompt: str, *, model: str, seed: int | None = None, n: int
     cost = (data.get("usage") or {}).get("cost")
     return {"ok": True, "bytes": raw, "mime": items[0].get("media_type") or "image/png",
             "cost": float(cost) if isinstance(cost, (int, float)) else None}
+
+
+# ── image providers (2026-10-28) ─────────────────────────────────────────
+# Pictures were OpenRouter only. The workspace setting image_provider (a providers.id; 0 = OpenRouter, as before) now picks which connected provider
+# draws them, and generate_image() below is the one door the image tools and the avatar builder go through. Only providers with a real, documented image
+# API are listed: OpenRouter (/images), OpenAI with an API key (/v1/images/generations, and /v1/images/edits when a reference picture is given) and xAI with
+# an API key (/v1/images/generations and /edits). Anthropic has no image generation, and Copilot and the ChatGPT/Codex and Grok subscription sign-ins have
+# no documented image endpoint, so they are not offered (a Codex-subscription route exists in community tools, but it is undocumented and unverified).
+IMAGE_PROVIDER_TYPES = ("openrouter", "openai_api_key", "xai_api_key")
+IMAGE_DEFAULT_MODELS = {"openrouter": "bytedance-seed/seedream-5-0-lite", "openai_api_key": "gpt-image-1", "xai_api_key": "grok-imagine-image-2.0"}
+_IMAGE_URLS = {"openai_api_key": "https://api.openai.com/v1/images/", "xai_api_key": "https://api.x.ai/v1/images/"}
+IMAGE_DOWNLOAD_MAX = 25 * 1024 * 1024
+
+
+def image_choices(workspace_id: int) -> list[dict]:
+    """The connected, enabled providers that can draw pictures: [{"id", "label", "type"}]."""
+    import providers
+    return [{"id": p["id"], "label": p["label"], "type": p["type"]} for p in providers.list_all(workspace_id)
+            if p["type"] in IMAGE_PROVIDER_TYPES and p["enabled"] and p["status"] == "connected"]
+
+
+def image_backend(workspace_id: int | None = None) -> dict:
+    """Who draws pictures right now: {"type", "label", "provider" (the full row, or None for OpenRouter by the environment key), "ok", "reason"}.
+    image_provider names a provider to use; 0, or one that was deleted or disconnected, means OpenRouter (the connected provider, else the environment)."""
+    import accounts
+    import config
+    import providers
+    wsid = workspace_id if workspace_id is not None else accounts.the_workspace_id()
+    chosen = int(config.get("workspace", wsid, "image_provider") or 0) if wsid is not None else 0
+    if chosen:
+        row = providers.get(chosen)
+        if (row and row["workspace_id"] == wsid and row["enabled"] and row["status"] == "connected"
+                and row["type"] in IMAGE_PROVIDER_TYPES):
+            return {"type": row["type"], "label": row["label"], "provider": row, "ok": True, "reason": ""}
+    ok = has_openrouter_key()
+    return {"type": "openrouter", "label": "OpenRouter", "provider": None, "ok": ok,
+            "reason": "" if ok else "no image provider is connected: add an OpenRouter, OpenAI or xAI API key and choose it under Settings -> Images"}
+
+
+def _multipart(fields: dict, files: list[tuple[str, str, str, bytes]]) -> tuple[bytes, str]:
+    boundary = "----nori" + os.urandom(8).hex()
+    out = []
+    for k, v in fields.items():
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode("utf-8"))
+    for name, filename, mime, data in files:
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\nContent-Type: {mime}\r\n\r\n'.encode("utf-8")
+                   + data + b"\r\n")
+    out.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(out), f"multipart/form-data; boundary={boundary}"
+
+
+def _image_http(req) -> dict:
+    """One image request; {"ok": True, "data": parsed JSON} or {"ok": False, "reason"} in the same words openrouter_image uses (imagegen.clean_image_error
+    reads them: "timed out" and the provider's own refusal wording)."""
+    try:
+        with urllib.request.urlopen(req, timeout=IMAGE_TIMEOUT_S) as resp:
+            return {"ok": True, "data": json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "reason": f"image API {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ModelError) as exc:
+        if "timed out" in str(exc).lower():
+            return {"ok": False, "reason": f"image API call timed out after {IMAGE_TIMEOUT_S}s"}
+        return {"ok": False, "reason": f"image API call failed: {exc}"}
+
+
+def _image_from_response(data: dict) -> dict:
+    """{ok, bytes, mime, cost} from an OpenAI-style {"data": [{"b64_json" | "url"}], "usage"} body."""
+    import base64
+    import imagegen
+    if data.get("error"):
+        return {"ok": False, "reason": f"image API error: {str(data['error'])[:300]}"}
+    items = data.get("data") or []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    try:
+        if item.get("b64_json"):
+            raw = base64.b64decode(item["b64_json"])
+        elif isinstance(item.get("url"), str) and item["url"].startswith("https://"):
+            with urllib.request.urlopen(item["url"], timeout=IMAGE_TIMEOUT_S) as resp:
+                raw = resp.read(IMAGE_DOWNLOAD_MAX + 1)
+            if len(raw) > IMAGE_DOWNLOAD_MAX:
+                return {"ok": False, "reason": "image API returned an oversized image"}
+        else:
+            return {"ok": False, "reason": "image API returned no image"}
+    except (base64.binascii.Error, urllib.error.URLError, TimeoutError) as exc:  # type: ignore[attr-defined]
+        return {"ok": False, "reason": f"image API call failed: {exc}"}
+    cost = (data.get("usage") or {}).get("cost")
+    return {"ok": True, "bytes": raw, "mime": imagegen.sniff_mime(raw[:16]),
+            "cost": float(cost) if isinstance(cost, (int, float)) else None}
+
+
+def _openai_image(prompt: str, *, model: str, references: list[tuple[bytes, str]] | None, key: str) -> dict:
+    """OpenAI's Images API with an API key. gpt-image-1 returns base64 and takes reference pictures through /edits (multipart, image[]); it needs the
+    organisation to be verified for image models. No cost comes back (only token counts), so the caller's estimate is used."""
+    headers = {"Authorization": f"Bearer {key}"}
+    if references:
+        ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+        body, ctype = _multipart({"model": model, "prompt": prompt, "n": "1"},
+                                 [("image[]", f"reference{i}.{ext.get(m, 'png')}", m if m in ext else "image/png", d) for i, (d, m) in enumerate(references)])
+        req = urllib.request.Request(_IMAGE_URLS["openai_api_key"] + "edits", data=body, method="POST", headers={**headers, "Content-Type": ctype})
+    else:
+        req = urllib.request.Request(_IMAGE_URLS["openai_api_key"] + "generations", method="POST", headers={**headers, "Content-Type": "application/json"},
+                                     data=json.dumps({"model": model, "prompt": prompt, "n": 1}).encode("utf-8"))
+    res = _image_http(req)
+    return _image_from_response(res["data"]) if res["ok"] else res
+
+
+def _xai_image(prompt: str, *, model: str, references: list[tuple[bytes, str]] | None, key: str) -> dict:
+    """xAI's image API with an API key: /generations for a prompt alone, /edits with the reference picture as a data URL. Asks for base64 and also
+    accepts a URL, since the response shape is the least documented part."""
+    import base64
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    body: dict = {"model": model, "prompt": prompt, "n": 1, "response_format": "b64_json"}
+    path = "generations"
+    if references:
+        data, mime = references[0]
+        body["image"] = {"type": "image_url", "url": f"data:{mime or 'image/png'};base64,{base64.b64encode(data).decode('ascii')}"}
+        path = "edits"
+    for attempt in (0, 1):
+        req = urllib.request.Request(_IMAGE_URLS["xai_api_key"] + path, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
+        res = _image_http(req)
+        if res["ok"]:
+            return _image_from_response(res["data"])
+        if attempt == 0 and "response_format" in res["reason"]:
+            body.pop("response_format", None)      # this endpoint doesn't take it: ask again for whatever it returns
+            continue
+        return res
+    return res
+
+
+def generate_image(prompt: str, *, model: str, seed: int | None = None, references: list[tuple[bytes, str]] | None = None,
+                   workspace_id: int | None = None) -> dict:
+    """Draw one picture with whichever provider the workspace chose (image_backend). {ok, bytes, mime, cost} or {ok: False, reason}; cost None when
+    the provider doesn't report one. `seed` is used by OpenRouter only."""
+    b = image_backend(workspace_id)
+    if b["type"] == "openrouter":
+        return openrouter_image(prompt, model=model, seed=seed, references=references)
+    if not b["ok"]:
+        return {"ok": False, "reason": b["reason"]}
+    import providers
+    try:
+        key = providers.api_key_for(b["provider"])
+    except ValueError as exc:
+        return {"ok": False, "reason": f"image API call failed: {exc}"}
+    return (_openai_image if b["type"] == "openai_api_key" else _xai_image)(prompt, model=model, references=references, key=key)
 
 
 EMBED_API_URL = "https://openrouter.ai/api/v1/embeddings"
@@ -726,7 +895,7 @@ def openrouter_embed(texts: list[str], *, model: str) -> dict:
     try:
         req = urllib.request.Request(
             EMBED_API_URL, data=json.dumps(body).encode("utf-8"), method="POST",
-            headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json",
+            headers={"Authorization": f"Bearer {openrouter_key()}", "Content-Type": "application/json",
                     "X-Title": "nori"})
         with urllib.request.urlopen(req, timeout=EMBED_TIMEOUT_S) as resp:
             data = json.loads(resp.read().decode("utf-8"))

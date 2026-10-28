@@ -36,7 +36,7 @@ def handler():
     cls.bases = []
     cls.body = [n for n in cls.body if getattr(n, "name", None) in
                 {"media_admin_form", "media_admin_post"}]
-    env = dict(config=config, imagegen=imagegen, medialog=medialog,
+    env = dict(config=config, imagegen=imagegen, medialog=medialog, chat=chat,
                esc=html.escape, info_tip=lambda text: text, time=time, usertime=usertime)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), "server.py", "exec"), env)
     instance = env["Handler"]()

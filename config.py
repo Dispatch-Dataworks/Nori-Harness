@@ -169,7 +169,9 @@ _SPEC: dict[str, tuple] = {
     "image_content_precheck_enabled": (True, bool, "workspace", False,
                                        "check image prompts locally before generation"),
     "image_model": ("bytedance-seed/seedream-5-0-lite", str, "workspace", False,
-                    "image generation model (OpenRouter)"),
+                    "image generation model (a name at the chosen image provider)"),
+    # Which connected provider draws pictures (a providers.id; see chat.image_backend). 0 = OpenRouter, which is how it worked before this existed.
+    "image_provider": (0, int, "workspace", False, "which connected provider draws pictures (0 = OpenRouter)"),
     # {appearance} is NOT a template placeholder here the way a sibling application's
     # equivalent uses one -- her physical description is baked directly
     # into this string rather than kept as a second, separately-derived

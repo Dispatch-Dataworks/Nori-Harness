@@ -133,6 +133,7 @@ def load_env(path: Path) -> None:
 load_env(ENV_PATH)
 
 import accounts
+import avatar_builder
 import capabilities
 import chat
 import config
@@ -481,6 +482,10 @@ input::placeholder,textarea::placeholder{color:var(--text-mute)}
   border:1px solid var(--border);line-height:1.5}
 .welcome-card h3{margin:0 0 .4rem}
 .stepper{display:flex;gap:.4rem;flex-wrap:wrap;list-style:none;margin:0 0 1.2rem;padding:0}
+.bld-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.7rem;margin:.6rem 0}
+.bld-card{border:1px solid var(--border);border-radius:12px;padding:.5rem;background:var(--surface-2);text-align:center;display:flex;flex-direction:column;gap:.4rem;align-items:center}
+.bld-card img{width:100%;border-radius:8px;display:block}
+.bld-card p{margin:0}
 .stepper li{padding:.35rem .8rem;border-radius:99px;border:1px solid var(--border);background:var(--surface-2);font-size:.82rem;color:var(--text-mute)}
 .stepper li.cur{border-color:var(--accent);color:var(--text);font-weight:600}
 .stepper li.ok::before{content:"\2713  ";color:var(--accent)}
@@ -2995,6 +3000,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.chat_page(sess)
         if path == "/first-run":
             return self.first_run_page(sess, step=urllib.parse.parse_qs(qs).get("step", [""])[0])
+        if path == "/admin/avatars/build":
+            return self.avatar_builder_page(sess, urllib.parse.parse_qs(qs))
+        if path.startswith("/admin/avatars/build/img/"):
+            return self.avatar_build_img_get(sess, urllib.parse.unquote(path[len("/admin/avatars/build/img/"):]), urllib.parse.parse_qs(qs))
         if path == "/poll":
             return self.poll_get(sess, urllib.parse.parse_qs(qs).get("since", ["0"])[0])
         if path == "/board/fragment":
@@ -3362,6 +3371,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.media_admin_post(sess, form)
         if path == "/admin/avatars":
             return self.avatars_admin_post(sess, form)
+        if path.startswith("/admin/avatars/build/") and path.rsplit("/", 1)[1] in self._BUILD_ACTIONS:
+            return self.avatar_build_post(sess, path, form)
         if path == "/admin/backups":
             return self.backups_admin_post(sess, form)
         if path == "/admin/backups/run":
@@ -5504,6 +5515,11 @@ class Handler(BaseHTTPRequestHandler):
             radios = "".join(
                 f"<label><input type=radio name=pronouns value='{p}'{' checked' if p == chosen else ''}> {esc(p)}</label>" for p in config.PRONOUNS)
             ready = done["models"]
+            face = (
+                "<div class=section><h2>Give her a face (optional)</h2>"
+                "<p class=muted>She starts with the original character's portraits. Describe her once and an image model draws a whole set of expressions "
+                "for you to review. It needs an image provider (an OpenRouter, OpenAI or xAI key) and takes a few minutes. You can also do this any time from Settings → Avatars.</p>"
+                "<p><a class=btn href='/admin/avatars/build?from=firstrun'>design her face</a></p></div>")
             body = (
                 "<h2>What should she be called?</h2>"
                 "<p class=muted>This is her name everywhere: the chat header, notifications, how she signs herself. The pronouns are how she is told "
@@ -5517,7 +5533,7 @@ class Handler(BaseHTTPRequestHandler):
                    "<button class='btn btn-primary'>Save, and meet her</button>" if ready
                    else "<p class=err>Choose a primary model first (step 2), she can't speak without one.</p>"
                         "<button class=btn disabled>Save, and meet her</button>")
-                + "</form>")
+                + "</form>" + face)
         skip = (f"<form method=post action='/first-run/skip' style='margin-top:1.5rem'>{csrf_input}"
                 "<button class=btn>Skip setup for now</button> <small class=muted>You can come back from Settings → About.</small></form>")
         self.send(200, page_app("Getting set up", "<div class=hdr-left><div class=hdr-title>Getting set up</div></div>",
@@ -7061,6 +7077,10 @@ class Handler(BaseHTTPRequestHandler):
         enabled = config.get("workspace", wsid, "image_gen_enabled")
         precheck = config.get("workspace", wsid, "image_content_precheck_enabled")
         model = config.get("workspace", wsid, "image_model")
+        chosen_provider = int(config.get("workspace", wsid, "image_provider") or 0)
+        provider_options = (f"<option value=0>OpenRouter (default)</option>"
+                            + "".join(f"<option value={c['id']}{' selected' if c['id'] == chosen_provider else ''}>{esc(c['label'])}</option>"
+                                      for c in chat.image_choices(wsid) if c["type"] != "openrouter"))
         cap = config.get("workspace", wsid, "image_daily_cap_usd")
         per_req = config.get("workspace", wsid, "image_cost_per_request_usd")
         cap_tip = info_tip("Shared by both image tools, whole household.")
@@ -7080,8 +7100,16 @@ class Handler(BaseHTTPRequestHandler):
             "<p class=muted>Checks prompts for flagged words before sending them to the image service. "
             "Turn off to skip this local check for both image tools. "
             "Prompt content rules and the provider's own checks still apply.</p></div>"
-            "<div class=field><label>model (OpenRouter)</label>"
-            f"<input type=text name=image_model value='{esc(model)}'></div>"
+            "<div class=field><label>image provider</label>"
+            f"<select name=image_provider>{provider_options}</select>"
+            "<p class=muted>Which connection draws the pictures: OpenRouter, or an OpenAI or xAI API key you have connected under Model config. "
+            "Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins have no image service. Changing the provider resets the model "
+            "to that provider's default unless you also edit it.</p></div>"
+            "<div class=field><label>image model</label>"
+            f"<input type=text name=image_model value='{esc(model)}'>"
+            "<p class=muted>OpenRouter: for example <code>bytedance-seed/seedream-5-0-lite</code>. OpenAI: <code>gpt-image-1</code> (the organisation must be "
+            "verified for image models). xAI: <code>grok-imagine-image-2.0</code>. It must accept a reference picture, which the selfie tool and the avatar "
+            "builder use.</p></div>"
             f"<div class=field><label>daily budget (USD) {cap_tip}</label>"
             f"<input type=number name=image_daily_cap_usd value='{cap}' min=0 step=0.10></div>"
             f"<div class=field><label>per-image cost estimate (USD) {per_req_tip}</label>"
@@ -7113,7 +7141,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.forbidden()
         wsid = sess["workspace_id"]
         errors = []
-        for key in ("image_gen_enabled", "image_content_precheck_enabled", "image_model",
+        if isinstance(form.get("image_provider"), str):
+            try:
+                ok, msg = imagegen.configure(wsid, int(form["image_provider"] or 0), form.get("image_model") or "")
+            except ValueError:
+                ok, msg = False, "that is not a provider"
+            if not ok:
+                errors.append(msg)
+        for key in ("image_gen_enabled", "image_content_precheck_enabled",
                     "image_daily_cap_usd", "image_cost_per_request_usd"):
             if key not in form or not isinstance(form[key], str):
                 continue
@@ -10230,6 +10265,190 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, page_app("files", self._app_header(sess, self._hdr_back("Files")), main, footer,
                                 extra_js=FILES_UPLOAD_JS.replace("__CFG__", upload_cfg)))
 
+    # -- avatar builder (2026-10-28): describe her face, get the whole set. See avatar_builder.py / docs/avatar-builder.md --
+    _BUILD_ACTIONS = ("describe", "pick", "more", "back", "build", "redo", "install", "restore", "discard", "model")
+
+    def _avatar_build_url(self, origin: str, msg: str = "", err: str = "") -> str:
+        params = (["from=firstrun"] if origin == "firstrun" else []) + ([f"msg={urllib.parse.quote(msg[:300])}"] if msg else []) \
+            + ([f"err={urllib.parse.quote(err[:300])}"] if err else [])
+        return "/admin/avatars/build" + ("?" + "&".join(params) if params else "")
+
+    def avatar_build_img_get(self, sess: dict, name: str, q: dict):
+        """A picture of the draft (admin only), as a small thumbnail unless the full size is asked for. The thumbnail's name carries the file's mtime,
+        so a redrawn picture is never shown from a stale thumbnail."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        p = avatar_builder.draft_file(name)
+        if p is None:
+            return self.not_found()
+        size = {"sm": 220, "md": 360}.get((q.get("size") or [""])[0])
+        if size:
+            thumb = avatar_builder.BUILD_DIR / "thumbs" / f"{p.stem}-{int(p.stat().st_mtime)}-{size}.jpg"
+            if imagegen.generate_thumb_for(p, thumb, size):
+                return self.send(200, thumb.read_bytes(), ctype="image/jpeg", extra={"Cache-Control": "private, max-age=600"})
+        data = p.read_bytes()
+        return self.send(200, data, ctype=imagegen.sniff_mime(data[:16]), extra={"Cache-Control": "private, max-age=600"})
+
+    def avatar_builder_page(self, sess: dict, q: dict | None = None):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        q = q or {}
+        wsid = sess["workspace_id"]
+        origin = "firstrun" if (q.get("from") or [""])[0] == "firstrun" else ""
+        back = "/first-run?step=identity" if origin == "firstrun" else "/settings?tab=avatars"
+        csrf = f"<input type=hidden name=csrf value='{esc(sess['csrf'])}'>" + ("<input type=hidden name=from value=firstrun>" if origin else "")
+        err, msg = (q.get("err") or [""])[0], (q.get("msg") or [""])[0]
+        banner = (f"<p class=err>{esc(err)}</p>" if err else "") + (f"<p class=info>{esc(msg)}</p>" if msg else "")
+        ready = avatar_builder.readiness(wsid)
+        est = avatar_builder.per_image_estimate(wsid)
+        st = avatar_builder.status()
+        n_other = len(avatar_builder.other_states())
+
+        def img(name: str, size: str = "sm") -> str:
+            f = avatar_builder.BUILD_DIR / name
+            v = int(f.stat().st_mtime) if f.is_file() else 0
+            return f"<img src='/admin/avatars/build/img/{esc(name)}?size={size}&v={v}' alt='' loading=lazy>"
+
+        def post(action: str, label: str, fields: str = "", cls: str = "btn", confirm: str = "") -> str:
+            on = f" onsubmit=\"return confirm('{esc(confirm)}')\"" if confirm else ""
+            return (f"<form method=post action='/admin/avatars/build/{action}' style='display:inline'{on}>{csrf}{fields}"
+                    f"<button class='{cls}'>{esc(label)}</button></form>")
+
+        parts = []
+        if not ready["ready"]:
+            connect = "/first-run?step=connect" if origin else "/settings?tab=models"
+            wsid_cfg = int(config.get("workspace", wsid, "image_provider") or 0)
+            options = "".join(f"<option value={c['id']}{' selected' if c['id'] == wsid_cfg else ''}>{esc(c['label'])}</option>"
+                              for c in ready["choices"])
+            setup = (
+                f"<form method=post action='/admin/avatars/build/model'>{csrf}"
+                "<div class=field><label>provider</label>"
+                f"<select name=image_provider>{options}</select></div>"
+                "<div class=field><label>image model (one that can take a reference picture; blank for the provider's default)</label>"
+                f"<input type=text name=image_model value='{esc(ready['model'])}'></div>"
+                "<button class='btn btn-primary'>save</button></form>") if options else ""
+            parts.append(
+                "<div class=section><h2>Connect an image model first</h2>"
+                "<p class=muted>Her portraits are drawn by an image model, through an <b>OpenRouter</b>, <b>OpenAI</b> (API key) or <b>xAI</b> (API key) "
+                "connection. Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins cannot draw pictures.</p>"
+                + ("" if options else f"<p>&#10007; No such provider is connected yet. <a href='{connect}'>Add one</a> (it can be the same key she thinks with, "
+                   "or one used only for pictures), then come back here to choose it.</p>")
+                + setup + "</div>")
+        can_draw = ready["ready"]
+
+        if st is None:
+            if can_draw:
+                parts.append(
+                    "<div class=section><h2>Describe her face</h2>"
+                    "<p class=muted>Describe her <b>neutral</b> face: roughly how old she looks, hair, eyes, skin, what she is wearing, and the style (a photograph, "
+                    "an illustration, anime...). Describe an adult. You will get three options to choose from, then the other "
+                    f"{n_other} expressions are drawn from the one you pick.</p>"
+                    f"<form method=post action='/admin/avatars/build/describe'>{csrf}"
+                    "<div class=field><textarea name=description rows=5 maxlength=600 required "
+                    "placeholder='A woman in her early thirties with short silver hair, green eyes and light olive skin, a charcoal cardigan over a white shirt, "
+                    "warm and composed. Photographic.'></textarea></div>"
+                    f"<button class='btn btn-primary'>Draw three options (about ${3 * est:.2f})</button></form></div>")
+        else:
+            busy = st["busy"]
+            c = avatar_builder.counts(st)
+            parts.append(f"<div class=section><h2>Her description</h2><p>{esc(st['description'])}</p>"
+                         f"<p class=muted>Pictures drawn so far: {st['images']}, about ${st['cost_usd']:.2f} spent.</p>"
+                         f"<p>{post('discard', 'Discard this draft and start over', confirm='Throw away the draft and every picture in it?')}</p></div>")
+            if busy:
+                parts.append("<p class=info>Drawing in the background. This page refreshes by itself; you can leave and come back, the pictures keep coming.</p>"
+                             + ("<p class=muted>Stopping after the pictures already in flight.</p>" if st.get("cancel") else ""))
+            if st["chosen"] is None:
+                cards = []
+                for i, cand in enumerate(st["candidates"]):
+                    if cand["status"] == "done":
+                        body = img(cand["file"], "md") + (post("pick", "Use this face", f"<input type=hidden name=index value={i}>", "btn btn-primary") if not busy else "")
+                    elif cand["status"] == "failed":
+                        body = f"<p class=err>{esc(cand['error'])}</p>"
+                    else:
+                        body = f"<p class=muted>{'drawing...' if cand['status'] == 'running' else 'waiting...'}</p>"
+                    cards.append(f"<div class=bld-card>{body}</div>")
+                more = post("more", f"Draw three different options (about ${3 * est:.2f})") if not busy and can_draw else ""
+                parts.append(f"<div class=section><h2>Choose her neutral face</h2><div class=bld-grid>{''.join(cards)}</div><p>{more}</p></div>")
+            else:
+                neutral = st["states"][emotion.DEFAULT_STATE]
+                todo = sum(1 for n in avatar_builder.other_states() if st["states"][n]["status"] != "done")
+                head = f"<div class=bld-card>{img(neutral['file'], 'md')}<p class=muted>neutral: her reference face</p></div>"
+                any_started = any(st["states"][n]["status"] != "pending" for n in avatar_builder.other_states())
+                actions = ""
+                if not busy and can_draw and todo:
+                    label = (f"Draw the other {n_other} expressions (about ${n_other * est:.2f})" if not any_started
+                             else f"Draw the {todo} that are missing (about ${todo * est:.2f})")
+                    actions += post("build", label, cls="btn btn-primary")
+                if not busy and not any_started:
+                    actions += " " + post("back", "Choose a different face")
+                failed = f", {c['failed']} failed" if c["failed"] else ""
+                cards = "".join(self._build_state_card(st, n, img, post, busy, can_draw) for n in avatar_builder.other_states())
+                parts.append(f"<div class=section><h2>Her expressions</h2><p class=muted>{c['done']} of {c['total']} drawn{failed}.</p>"
+                             f"<div class=bld-grid>{head}{cards}</div><p>{actions}</p></div>")
+                if c["complete"] and not busy:
+                    done_note = "<p class=info>Installed. Reload the chat to see her.</p>" if st.get("installed_ts") else ""
+                    parts.append(
+                        "<div class=section><h2>Use these</h2>"
+                        "<p class=muted>Her current avatars are moved to a backup first, so this can be undone with <b>restore</b> below. "
+                        "The neutral face also becomes the reference her selfies are drawn from.</p>"
+                        f"<form method=post action='/admin/avatars/build/install'>{csrf}"
+                        "<div class=field><label><input type=checkbox name=selfies value=1 checked> Also describe her this way when she sends selfies "
+                        "(replaces the image style text, which describes the original character)</label></div>"
+                        f"<button class='btn btn-primary'>Install these avatars</button></form>{done_note}</div>")
+        if avatar_builder.has_backup() and (st is None or not st["busy"]):
+            parts.append("<div class=section><h2>Earlier avatars</h2><p class=muted>The set that was in use before the last install is saved. Restoring puts it back, "
+                         "along with her selfie reference and, if the install changed it, her selfie style text.</p>"
+                         + post("restore", "Restore the earlier avatars", confirm="Replace the current avatars with the earlier set?") + "</div>")
+        refresh = "setTimeout(function(){location.reload()},4000);" if st and st["busy"] else ""
+        header = f"<div class=hdr-left><a class=hdr-back href='{back}'>&lsaquo;</a><div class=hdr-title>Design her face</div></div>"
+        self.send(200, page_app("Design her face", header, banner + "".join(parts), extra_js=refresh, content_max_width="860px"))
+
+    def _build_state_card(self, st: dict, name: str, img, post, busy: bool, can_draw: bool) -> str:
+        s = st["states"][name]
+        again = f"<input type=hidden name=state value='{esc(name)}'>"
+        if s["status"] == "done":
+            body = img(s["file"]) + (post("redo", "redraw", again) if not busy and can_draw else "")
+        elif s["status"] == "failed":
+            body = f"<p class=err>{esc(s['error'])}</p>" + (post("redo", "try again", again) if not busy and can_draw else "")
+        else:
+            body = f"<p class=muted>{'drawing...' if s['status'] == 'running' else 'waiting'}</p>"
+        return f"<div class=bld-card>{body}<p class=muted>{esc(name)}</p></div>"
+
+    def avatar_build_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        action = path.rsplit("/", 1)[1]
+        wsid, uid, origin = sess["workspace_id"], sess["user_id"], form.get("from") or ""
+        if action == "describe":
+            ok, msg = avatar_builder.start(wsid, uid, form.get("description") or "")
+        elif action == "pick":
+            try:
+                index = int(form.get("index", ""))
+            except ValueError:
+                index = -1
+            ok, msg = avatar_builder.pick(index)
+        elif action == "more":
+            ok, msg = avatar_builder.more_candidates(wsid, uid)
+        elif action == "back":
+            ok, msg = avatar_builder.unpick()
+        elif action == "build":
+            ok, msg = avatar_builder.build_set(wsid, uid)
+        elif action == "redo":
+            ok, msg = avatar_builder.redraw(wsid, uid, form.get("state") or "")
+        elif action == "install":
+            ok, msg = avatar_builder.install(wsid, form.get("selfies") == "1")
+        elif action == "restore":
+            ok, msg = avatar_builder.restore(wsid)
+        elif action == "discard":
+            ok, msg = avatar_builder.discard()
+        else:  # model: which provider draws pictures, and with what
+            try:
+                provider_id = int(form.get("image_provider") or 0)
+            except ValueError:
+                provider_id = -1
+            ok, msg = imagegen.configure(wsid, provider_id, form.get("image_model") or "")
+        return self.send(303, b"", {"Location": self._avatar_build_url(origin, msg if ok else "", "" if ok else msg)})
+
     # -- avatars --
     @staticmethod
     def _find_avatar_file(state: str):
@@ -10262,11 +10481,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, b"")
         p, mime = self._find_avatar_file(state)
         if p:
+            # Revalidated on every use (an ETag from the file's mtime and size), not cached blind for an hour: installing a new set from the avatar
+            # builder must show up the next time the page loads, and a 304 for a 256px image is cheap.
             thumb = AVATAR_THUMB_DIR / f"{state}.jpg"
-            if imagegen.generate_thumb_for(p, thumb, AVATAR_MAX_DIM):
-                return self.send(200, thumb.read_bytes(), ctype="image/jpeg",
-                                 extra={"Cache-Control": "public, max-age=3600"})
-            return self.send(200, p.read_bytes(), ctype=mime, extra={"Cache-Control": "public, max-age=3600"})
+            src, ctype = (thumb, "image/jpeg") if imagegen.generate_thumb_for(p, thumb, AVATAR_MAX_DIM) else (p, mime)
+            info = src.stat()
+            etag = f'"{int(info.st_mtime)}-{info.st_size}"'
+            if self.headers.get("If-None-Match") == etag:
+                return self.send(304, b"", {"ETag": etag, "Cache-Control": "no-cache"})
+            return self.send(200, src.read_bytes(), ctype=ctype, extra={"ETag": etag, "Cache-Control": "no-cache"})
         svg = emotion.placeholder_svg(state).encode("utf-8")
         return self.send(200, svg, ctype="image/svg+xml", extra={"Cache-Control": "public, max-age=3600"})
 
@@ -10349,6 +10572,11 @@ class Handler(BaseHTTPRequestHandler):
             "all, and the per-turn reminder to reconsider her state stops appearing -- nothing "
             "emotion-related reaches her context, the UI, or the turn.</p>"
             "<button class='btn btn-primary'>save</button></form></div>")
+        build_card = (
+            "<div class=section><h2>design a new face</h2>"
+            "<p class=muted>Describe her neutral face once and an image model draws the whole set of expressions from it. You review the set before it "
+            "replaces anything, and the old one is kept so it can be restored. Needs an image provider (OpenRouter, OpenAI or xAI) and an image model.</p>"
+            "<p><a class='btn btn-primary' href='/admin/avatars/build'>design her face</a></p></div>")
         rows = []
         real_count = 0
         for state in emotion.STATES:
@@ -10363,7 +10591,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"style='border-radius:50%;flex-shrink:0;object-fit:cover'>"
                 f"<div class=list-meta><b>{esc(state)}</b><small>{status}</small></div></div>")
         main = (
-            e + i + name_form + toggle +
+            e + i + name_form + build_card + toggle +
             f"<p class=info>{real_count} / {len(emotion.STATES)} states have a real file; "
             f"the rest are showing the generated placeholder.</p>"
             f"<p class=muted>Checked directly against {esc(str(AVATAR_DIR))} on this exact "

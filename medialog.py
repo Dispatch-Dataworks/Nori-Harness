@@ -30,7 +30,7 @@ def log_image_gen(*, workspace_id: int, user_id: int, purpose: str, prompt: str 
                   used_reference: bool | None, ok: bool, error: str | None = None,
                   cost_usd: float | None = None, cost_is_actual: bool | None = None,
                   file_id: str | None = None, caption: str | None = None) -> None:
-    """purpose: 'generate_image_selfie' | 'imagine_image'. `prompt` is what
+    """purpose: 'generate_image_selfie' | 'imagine_image' | 'avatar_builder'. `prompt` is what
     she actually wrote; `final_prompt` is imagegen.assemble_prompt()'s
     output (style prefix + content constraint applied on top) -- both
     logged so a run of these over time shows whether the prefix is
@@ -84,9 +84,12 @@ def spend_status(workspace_id: int, user_id: int) -> dict:
     page's own viewer alike."""
     import config
     since_today = usertime.day_start(user_id)
+    # The avatar builder's spend (an admin pressing a button after being shown the estimate, about two dozen pictures at once) is in the lifetime total
+    # but not in today's: this cap is the guard on what SHE spends on her own, and one build would otherwise use up the whole day's selfies.
     row_today = store.read(lambda c: c.execute(
         "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM media_log "
-        "WHERE workspace_id=? AND ts>=? AND ok=1", (workspace_id, since_today)).fetchone())
+        "WHERE workspace_id=? AND ts>=? AND ok=1 AND COALESCE(purpose, '') != 'avatar_builder'",
+        (workspace_id, since_today)).fetchone())
     row_total = store.read(lambda c: c.execute(
         "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM media_log "
         "WHERE workspace_id=? AND ok=1", (workspace_id,)).fetchone())

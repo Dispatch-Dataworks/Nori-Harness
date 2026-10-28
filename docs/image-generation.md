@@ -24,9 +24,24 @@ can't generate another image today until it resets.
 
 ## Generation model and provider
 
-Runs through `chat.openrouter_image()` — OpenRouter, the same
-provider path as every other model call this app makes, using
-whichever model is configured (`image_model` in Settings; nothing
+Runs through `chat.generate_image()`, which sends the request to whichever connected
+provider **Settings → Images → image provider** (`image_provider`) names:
+
+| Provider | Endpoint | Reference picture | Notes |
+| --- | --- | --- | --- |
+| OpenRouter (default) | `/api/v1/images` | `input_references` | the connected OpenRouter provider's key, else `OPENROUTER_API_KEY` (`chat.openrouter_key()`); reports a real cost |
+| OpenAI (API key) | `/v1/images/generations`, or multipart `/v1/images/edits` (`image[]`) when there is a reference | yes, via edits | model e.g. `gpt-image-1`; the organisation must be verified for image models; no cost is returned, so the per-image estimate is used |
+| xAI (API key) | `/v1/images/generations`, or `/v1/images/edits` with a data-URL `image` | yes, via edits | model e.g. `grok-imagine-image-2.0`; asks for base64 and accepts a URL reply |
+
+Only providers with a documented image API are offered. Claude (Anthropic) has no image
+generation; GitHub Copilot and the ChatGPT/Codex and Grok **subscription** sign-ins have no
+documented image endpoint (community tools reach one through the Codex backend's
+`image_generation` tool, but it is undocumented and unverified, so it is not wired in). A
+model name only means something at its own provider, so choosing a provider resets the model
+to that provider's default unless you also edit it (`imagegen.configure`). The chosen
+provider being deleted or disconnected falls back to OpenRouter. The OpenAI and xAI adapters
+were written from the providers' documentation and are tested against faked replies, not yet
+against a live account. Whichever model is configured (`image_model` in Settings; nothing
 generates if it's left blank or if `image_gen_enabled` is off).
 
 ## Prompt assembly is fixed, regardless of what she writes
@@ -104,6 +119,14 @@ entirely (an async job, delivered in a follow-up turn, the way
 [sub-agents](sub-agents.md) already work) would remove this proportionality
 outright — a real option, not built here since it changes when and how
 the image actually appears in chat, which wasn't asked for.
+
+## Her face
+
+`generate_image_selfie` is anchored to `static/avatars/source/neutral.png`. The
+[avatar builder](avatar-builder.md) replaces that file (and the avatars) when an
+admin installs a new set, and can rewrite the style text above so selfies describe
+the new character. Its spend is logged as purpose `avatar_builder` and left out of
+today's household cap.
 
 ## Extending it
 

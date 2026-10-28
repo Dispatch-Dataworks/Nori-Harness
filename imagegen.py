@@ -189,6 +189,23 @@ def generate_thumb_for(src: Path, dest: Path, max_dim: int, quality: int = THUMB
         return False
 
 
+def configure(workspace_id: int, provider_id: int, model: str) -> tuple[bool, str]:
+    """Choose which connected provider draws pictures and which model. Used by Settings -> Images and the avatar builder's setup card. A model that is
+    blank, or unchanged while the provider changes, becomes that provider's default (a model name only means something at the provider it belongs to)."""
+    import chat
+    choices = {c["id"]: c for c in chat.image_choices(workspace_id)}
+    if provider_id and provider_id not in choices:
+        return False, "that provider is not connected, or cannot draw pictures"
+    new_type = choices[provider_id]["type"] if provider_id else "openrouter"
+    old = chat.image_backend(workspace_id)
+    model = (model or "").strip()
+    if not model or (model == config.get("workspace", workspace_id, "image_model") and new_type != old["type"]):
+        model = chat.IMAGE_DEFAULT_MODELS[new_type]
+    config.set("workspace", workspace_id, "image_provider", provider_id)
+    config.set("workspace", workspace_id, "image_model", model)
+    return True, f"pictures will be drawn by {choices[provider_id]['label'] if provider_id else 'OpenRouter'} with {model}"
+
+
 def reference_bytes() -> tuple[bytes, str] | None:
     """Nori's own face -- the same neutral.png every emotion-state avatar
     in static/avatars/ was generated from (confirmed by direct inspection,
@@ -199,7 +216,8 @@ def reference_bytes() -> tuple[bytes, str] | None:
     has exactly one face."""
     if not _REFERENCE_PATH.is_file():
         return None
-    return _REFERENCE_PATH.read_bytes(), "image/png"
+    data = _REFERENCE_PATH.read_bytes()
+    return data, sniff_mime(data[:16])
 
 
 # ── casual chat photos (2026-09-15, ported from a sibling application's identical
@@ -442,8 +460,7 @@ def _generate_impl(session: dict, prompt: str, *, purpose: str, reference: tuple
         return {"ok": False, "reason": reason}
 
     import chat
-    res = chat.openrouter_image(final_prompt, model=model, seed=seed,
-                                references=[reference] if reference else None)
+    res = chat.generate_image(final_prompt, model=model, seed=seed, references=[reference] if reference else None, workspace_id=wsid)
     if not res.get("ok"):
         raw_reason = res.get("reason", "image generation failed")
         clean_reason, is_refusal = clean_image_error(raw_reason)

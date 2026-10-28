@@ -50,6 +50,7 @@ Everything else here goes deeper once it's up.
   | [Voice](voice.md) | Speech-to-text input, text-to-speech replies |
   | [Image generation](image-generation.md) | Selfies and imagined images, spend tracking |
   | [Emotions](emotions.md) | The emotional-state system and the precheck injection mechanism |
+  | [Avatar builder](avatar-builder.md) | Describe her neutral face once; an image model draws the whole set of expressions, reviewed before it is installed |
   | [Backups](backups.md) | What's included, encryption/key management, retention, and the restore procedure |
   | [Integration health](integration-health.md) | The liveness/auth check surfaced on every outward connection |
   | [Settings model](settings.md) | How a setting is declared, scoped, and kept secret-safe by construction |

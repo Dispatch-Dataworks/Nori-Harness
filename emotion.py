@@ -51,14 +51,22 @@ def _load_config() -> dict:
         data = json.load(f)
     states = [s["name"] for s in data["states"]]
     colors = {s["name"]: s.get("color", "#95a5a6") for s in data["states"]}
+    looks = {s["name"]: s["look"] for s in data["states"] if s.get("look")}
     if DEFAULT_STATE not in states:
         raise ValueError(f"emotions.json must include {DEFAULT_STATE!r} -- it's the decay target and default")
-    return {"states": states, "colors": colors}
+    return {"states": states, "colors": colors, "looks": looks}
 
 
 _CFG = _load_config()
 STATES: list[str] = _CFG["states"]
 COLORS: dict[str, str] = _CFG["colors"]
+LOOKS: dict[str, str] = _CFG["looks"]
+
+
+def look(state: str) -> str:
+    """What the avatar builder asks the image model to draw for this state: the optional "look" in emotions.json, or the state's own name for a
+    state that has none (a custom state still gets a picture, just a vaguer one)."""
+    return LOOKS.get(state) or f"a clear expression of being {state}"
 
 
 def is_enabled(workspace_id: int) -> bool:

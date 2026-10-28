@@ -45,6 +45,7 @@ image, and whether it found a real file or fell back, read fresh off
 disk on every page load. That's the fast way to confirm a batch of drops
 actually took rather than silently falling back on a filename mismatch.
 
-This folder is empty in the repo on purpose (there's nothing to ship
-until real art exists) — everyone sees placeholders until they add their
-own.
+This folder ships with the original character's portraits. To give an
+instance its own, use **Settings → Avatars → design her face** (see
+`docs/avatar-builder.md`): it draws a new set from a description, backs
+these files up when it installs, and can restore them.
