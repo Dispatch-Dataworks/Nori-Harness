@@ -2,6 +2,12 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-28 — pronouns: findable, and the pages stop assuming "she"
+
+The pronoun setting could only be changed in the first-run wizard, so there was nowhere to find it afterwards, and the app's own pages said "she/her" (and, for the person, "him") whatever it was set to. **Settings -> Avatars -> name and pronouns** now has the choice, with **it/its** added to she/her, he/him and they/them (found on Iron, a robot). Page copy no longer uses pronouns for her: it says her name, filled in once per page (`Handler.send`), or "the assistant" in the setup wizard before a name exists. The guide she is given during onboarding, the persona template and a few browser-side messages follow the same rule, and "added by him / her" labels became "a person" / her name. A test scans the app's string literals so a hard-coded she/her can't creep back in. Pronouns still reach her prompt as before.
+## 2026-10-28 — avatar builder: expressions stay the same character
+
+Found on Iron: after the neutral face (a robot), some expressions came back as a human man. Each expression prompt now repeats the description and says the kind of being must not change (a robot stays a robot), the expression is shown with the character's own features, and the fixed safety text no longer says "an adult, fully clothed" (it said "if the character is a person"). A **Redraw all** button redraws every expression from the same neutral face. If drift continues, the image model is probably not honouring the reference picture; try another model.
 ## 2026-10-28 — images through OpenAI and xAI, not only OpenRouter
 
 Pictures (selfies, imagined images and the avatar builder) could only be drawn through OpenRouter. **Settings -> Images -> image provider** now chooses between OpenRouter, a connected **OpenAI API key** (`gpt-image-1`, using the edits endpoint when there is a reference picture) and a connected **xAI API key** (`grok-imagine-image-2.0`); the avatar builder's setup card offers the same choice. Choosing a provider resets a model name that belonged to the old one. Not offered, deliberately: Claude (no image generation), and Copilot and the ChatGPT/Codex and Grok subscription sign-ins (no documented image endpoint). The OpenAI and xAI requests are built from the providers' documentation and tested against faked replies, not yet a live account. See [Image generation](image-generation.md).

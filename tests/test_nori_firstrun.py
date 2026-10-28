@@ -254,7 +254,7 @@ class Pages(unittest.TestCase):
         models.set_chain(WS, [a])
         html = _page(step="models").html()
         self.assertIn("No fallback yet", html)
-        self.assertIn("Continue: name her", html)
+        self.assertIn("Continue: name the assistant", html)
         b = _model(pid, "Haiku", "a/two")
         models.set_chain(WS, [a, b])
         self.assertIn("same provider as the primary", _page(step="models").html())
@@ -272,7 +272,7 @@ class Pages(unittest.TestCase):
         self.assertIn("action='/admin/models/chain'", html)
         self.assertGreaterEqual(html.count("name=from value=firstrun"), 4)
 
-    def test_the_identity_step_has_her_name_and_three_pronoun_choices_with_she_her_selected(self):
+    def test_the_identity_step_has_a_name_and_every_pronoun_choice_with_she_her_selected(self):
         _connect()
         models.set_chain(WS, [_model(_connect("Two"))])
         html = _page(step="identity").html()
@@ -282,7 +282,8 @@ class Pages(unittest.TestCase):
             self.assertIn(f"value='{p}'", html)
         self.assertIn("value='she/her' checked", html)
         self.assertNotIn("value='he/him' checked", html)
-        self.assertIn("Save, and meet her", html)
+        self.assertIn("Save, and meet the assistant", html)
+        self.assertEqual(len(config.PRONOUNS), 4)
 
     def test_the_identity_step_without_a_model_cannot_be_submitted(self):
         html = _page(step="identity").html()
@@ -292,9 +293,9 @@ class Pages(unittest.TestCase):
     def test_the_default_step_follows_the_data(self):
         self.assertIn("something to think with", _page().html())
         pid = _connect()
-        self.assertIn("Pick her primary model", _page().html())
+        self.assertIn("Pick the assistant's primary model", _page().html())
         models.set_chain(WS, [_model(pid)])
-        self.assertIn("What should she be called?", _page().html())
+        self.assertIn("What should the assistant be called?", _page().html())
 
     def test_the_stepper_marks_finished_steps(self):
         pid = _connect()
@@ -379,7 +380,7 @@ class Posts(unittest.TestCase):
         h = _H()
         h.models_create_post(dict(ADMIN), {"alias": "Sonnet", "provider_id": str(pid), "model_name": "a/one", "from": "firstrun", "step": "models"})
         self.assertEqual([m["alias"] for m in models.get_chain(WS)], ["Sonnet"])
-        self.assertIn("set as her primary", h.html())
+        self.assertIn("set as ⟦n⟧&#x27;s primary", h.html())
 
     def test_a_second_model_does_not_displace_the_primary(self):
         pid = _connect()

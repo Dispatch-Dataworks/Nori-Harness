@@ -440,14 +440,14 @@ class PageRendering(unittest.TestCase):
     def test_every_row_has_a_checkbox_and_hidden_ones_are_marked(self):
         html = self._page()
         self.assertEqual(html.count("name=mid value="), 5)
-        self.assertIn("hidden from her", html)
+        self.assertIn("hidden from ⟦n⟧", html)
         self.assertEqual(html.count("hist-row selectable user is-hidden") + html.count("hist-row selectable assistant is-hidden"), 1,
                          "exactly the one hidden row is dimmed")
         self.assertIn("hist-badge-hidden", html)
 
     def test_the_toolbar_has_the_three_actions_and_a_real_delete_confirmation(self):
         html = self._page()
-        for needle in ("value=hide", "value=restore", "value=delete", "Hide from her", "Restore", "Delete forever",
+        for needle in ("value=hide", "value=restore", "value=delete", "Hide from ⟦n⟧", "Restore", "Delete forever",
                        "Permanently delete {n} message(s)", "backups made earlier", "id=histSelCount", "id=histSelAll"):
             self.assertIn(needle, html)
         self.assertIn("name=csrf value='csrf-tok'", html)
@@ -464,17 +464,17 @@ class PageRendering(unittest.TestCase):
         self.assertEqual(html.count("name=mid value="), 1)
         self.assertIn("rutabaga note 1", html)
         self.assertNotIn("rutabaga note 0", html)
-        self.assertIn("Apply to all 1 message(s) that are hidden from her", html)
-        self.assertIn("hidden from her only (1)", html)
+        self.assertIn("Apply to all 1 message(s) that are hidden from ⟦n⟧", html)
+        self.assertIn("hidden from ⟦n⟧ only (1)", html)
         self.assertIn("value=1 checked", html.split("<label class=hist-only>")[1][:120])
 
     def test_hidden_only_with_nothing_hidden_says_so(self):
         conversation.set_pruned(UID, self.ids, pruned=False)
-        self.assertIn("nothing is hidden from her.", self._page(hidden="1"))
+        self.assertIn("nothing is hidden from ⟦n⟧.", self._page(hidden="1"))
 
     def test_flash_messages_come_from_an_allowlist_not_the_url(self):
-        self.assertIn("Hid 3 messages from her context.", self._page(done="hide", n="3"))
-        self.assertIn("Hid 1 message from her context.", self._page(done="hide", n="1"))
+        self.assertIn("Hid 3 messages from ⟦n⟧&#x27;s context.", self._page(done="hide", n="3"))
+        self.assertIn("Hid 1 message from ⟦n⟧&#x27;s context.", self._page(done="hide", n="1"))
         self.assertIn("Permanently deleted 2 messages and 1 stored picture file(s).", self._page(done="delete", n="2", f="1"))
         self.assertIn("Nothing was selected.", self._page(done="none"))
         evil = self._page(done="<script>alert(1)</script>", n="1")
@@ -500,7 +500,7 @@ class PageRendering(unittest.TestCase):
         src = _read(os.path.join(ROOT, "server.py"))
         self.assertIn("conversation.recent(sess[\"user_id\"], include_tool=show_tools, include_pruned=True)", src)
         self.assertIn("msg-hidden", src)
-        self.assertIn("Hidden from her", src)
+        self.assertIn("Hidden from ⟦n⟧", src)
 
     def test_the_edit_script_is_its_own_script_element_and_parses(self):
         js = server.HISTORY_EDIT_JS

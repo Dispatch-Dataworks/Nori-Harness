@@ -53,7 +53,7 @@ import time
 
 import store
 
-PRONOUNS = ("she/her", "he/him", "they/them")
+PRONOUNS = ("she/her", "he/him", "they/them", "it/its")
 
 _SPEC: dict[str, tuple] = {
     # Single source of truth for "what timezone is he in" (2026-09-18,
@@ -328,7 +328,7 @@ _SPEC: dict[str, tuple] = {
     "assistant_name": ("Nori", str, "workspace", False, "her name, as far as she and the UI are concerned"),
     # Her pronouns (2026-10-28, first-run setup): one of PRONOUNS below, she/her unless the admin chooses otherwise. Told to her in the
     # name header of every prompt so she knows how the people around her refer to her; the UI's own copy stays she/her.
-    "assistant_pronouns": ("she/her", str, "workspace", False, "her pronouns (she/her, he/him or they/them)"),
+    "assistant_pronouns": ("she/her", str, "workspace", False, "its pronouns (she/her, he/him, they/them or it/its)"),
     # First-run setup (2026-10-28, firstrun.py): `setup_complete` ends the guided connect-a-model / name / pronouns pass; `setup_identity` records
     # that the admin confirmed her name and pronouns there, so the getting-to-know-you chat doesn't ask again. Neither is in the settings tool's
     # allowlist, so no model call can flip them.

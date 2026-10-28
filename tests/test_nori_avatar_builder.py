@@ -167,19 +167,33 @@ class Prompts(unittest.TestCase):
     def test_every_state_has_a_look_and_it_reaches_the_prompt(self):
         self.assertEqual(set(emotion.LOOKS), set(emotion.STATES))
         for s in emotion.STATES:
-            self.assertIn(emotion.LOOKS[s], ab.state_prompt(s))
+            self.assertIn(emotion.LOOKS[s], ab.state_prompt(s, DESC))
 
     def test_a_state_without_a_look_still_gets_a_prompt(self):
         self.assertIn("being whimsical", emotion.look("whimsical"))
 
     def test_the_prompts_carry_the_adult_text_and_the_description(self):
         self.assertIn(DESC.rstrip("."), ab.neutral_prompt(DESC))
-        for p in (ab.neutral_prompt(DESC), ab.state_prompt("happy")):
+        for p in (ab.neutral_prompt(DESC), ab.state_prompt("happy", DESC)):
             self.assertIn("Nothing depicting or implying a minor", p)
             self.assertIn("No nudity", p)
 
+    def test_the_safety_text_does_not_tell_the_model_the_character_is_human(self):
+        """It used to say "An adult, fully clothed.", and a described robot came back as a man."""
+        for p in (ab.neutral_prompt("A silver robot with glowing blue eyes"), ab.state_prompt("angry", "A silver robot"), ab.SELFIE_CONSTRAINT):
+            self.assertIn("If the character is a person", p)
+            self.assertNotIn("An adult, fully clothed", p)
+
+    def test_each_expression_prompt_repeats_the_description_and_keeps_the_kind_of_being(self):
+        robot = "A silver service robot with a round faceplate and two glowing blue eyes."
+        p = ab.state_prompt("surprised", robot)
+        self.assertIn(robot.rstrip("."), p)
+        self.assertIn("a robot stays a robot", p)
+        self.assertIn("Do not change who or what the character is", p)
+        self.assertIn("the character's own features", p)
+
     def test_the_state_prompt_locks_identity_and_forbids_collages(self):
-        p = ab.state_prompt("angry")
+        p = ab.state_prompt("angry", DESC)
         self.assertIn("same character as in the reference image", p)
         self.assertIn("not a collage", p)
 
@@ -444,6 +458,39 @@ class ChoosingAndBuilding(Base):
         self.assertIn(emotion.LOOKS["angry"], self.fake.calls[0]["prompt"])
         self.assertTrue(ab.counts(ab.status())["complete"])
 
+    def test_each_state_is_drawn_with_the_saved_description_in_its_prompt(self):
+        self.chosen()
+        self.fake.calls.clear()
+        ab.build_set(WS, UID)
+        wait()
+        self.assertTrue(all(DESC.rstrip(".") in c["prompt"] for c in self.fake.calls))
+
+    def test_redrawing_everything_redraws_every_state_but_not_the_neutral_reference(self):
+        self.full_set()
+        neutral = (ab.BUILD_DIR / ab.status()["states"]["neutral"]["file"]).read_bytes()
+        self.fake.calls.clear()
+        ok, msg = ab.redraw_all(WS, UID)
+        self.assertTrue(ok, msg)
+        wait()
+        self.assertEqual(len(self.fake.calls), len(OTHERS))
+        self.assertEqual((ab.BUILD_DIR / ab.status()["states"]["neutral"]["file"]).read_bytes(), neutral)
+        self.assertTrue(all(c["references"][0][0] == neutral for c in self.fake.calls))
+        self.assertTrue(ab.counts(ab.status())["complete"])
+
+    def test_redrawing_everything_is_refused_with_no_face_or_while_busy(self):
+        self.assertFalse(ab.redraw_all(WS, UID)[0])
+        self.candidates()
+        self.assertFalse(ab.redraw_all(WS, UID)[0])
+        self.fake.calls.clear()
+        self.chosen_again = ab.pick(0)
+        self.fake.gate = threading.Event()
+        ab.build_set(WS, UID)
+        try:
+            self.assertFalse(ab.redraw_all(WS, UID)[0])
+        finally:
+            self.fake.gate.set()
+            wait()
+
     def test_building_when_everything_is_drawn_does_nothing(self):
         self.full_set()
         self.fake.calls.clear()
@@ -629,14 +676,14 @@ class Pages(Base):
 
     def test_the_form_is_offered_when_ready_and_the_connect_card_when_not(self):
         html = page().html()
-        self.assertIn("Describe her face", html)
+        self.assertIn("Describe ⟦n⟧'s face", html)
         self.assertIn("action='/admin/avatars/build/describe'", html)
         self.assertIn(f"${3 * ab.per_image_estimate(WS):.2f}", html, "the estimate (3 x the per-image cost) is shown before anything is spent")
         disconnect()
         html = page().html()
         self.assertIn("Connect an image model first", html)
         self.assertIn("/settings?tab=models", html)
-        self.assertNotIn("Describe her face", html)
+        self.assertNotIn("Describe ⟦n⟧'s face", html)
 
     def test_from_the_wizard_the_back_link_and_connect_link_stay_in_the_wizard(self):
         disconnect()
@@ -669,11 +716,11 @@ class Pages(Base):
         self.candidates()
         html = page().html()
         self.assertEqual(html.count("action='/admin/avatars/build/pick'"), 3)
-        self.assertIn("Choose her neutral face", html)
+        self.assertIn("Choose ⟦n⟧'s neutral face", html)
         post("pick", index="0")
         html = page().html()
         self.assertIn("Draw the other 23 expressions", html)
-        self.assertIn("neutral: her reference face", html)
+        self.assertIn("neutral: ⟦n⟧'s reference face", html)
         for s in OTHERS:
             self.assertIn(f">{s}</p>", html)
         post("build")
@@ -682,6 +729,7 @@ class Pages(Base):
         self.assertIn("24 of 24 drawn", html)
         self.assertIn("Install these avatars", html)
         self.assertEqual(html.count("action='/admin/avatars/build/redo'"), len(OTHERS))
+        self.assertIn("action='/admin/avatars/build/redrawall'", html)
 
     def test_while_drawing_the_page_refreshes_itself_and_hides_the_buttons(self):
         self.fake.gate = threading.Event()

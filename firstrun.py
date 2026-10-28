@@ -28,7 +28,7 @@ import onboarding
 import providers
 
 STEPS = ("connect", "models", "identity")
-STEP_TITLES = {"connect": "Connect a provider", "models": "Choose models", "identity": "Her name"}
+STEP_TITLES = {"connect": "Connect a provider", "models": "Choose models", "identity": "Name and pronouns"}
 NAME_MAX = 40
 
 
@@ -89,7 +89,7 @@ def save_identity(workspace_id: int, name: str, pronouns_choice: str) -> tuple[b
 def finish(workspace_id: int) -> tuple[bool, str]:
     """Close the wizard. Refused while she has nothing to think with: finishing then would drop the admin on a chat that can't answer."""
     if not has_model(workspace_id):
-        return False, "choose a primary model first, she can't speak without one"
+        return False, "choose a primary model first, the assistant can't speak without one"
     config.set("workspace", workspace_id, "setup_complete", True)
     return True, "done"
 

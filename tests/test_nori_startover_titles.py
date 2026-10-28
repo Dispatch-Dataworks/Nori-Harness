@@ -236,10 +236,10 @@ class AboutSection(unittest.TestCase):
     def test_the_admin_sees_both_options_and_the_deletion_is_stated_plainly(self):
         html = self._about(ADMIN, True)
         self.assertIn("href='/first-run'", html)
-        self.assertIn("meet her again", html)
+        self.assertIn("meet the assistant again", html)
         self.assertIn("action='/settings/start-over'", html)
         self.assertIn("permanently deletes every member's conversation history", html)
-        self.assertIn("It keeps accounts, providers and keys, models and fallbacks, memories, her persona", html)
+        self.assertIn("It keeps accounts, providers and keys, models and fallbacks, memories, the assistant's persona", html)
         self.assertIn("An encrypted backup is taken first", html)
         self.assertIn("name=confirm", html)
 
@@ -250,7 +250,7 @@ class AboutSection(unittest.TestCase):
         html = self._about(MEMBER, True)
         self.assertNotIn("/settings/start-over", html)
         self.assertNotIn("href='/first-run'", html)
-        self.assertIn("meet her again", html, "a member can still ask for her introduction")
+        self.assertIn("meet ⟦n⟧ again", html, "a member can still ask for the introduction")
 
 
 class Titles(unittest.TestCase):

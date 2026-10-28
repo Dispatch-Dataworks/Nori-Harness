@@ -176,6 +176,9 @@ def settle_draft(user_id: int, outcome: str) -> None:
 
 
 # ── the guide she is given while it runs ──────────────────────────────────
+NAME_TOKEN = "\u27e6n\u27e7"   # the assistant's name, in copy written without pronouns (server.py fills the same token in pages)
+
+
 def _identity_settled(user: dict) -> bool:
     """Did the admin already choose her name and pronouns in the first-run wizard (firstrun.py)? Then the chat doesn't ask."""
     return bool(config.get("workspace", user["workspace_id"], "setup_identity"))
@@ -191,10 +194,10 @@ def _checklist(user: dict, persona_customised: bool) -> str:
     if admin:
         name = config.get("workspace", ws, "assistant_name")
         if _identity_settled(user):
-            lines.append(f"- Her name and pronouns: settled in first-run setup as {name!r}, {config.get('workspace', ws, 'assistant_pronouns')}. Do not ask again; "
+            lines.append(f"- ⟦n⟧'s name and pronouns: settled in first-run setup as {name!r}, {config.get('workspace', ws, 'assistant_pronouns')}. Do not ask again; "
                          "change them only if they ask (onboarding_set_name for the name)")
         else:
-            lines.append(f"- Her name: {'settled as ' + repr(name) if steps['name'] else 'not settled yet (currently ' + repr(name) + ')'}")
+            lines.append(f"- ⟦n⟧'s name: {'settled as ' + repr(name) if steps['name'] else 'not settled yet (currently ' + repr(name) + ')'}")
     lines.append(f"- Their timezone: {'confirmed as ' + usertime.zone_name(uid) if steps['timezone'] else 'not confirmed (currently ' + usertime.zone_name(uid) + ')'}")
     n = memories_saved(uid)
     lines.append(f"- Getting to know them: {n} thing(s) saved so far (aim for roughly 5-8 real, durable preferences and facts, not trivia)")
@@ -207,10 +210,10 @@ def _checklist(user: dict, persona_customised: bool) -> str:
             p = "a draft is on screen as a card with Apply and Discard buttons; they decide, you can't apply it"
         else:
             p = ("not started; a persona already exists that they've customised, so refine it rather than replace it" if persona_customised
-                 else "not started (she is still on the shipped default)")
-        lines.append(f"- Her persona: {p}")
+                 else "not started (⟦n⟧ is still on the shipped default)")
+        lines.append(f"- ⟦n⟧'s persona: {p}")
     lines.append(f"- Tour: {', '.join(steps['tour']) if steps['tour'] else 'not started'}")
-    return "\n".join(lines)
+    return "\n".join(lines).replace(NAME_TOKEN, config.get("workspace", ws, "assistant_name"))
 
 
 _GUIDE_COMMON = """You are in your first-meeting chat with {who}. This is how you get set up together. The app is tracking it; the state is below, so do not redo anything already done.
@@ -308,6 +311,12 @@ def _memory_count(user_id: int, workspace_id: int) -> int | None:
 
 
 def _stops(user: dict) -> list[dict]:
+    """The tour stops with the assistant's name filled in where the copy refers to it (it is written with a token so it holds for any pronouns)."""
+    name = config.get("workspace", user["workspace_id"], "assistant_name")
+    return [{**s, "title": s["title"].replace(NAME_TOKEN, name), "what": s["what"].replace(NAME_TOKEN, name)} for s in _stops_raw(user)]
+
+
+def _stops_raw(user: dict) -> list[dict]:
     """Every place worth showing, with where it lives and its live state. (key, title, where, what, state, admin_only)"""
     uid, ws = user["id"], user["workspace_id"]
     n_mem = _memory_count(uid, ws)
@@ -315,45 +324,45 @@ def _stops(user: dict) -> list[dict]:
     window = f"{_cfg('user', uid, 'ping_window_start')}:00-{_cfg('user', uid, 'ping_window_end')}:00"
     return [
         dict(key="chat", title="Chat and voice", where="the chat; Settings -> Chat & voice",
-             what="Type or talk to her. Messages show their time, and the (i) on her messages shows what triggered them and which model answered.", state=None, admin=False),
+             what="Type or talk to ⟦n⟧. Messages show their time, and the (i) on ⟦n⟧'s messages shows what triggered them and which model answered.", state=None, admin=False),
         dict(key="memory", title="Memory", where="Settings -> Memory",
-             what="What she remembers about them. They can pin, edit or remove anything, and she saves new things as she learns them.",
+             what="What ⟦n⟧ remembers about them. They can pin, edit or remove anything, and ⟦n⟧ saves new things as ⟦n⟧ learns them.",
              state=(f"{n_mem} remembered" if n_mem is not None else None), admin=False),
         dict(key="pings", title="Pings", where="Settings -> Pings",
-             what="When she may speak up on her own (a reminder, a calendar event, no dinner planned). She can choose to stay quiet when there's nothing worth saying.",
+             what="When ⟦n⟧ may speak up on ⟦n⟧'s own (a reminder, a calendar event, no dinner planned). ⟦n⟧ can choose to stay quiet when there's nothing worth saying.",
              state=f"{_onoff(ping)}, {window}", admin=False),
         dict(key="notifications", title="Notifications and timezone", where="Settings -> Notifications",
              what="Browser notifications, quiet hours, and the timezone every time in the app follows.",
              state=_onoff(_cfg("user", uid, "notify_enabled")), admin=False),
         dict(key="board", title="The board: tasks, notes, reminders, trackers", where="the board button at the top of the chat",
-             what="Things to do, things to remember, reminders she nags about until done, and numbers to track over time (weight, water, sleep).", state=None, admin=False),
+             what="Things to do, things to remember, reminders ⟦n⟧ nags about until done, and numbers to track over time (weight, water, sleep).", state=None, admin=False),
         dict(key="household", title="Inventory and meals", where="Inventory and Meals in the chat's top bar",
-             what="What's in the house and what's for dinner this week. She can nudge when nothing is planned.", state=None, admin=False),
+             what="What's in the house and what's for dinner this week. ⟦n⟧ can nudge when nothing is planned.", state=None, admin=False),
         dict(key="files", title="Files", where="Files in the top bar",
-             what="A shared working folder she can read from and write to; they can upload and download.", state=None, admin=False),
+             what="A shared working folder ⟦n⟧ can read from and write to; they can upload and download.", state=None, admin=False),
         dict(key="history", title="History", where="History in the top bar",
-             what="Search the whole conversation, hide messages from her context, or delete them for good.", state=None, admin=False),
+             what="Search the whole conversation, hide messages from ⟦n⟧'s context, or delete them for good.", state=None, admin=False),
         dict(key="accounts", title="Connected accounts", where="Settings -> Connected accounts",
-             what="Connect Google or Microsoft so she can read email and calendar, with the content screened before she acts on it.", state=None, admin=False),
+             what="Connect Google or Microsoft so ⟦n⟧ can read email and calendar, with the content screened before ⟦n⟧ acts on it.", state=None, admin=False),
         dict(key="devices", title="Devices", where="Settings -> Devices",
-             what="The Android app and Chrome extension: real notifications, share to her, health data into trackers, places, and (only while they allow it) phone and browser actions.",
+             what="The Android app and Chrome extension: real notifications, share to ⟦n⟧, health data into trackers, places, and (only while they allow it) phone and browser actions.",
              state=None, admin=False),
         dict(key="computer_use", title="Computer use", where="Settings -> Devices -> Computer use",
-             what="She can use their browser in a time-boxed session on sites they allow, pausing for approval on anything risky.",
+             what="⟦n⟧ can use their browser in a time-boxed session on sites they allow, pausing for approval on anything risky.",
              state=_onoff(_cfg("workspace", ws, "bridge_enabled")), admin=True),
         dict(key="web", title="Web search and fetch", where="Settings -> Web search/fetch",
-             what="Lets her look things up and read pages.", state=f"search {_onoff(_cfg('workspace', ws, 'web_search_enabled'))}, fetch {_onoff(_cfg('workspace', ws, 'web_fetch_enabled'))}", admin=True),
+             what="Lets ⟦n⟧ look things up and read pages.", state=f"search {_onoff(_cfg('workspace', ws, 'web_search_enabled'))}, fetch {_onoff(_cfg('workspace', ws, 'web_fetch_enabled'))}", admin=True),
         dict(key="images", title="Images", where="Settings -> Images",
              what="Selfies and imagined pictures, with a daily spend cap.", state=_onoff(_cfg("workspace", ws, "image_gen_enabled")), admin=True),
         dict(key="models", title="Models", where="Settings -> Model config",
-             what="Which providers and models she thinks with, a primary and fallbacks.", state=None, admin=True),
-        dict(key="persona", title="Her persona", where="Settings -> Persona",
-             what="Who she is. It can be edited and restored any time, but only from here: she can propose a draft, never change it herself.", state=None, admin=True),
+             what="Which providers and models ⟦n⟧ thinks with, a primary and fallbacks.", state=None, admin=True),
+        dict(key="persona", title="⟦n⟧'s persona", where="Settings -> Persona",
+             what="Who ⟦n⟧ is. It can be edited and restored any time, but only from here: ⟦n⟧ can propose a draft, never change it on its own.", state=None, admin=True),
         dict(key="agents", title="Sub-agents and the code sandbox", where="Settings -> Sub-agents, Settings -> Code sandbox",
-             what="Background jobs she can hand off, and a no-network sandbox where she can run python.",
+             what="Background jobs ⟦n⟧ can hand off, and a no-network sandbox where ⟦n⟧ can run python.",
              state=f"sandbox {_onoff(_cfg('workspace', ws, 'sandbox_enabled'))}", admin=True),
         dict(key="peers", title="Peer connections", where="Settings -> Peer connections",
-             what="Connect her to another agent as an ongoing peer.", state=None, admin=True),
+             what="Connect ⟦n⟧ to another agent as an ongoing peer.", state=None, admin=True),
         dict(key="backups", title="Backups", where="Settings -> Backups",
              what="Encrypted backups and how to restore.", state=None, admin=True),
         dict(key="updates", title="Updates", where="Settings -> Updates",
@@ -438,7 +447,7 @@ def _tour(session: dict, stop: str = "") -> dict:
 
 def _finish(session: dict, skipped: bool = False) -> dict:
     finish(session["user_id"], skipped=bool(skipped))
-    return {"ok": True, "note": "onboarding is closed; they can redo it any time from Settings -> About (Meet her again)"}
+    return {"ok": True, "note": "onboarding is closed; they can redo it any time from Settings -> About (Meet the assistant again)"}
 
 
 def _register_tools() -> None:

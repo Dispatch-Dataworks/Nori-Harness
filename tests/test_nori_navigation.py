@@ -87,7 +87,8 @@ def handler(role="admin"):
                                         list_users=lambda _: [dict(display_name="Test user", role=role, status="active")],
                                         create_invite=Mock(return_value=(2, "test-invite")),
                                         the_workspace_id=lambda: 1),
-               config=SimpleNamespace(get=lambda *a: 0),
+               config=SimpleNamespace(get=lambda *a: 0, PRONOUNS=("she/her", "he/him", "they/them", "it/its")),
+               firstrun=SimpleNamespace(pronouns=lambda _ws: "she/her"),
                # signal_registry() backs the "pings" tab's derived per-signal
                # toggles (2026-09-26) -- empty here is fine, this harness
                # doesn't need a real signal to render, just to not NameError.

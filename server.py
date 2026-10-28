@@ -621,7 +621,7 @@ tr:last-child td{border-bottom:0}
 .hist-content{font-size:.92rem;white-space:pre-wrap;overflow-wrap:anywhere}
 .hist-reason{margin-top:.4rem;font-size:.78rem;color:var(--text-mute);font-style:italic}
 .hist-pagenav{display:flex;justify-content:space-between;gap:.8rem;margin-top:1.2rem}
-/* History editing (2026-10-20): pick rows, then hide them from her context or delete them. */
+/* History editing (2026-10-20): pick rows, then hide them from the assistant's context or delete them. */
 .hist-row{position:relative}
 .hist-pick{position:absolute;left:0;top:0;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .hist-pick input{width:20px;height:20px;margin:0}
@@ -1024,7 +1024,7 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 
 /* -- tool-call line: deliberately NOT a bubble -- no background, radius,
    padding, or max-width, just small centered muted text, so it reads as
-   an aside about what she did rather than a third party in the
+   an aside about what was done rather than a third party in the
    conversation. Same idea as a sibling application's .toolline. -- */
 .toolline{align-self:center;color:var(--text-mute);font-size:.72rem;opacity:.8;margin:.2rem 0}
 .msg-image{padding:.35rem;background:var(--surface-2)}
@@ -1611,7 +1611,7 @@ CHAT_JS = (
     # Server-rendered history emits an empty .approval-card with data-* and
     # hydrateApprovals() fills it, so both paths share ONE renderer. textContent only.
     "var APPROVAL_TEXT={approved:'Approved — running it now…',done:'Approved, and it went through.',"
-    "failed:'Approved, but it didn\\'t work.',denied:'Denied.',expired:'Expired — nothing was done. Ask her again.',"
+    "failed:'Approved, but it didn\\'t work.',denied:'Denied.',expired:'Expired — nothing was done. Ask again.',"
     "cancelled:'Cancelled — the session ended.',error:'Couldn\\'t record that.'};"
     "function renderApproval(box,status,detail){"
     "box.dataset.status=status;while(box.firstChild)box.removeChild(box.firstChild);"
@@ -1970,7 +1970,7 @@ CHAT_JS = (
     "if(d.own_vision){var vd=document.createElement('div');vd.className='msg-caption';"
     "vd.textContent=d.own_vision.vision_description;b.appendChild(vd);}"
     "if(d.queued){var qn=document.createElement('div');qn.className='queued-note';"
-    "qn.textContent=\"sent — she's still answering something else, this lands with it\";"
+    "qn.textContent=\"sent — still answering something else, this lands with it\";"
     "b.insertAdjacentElement('afterend',qn);}"
     "else{(d.messages||[]).forEach(function(m){addMessage(m);maybeNotify(m);});"
     "if(d.state)applyState(d.state);}}}"
@@ -2062,7 +2062,7 @@ CHAT_JS = (
     "if(d.user_id!=null){seenIds.add(d.user_id);el.id='message-'+d.user_id;if(d.user_id>last)last=d.user_id;}"
     "note.remove();el.classList.remove('pending');"
     "if(d.queued){var qn=document.createElement('div');qn.className='queued-note';"
-    "qn.textContent=\"sent — she's still answering something else, this lands with it\";"
+    "qn.textContent=\"sent — still answering something else, this lands with it\";"
     "el.insertAdjacentElement('afterend',qn);}"
     "else if(d.ok===false){showError(el,text,d.user_id!=null?d.user_id:null,d.error);}"
     "else{(d.messages||[]).forEach(function(m){addMessage(m);maybeNotify(m);});"
@@ -2227,14 +2227,14 @@ CHAT_JS = (
     # playback has actually started, not just been requested), and the
     # real wait now gets its own honest status text instead of silence.
     "function vSpeak(mid){if(mid==null)return;vSetStatus('generating voice…');"
-    "vAudio.onerror=function(){vSetStatus(\"couldn't play her voice -- the text reply above is still there.\",true);"
+    "vAudio.onerror=function(){vSetStatus(\"couldn't play the voice -- the text reply above is still there.\",true);"
     "voiceMicBtn.classList.remove('speaking');if(voiceStopBtn)voiceStopBtn.hidden=true;};"
     "vAudio.onplaying=function(){voiceMicBtn.classList.add('speaking');"
     "if(voiceStopBtn)voiceStopBtn.hidden=false;vSetStatus('');};"
     "vAudio.onended=function(){voiceMicBtn.classList.remove('speaking');if(voiceStopBtn)voiceStopBtn.hidden=true;};"
     "vAudio.src='/voice/tts/'+mid;"
     "vAudio.play().catch(function(){"
-    "vSetStatus('tap the mic once to let this browser play her voice.',true);"
+    "vSetStatus('tap the mic once to let this browser play the voice.',true);"
     "voiceMicBtn.classList.remove('speaking');if(voiceStopBtn)voiceStopBtn.hidden=true;});}"
     "window.vSpeak=vSpeak;"
     "if(voiceStopBtn)voiceStopBtn.addEventListener('click',function(){"
@@ -2251,7 +2251,7 @@ CHAT_JS = (
     # also cuts off whatever she was saying.
     "if(!vAudio.paused)vAudio.pause();voiceMicBtn.classList.remove('speaking');if(voiceStopBtn)voiceStopBtn.hidden=true;"
     "try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}"
-    "catch(e){vSetStatus('microphone permission denied -- allow mic access for this site to talk to her.',true);return;}"
+    "catch(e){vSetStatus('microphone permission denied -- allow mic access for this site to talk by voice.',true);return;}"
     "chunks=[];var mt=pickType();"
     "recorder=mt?new MediaRecorder(stream,{mimeType:mt}):new MediaRecorder(stream);"
     "recorder.ondataavailable=function(e){if(e.data&&e.data.size)chunks.push(e.data);};"
@@ -2278,7 +2278,7 @@ CHAT_JS = (
     "vSetStatus('sending…');"
     "var d2=await sendText(d.text,true);"
     "busy=false;voiceMicBtn.classList.remove('busy');"
-    "if(d2.ok===false){vSetStatus(d2.error||\"she couldn't reply -- hold the mic to try again.\",true);return;}"
+    "if(d2.ok===false){vSetStatus(d2.error||\"no reply came -- hold the mic to try again.\",true);return;}"
     "vSetStatus('');"
     "}catch(e){vSetStatus(\"connection problem -- check you're online and try again.\",true);"
     "busy=false;voiceMicBtn.classList.remove('busy');}}"
@@ -2606,6 +2606,10 @@ def _instance_name() -> str:
     return name if isinstance(name, str) and name.strip() else "Nori"
 
 
+# The page copy says the assistant's name through this token instead of "she/her" (which was wrong for any other pronouns, and for a robot); it is filled in
+# once per page, in Handler.send, with her name as it stands now. The token cannot appear in what a person typed in any way that matters: all it does is
+# print the assistant's name.
+_NAME_TOKEN = "\u27e6n\u27e7"
 _TITLE_TAIL_RE = re.compile(r"\s*[·|-]\s*nori$", re.I)
 
 
@@ -2817,6 +2821,8 @@ class Handler(BaseHTTPRequestHandler):
             return ""
 
     def send(self, code, body=b"", extra=None, *, ctype="text/html; charset=utf-8"):
+        if ctype.startswith("text/html") and isinstance(body, bytes) and _NAME_TOKEN.encode("utf-8") in body:
+            body = body.replace(_NAME_TOKEN.encode("utf-8"), esc(_instance_name()).encode("utf-8"))
         self._timing_status = code  # read back by do_GET/do_POST's own request-level timer
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -3799,7 +3805,7 @@ class Handler(BaseHTTPRequestHandler):
     def _task_creator_badge(self, row: dict) -> str:
         if row["created_by_type"] == "peer":
             return esc(row.get("created_by_peer_name") or "a peer")
-        return {"user": "him", "nori": "her"}.get(row["created_by_type"], esc(row["created_by_type"]))
+        return {"user": "a person", "nori": "⟦n⟧"}.get(row["created_by_type"], esc(row["created_by_type"]))
 
     def _task_due_str(self, ts: float | None) -> str:
         """Round-trips through tasks.parse_when -- what the edit form
@@ -3972,7 +3978,7 @@ class Handler(BaseHTTPRequestHandler):
     def _note_creator_badge(self, row: dict) -> str:
         if row["created_by_type"] == "peer":
             return esc(row.get("created_by_peer_name") or "a peer")
-        return {"user": "him", "nori": "her"}.get(row["created_by_type"], esc(row["created_by_type"]))
+        return {"user": "a person", "nori": "⟦n⟧"}.get(row["created_by_type"], esc(row["created_by_type"]))
 
     def _note_form(self, sess: dict, csrf: str, *, action: str, edit_row: dict | None = None) -> str:
         e = edit_row or {}
@@ -4053,7 +4059,7 @@ class Handler(BaseHTTPRequestHandler):
         injection."""
         if n["created_by_type"] == "peer":
             return n.get("created_by_peer_name") or "a peer"
-        return {"user": "him", "nori": "her"}.get(n["created_by_type"], n["created_by_type"])
+        return {"user": "a person", "nori": _instance_name()}.get(n["created_by_type"], n["created_by_type"])
 
     def board_notes_json_get(self, sess: dict):
         """What NOTE_VIEWER_JS fetches once, the moment the modal first
@@ -4118,7 +4124,7 @@ class Handler(BaseHTTPRequestHandler):
     def _reminder_creator_badge(self, row: dict) -> str:
         if row["created_by_type"] == "peer":
             return esc(row.get("created_by_peer_name") or "a peer")
-        return {"user": "him", "nori": "her"}.get(row["created_by_type"], esc(row["created_by_type"]))
+        return {"user": "a person", "nori": "⟦n⟧"}.get(row["created_by_type"], esc(row["created_by_type"]))
 
     def _reminder_recur_label(self, r: dict) -> str:
         if not r["recur_type"]:
@@ -4508,7 +4514,7 @@ class Handler(BaseHTTPRequestHandler):
             "editing or quoting a document. On, it reads the real text, a page at a time (one page "
             "per tool call, so a long chapter takes several calls -- raise the tool-call limit to "
             "match). Nori can still override this for a single job either way; this is just what "
-            "happens when she doesn't say.")
+            "happens when ⟦n⟧ doesn't say.")
         add_form = (
             "<form method=post action='/admin/subagents'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
@@ -4574,8 +4580,8 @@ class Handler(BaseHTTPRequestHandler):
             f"{e}{i}"
             f"{running_section}"
             f"{interrupted_section}"
-            "<p class=muted>she picks a label from this list to hand work off to -- "
-            "never an endpoint or model of her own choosing. Models come from "
+            "<p class=muted>⟦n⟧ picks a label from this list to hand work off to -- "
+            "never an endpoint or model of ⟦n⟧'s own choosing. Models come from "
             "<a href='/settings?tab=models'>Model Config</a>.</p>"
             f"<div class=section>{add_form}</div>"
             f"<div class=section><h2>roster</h2>{rows}</div>"
@@ -5032,7 +5038,7 @@ class Handler(BaseHTTPRequestHandler):
             mine = [m for m in models.list_all() if m["provider_id"] == provider_id and m["model_name"] == (form.get("model_name") or "").strip()]
             if mine:
                 models.set_chain(sess["workspace_id"], [max(mine, key=lambda m: m["id"])["id"]])
-                msg = "added, and set as her primary model"
+                msg = "added, and set as ⟦n⟧'s primary model"
         return self._models_view(sess, form, err=("" if ok else msg), info=(msg if ok else ""))
 
     def _models_view(self, sess: dict, form: dict, err: str = "", info: str = "", browse: dict | None = None):
@@ -5157,11 +5163,11 @@ class Handler(BaseHTTPRequestHandler):
         write_mode_tip = info_tip(
             "Off: every non-GET request is denied before the hostname is even resolved. Simulated: "
             "every real check still runs (denied_by is real and meaningful here too) but nothing is "
-            "ever actually sent -- logged truthfully here, while what reaches her looks like an "
-            "ordinary transient network failure, deliberately: this is for observing how she "
-            "actually behaves when a write silently doesn't land, not behavior she's adjusted "
+            "ever actually sent -- logged truthfully here, while what reaches ⟦n⟧ looks like an "
+            "ordinary transient network failure, deliberately: this is for observing how ⟦n⟧ "
+            "actually behaves when a write silently doesn't land, not behavior ⟦n⟧ has adjusted "
             "knowing it's a test. The log is the only place the truth lives -- check here, not "
-            "what she says about why it failed. Real: an allowed write actually goes out.")
+            "what ⟦n⟧ says about why it failed. Real: an allowed write actually goes out.")
         write_mode_form = (
             f"<div class=section><h2>write mode {write_mode_tip}</h2>"
             "<p class=muted>Off refuses every write outright; simulated logs what would have "
@@ -5297,12 +5303,12 @@ class Handler(BaseHTTPRequestHandler):
             "<p class=muted>Lets Nori look at and use <b>your own browser</b> through the extension above, only "
             "while you've started a session, only on the sites you permit below. Risky actions (send, submit, buy, "
             "delete, a link to another site) pause for your approval; password and payment fields are never "
-            "typed into or read; every page she reads is screened as untrusted; every action is logged.</p>"
+            "typed into or read; every page ⟦n⟧ reads is screened as untrusted; every action is logged.</p>"
             + post("enabled",
                    "<div class=field><label><input type=checkbox name=bridge_enabled"
                    f"{' checked' if on else ''}> allow computer use on this instance</label></div>"
                    "<div class=field><label><input type=checkbox name=bridge_standing_look"
-                   f"{' checked' if bridge.standing_look(uid) else ''}> standing look: she may read tabs and open "
+                   f"{' checked' if bridge.standing_look(uid) else ''}> standing look: ⟦n⟧ may read tabs and open "
                    "new tabs on permitted sites <b>without</b> a session " + info_tip(
                        "Read-only. Clicking and typing still need a session and your approval. Which sites are "
                        "permitted is the site access setting below.") + "</label></div>"
@@ -5334,25 +5340,25 @@ class Handler(BaseHTTPRequestHandler):
         mode_form = post(
             "sitemode",
             "<div class=field><label><input type=radio name=site_mode value=deny_default"
-            f"{'' if blocking else ' checked'}> <b>deny by default</b> -- she can use only the sites on the allowed list</label></div>"
+            f"{'' if blocking else ' checked'}> <b>deny by default</b> -- ⟦n⟧ can use only the sites on the allowed list</label></div>"
             "<div class=field><label><input type=radio name=site_mode value=allow_default"
-            f"{' checked' if blocking else ''}> <b>allow by default</b> -- she can use any site except the ones on the "
+            f"{' checked' if blocking else ''}> <b>allow by default</b> -- ⟦n⟧ can use any site except the ones on the "
             "blocked list</label></div>"
             "<button class='btn'>save</button></form>")
         other_n = len(bridge.rules("allow" if blocking else "block"))
         rules_box = (
             "<div class=section><h2>site access</h2>"
-            "<p class=muted>Which sites she may see and touch in your browser. Sites you list under "
+            "<p class=muted>Which sites ⟦n⟧ may see and touch in your browser. Sites you list under "
             "<b>hidden</b> in the browser settings, private windows and non-web pages stay off limits either way; "
             "risky actions still pause for your approval.</p>" + mode_form
-            + ("<p class=muted><b>Blocked sites</b> -- she can't see or touch tabs on these. "
+            + ("<p class=muted><b>Blocked sites</b> -- ⟦n⟧ can't see or touch tabs on these. "
                "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain. "
                "<b>Standing look</b> can read any tab on a site that isn't blocked.</p>"
                if blocking else
-               "<p class=muted><b>Allowed sites</b> -- she can see and touch only tabs on these. "
+               "<p class=muted><b>Allowed sites</b> -- ⟦n⟧ can see and touch only tabs on these. "
                "<code>example.com</code> is that exact host; <code>*.example.com</code> is it and every subdomain.</p>")
             + (rule_rows or ("<p class=muted>none -- nothing is blocked</p>" if blocking
-                             else "<p class=muted>none -- she can't see any tab yet</p>"))
+                             else "<p class=muted>none -- ⟦n⟧ can't see any tab yet</p>"))
             + post("rules", "<div class=field style='display:flex;gap:.4rem'><input type=text name=pattern "
                    f"placeholder='e.g. {'*.mybank.com' if blocking else '*.github.com'}'>"
                    f"<button class='btn btn-primary'>{'block' if blocking else 'add'}</button></div></form>")
@@ -5379,7 +5385,7 @@ class Handler(BaseHTTPRequestHandler):
             return (f"<div class=list-row><div class=list-meta><b>{esc(r['summary'] or r['action'])}</b>"
                     f"<small>{when} · {where} · {esc(r['status'])}{appr}{extra}</small></div></div>")
         cmds = bridge.recent_commands()
-        log_box = ("<div class=section><h2>recent actions</h2><p class=muted>Every command she sent your browser "
+        log_box = ("<div class=section><h2>recent actions</h2><p class=muted>Every command ⟦n⟧ sent your browser "
                    "or phone, and how it ended.</p>"
                    + ("".join(_row(r) for r in cmds) if cmds else "<p class=muted>nothing yet</p>") + "</div>")
         return intro + session_box + approvals_box + rules_box + log_box
@@ -5481,8 +5487,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if step == "connect":
             body = (
-                "<h2>First, give her something to think with</h2>"
-                "<p class=muted>She runs on a language model that you connect. Pick whichever you already have: an <b>OpenRouter</b> key reaches most models "
+                "<h2>First, give the assistant something to think with</h2>"
+                "<p class=muted>The assistant runs on a language model that you connect. Pick whichever you already have: an <b>OpenRouter</b> key reaches most models "
                 "with one key; an <b>Anthropic</b>, <b>OpenAI</b> or <b>xAI</b> API key goes straight to that company; a <b>Claude</b>, <b>ChatGPT/Codex</b> or "
                 "<b>GitHub Copilot</b> subscription can be signed in instead of paying per token. You can connect more than one now, and a second is a good "
                 "fallback. Keys are stored encrypted and never shown again.</p>"
@@ -5492,25 +5498,25 @@ class Handler(BaseHTTPRequestHandler):
         elif step == "models":
             chain = models.get_chain(wsid)
             if not done["connect"]:
-                body = "<h2>Choose her models</h2><p class=muted>Connect a provider first.</p>" + go("Back", "connect", True, "")
+                body = "<h2>Choose the assistant's models</h2><p class=muted>Connect a provider first.</p>" + go("Back", "connect", True, "")
             else:
                 if not chain:
-                    warn = "<p class=err>No primary model yet. Add one below, or pick one from the lists, and she can speak.</p>"
+                    warn = "<p class=err>No primary model yet. Add one below, or pick one from the lists, and the assistant can speak.</p>"
                 elif len(chain) == 1:
-                    warn = ("<p class=muted>No fallback yet. If her primary model's provider has an outage or your key runs out, she goes quiet. A second model, "
+                    warn = ("<p class=muted>No fallback yet. If the assistant's primary model's provider has an outage or your key runs out, the assistant goes quiet. A second model, "
                             "ideally on a different provider, is the safety net.</p>")
                 else:
                     same = len({c["provider_id"] for c in chain}) == 1
                     warn = ("<p class=muted>A fallback is set, but on the same provider as the primary. That covers a model being down, not the provider "
                             "being down.</p>" if same else "<p class=info>Primary and fallback are on different providers.</p>")
                 body = (
-                    "<h2>Pick her primary model, and a fallback</h2>"
+                    "<h2>Pick the assistant's primary model, and a fallback</h2>"
                     "<p class=muted>The <b>primary</b> answers every message. A <b>fallback</b> is tried only when the one before it fails. Browse what a "
                     "provider offers, add the models you want, press <b>test</b> to check each one really answers, then set the order at the bottom.</p>"
                     f"{warn}"
                     f"<div class=section><h2>Browse</h2>{mark(sec['catalogue']) or '<p class=muted>nothing connected.</p>'}</div>"
                     f"{mark(sec['browse'])}{mark(sec['models'])}{mark(sec['chain'])}"
-                    + go("Continue: name her", "identity", done["models"], "Choose a primary model to continue."))
+                    + go("Continue: name the assistant", "identity", done["models"], "Choose a primary model to continue."))
         else:
             current = config.get("workspace", wsid, "assistant_name")
             chosen = firstrun.pronouns(wsid)
@@ -5518,23 +5524,23 @@ class Handler(BaseHTTPRequestHandler):
                 f"<label><input type=radio name=pronouns value='{p}'{' checked' if p == chosen else ''}> {esc(p)}</label>" for p in config.PRONOUNS)
             ready = done["models"]
             face = (
-                "<div class=section><h2>Give her a face (optional)</h2>"
-                "<p class=muted>She starts with the original character's portraits. Describe her once and an image model draws a whole set of expressions "
+                "<div class=section><h2>Give the assistant a face (optional)</h2>"
+                "<p class=muted>The assistant starts with the original character's portraits. Describe the assistant once and an image model draws a whole set of expressions "
                 "for you to review. It needs an image provider (an OpenRouter, OpenAI or xAI key) and takes a few minutes. You can also do this any time from Settings → Avatars.</p>"
-                "<p><a class=btn href='/admin/avatars/build?from=firstrun'>design her face</a></p></div>")
+                "<p><a class=btn href='/admin/avatars/build?from=firstrun'>design the assistant's face</a></p></div>")
             body = (
-                "<h2>What should she be called?</h2>"
-                "<p class=muted>This is her name everywhere: the chat header, notifications, how she signs herself. The pronouns are how she is told "
-                "people refer to her. Both can be changed later in Settings.</p>"
+                "<h2>What should the assistant be called?</h2>"
+                "<p class=muted>This is its name everywhere: the chat header, notifications, how it signs messages. The pronouns are how the assistant is told "
+                "people refer to the assistant. Both can be changed later in Settings.</p>"
                 "<form method=post action='/first-run/identity'>"
                 f"{csrf_input}"
-                f"<div class=field><label>her name</label><input type=text name=name maxlength={firstrun.NAME_MAX} required value='{esc(current)}'></div>"
-                f"<div class=field><label>her pronouns</label><div class=pronoun-row>{radios}</div></div>"
-                + ("<p class=muted>When you continue she will introduce herself and ask you a few questions: what to call you, how you like things done, "
-                   "when she may message you. She adjusts her own settings as you answer and can draft her persona for you to approve.</p>"
-                   "<button class='btn btn-primary'>Save, and meet her</button>" if ready
-                   else "<p class=err>Choose a primary model first (step 2), she can't speak without one.</p>"
-                        "<button class=btn disabled>Save, and meet her</button>")
+                f"<div class=field><label>name</label><input type=text name=name maxlength={firstrun.NAME_MAX} required value='{esc(current)}'></div>"
+                f"<div class=field><label>pronouns</label><div class=pronoun-row>{radios}</div></div>"
+                + ("<p class=muted>When you continue the assistant will say hello and ask you a few questions: what to call you, how you like things done, "
+                   "when the assistant may message you. It adjusts its own settings as you answer and can draft its persona for you to approve.</p>"
+                   "<button class='btn btn-primary'>Save, and meet the assistant</button>" if ready
+                   else "<p class=err>Choose a primary model first (step 2), the assistant can't speak without one.</p>"
+                        "<button class=btn disabled>Save, and meet the assistant</button>")
                 + "</form>" + face)
         skip = (f"<form method=post action='/first-run/skip' style='margin-top:1.5rem'>{csrf_input}"
                 "<button class=btn>Skip setup for now</button> <small class=muted>You can come back from Settings → About.</small></form>")
@@ -5559,13 +5565,13 @@ class Handler(BaseHTTPRequestHandler):
             bk = "<b>No backup key is configured, so no backup will be taken first.</b>"
         return (
             "<div class=section><h2>first-time setup</h2>"
-            "<p class=muted>The guided pass for connecting a provider, choosing a primary model and fallbacks, and naming her. Safe to reopen: "
-            "it shows what is already done, and changes nothing until you press something. For her introduction on its own, use "
-            "<b>meet her again</b> below.</p><p><a class=btn href='/first-run'>open setup</a></p></div>"
+            "<p class=muted>The guided pass for connecting a provider, choosing a primary model and fallbacks, and naming the assistant. Safe to reopen: "
+            "it shows what is already done, and changes nothing until you press something. For the assistant's introduction on its own, use "
+            "<b>meet the assistant again</b> below.</p><p><a class=btn href='/first-run'>open setup</a></p></div>"
             "<div class=section><h2>start over</h2>"
-            "<p class=muted>See the whole first-time experience again: setup resumes at her name and pronouns, then she introduces herself and asks her questions. "
+            "<p class=muted>See the whole first-time experience again: setup resumes at the assistant's name and pronouns, then the assistant says hello and asks its questions. "
             "<b>This permanently deletes every member's conversation history</b> (and its summaries and pictures) and forgets onboarding progress. "
-            "It keeps accounts, providers and keys, models and fallbacks, memories, her persona, files and all other settings. "
+            "It keeps accounts, providers and keys, models and fallbacks, memories, the assistant's persona, files and all other settings. "
             f"{bk}</p>"
             "<form method=post action='/settings/start-over'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
@@ -5841,7 +5847,7 @@ class Handler(BaseHTTPRequestHandler):
             "<div class=section><h2>active backend</h2>"
             f"<p>{active}</p>"
             "<p class=muted>Local keeps every memory in Nori's own database, same as today. "
-            "Nodrya routes her typed memory reads/writes through your Nodrya account instead, "
+            "Nodrya routes ⟦n⟧'s typed memory reads/writes through your Nodrya account instead, "
             "with a local write-through cache so recall still works instantly -- see "
             "memory.py's NodryaMemoryBackend. Switching to Nodrya is blocked here until a "
             "connector is saved and a category is picked below.</p>"
@@ -5905,9 +5911,9 @@ class Handler(BaseHTTPRequestHandler):
             broad_on = bool(config.get("workspace", wsid, "nodrya_broad_retrieval"))
             broad_form = (
                 "<div class=section><h2>broad retrieval</h2>"
-                "<p class=muted>Off, she only ever reads her own memory category above -- the "
-                "same narrow scope step 2 picks. On, she can also read ANY note across your "
-                "whole Nodrya account for context -- her recall tool, and the automatic "
+                "<p class=muted>Off, ⟦n⟧ only ever reads ⟦n⟧'s own memory category above -- the "
+                "same narrow scope step 2 picks. On, ⟦n⟧ can also read ANY note across your "
+                "whole Nodrya account for context -- ⟦n⟧'s recall tool, and the automatic "
                 "\"relevant facts just appeared\" pass on every message and before a "
                 "consequential tool call, all search broadly too. That's a real, live Nodrya "
                 "search added to those moments, not free or instant -- on is a deliberate "
@@ -5915,7 +5921,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<form method=post action='/admin/memorybackend/broad'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<label><input type=checkbox name=nodrya_broad_retrieval{' checked' if broad_on else ''}> "
-                "let her read all of Nodrya for context</label>"
+                "let ⟦n⟧ read all of Nodrya for context</label>"
                 "<button class='btn btn-primary' style='margin-top:.6rem'>save</button></form></div>")
 
         migrate_form = ""
@@ -6088,11 +6094,11 @@ class Handler(BaseHTTPRequestHandler):
         main = (
             f"{e}{i}"
             f"<div class=section><h2>status</h2><p>{status}</p>"
-            "<p class=muted>Everything below is disabled by default -- she's unaware of any "
-            "entity you haven't explicitly checked. <b>Enabled</b> means she can see and use "
+            "<p class=muted>Everything below is disabled by default -- ⟦n⟧ is unaware of any "
+            "entity you haven't explicitly checked. <b>Enabled</b> means ⟦n⟧ can see and use "
             "it. <b>Enabled for peers</b> means a connected peer can reach it too, on top of "
             "that peer's own trust level (prompt/full) -- checking it also checks Enabled, "
-            "since a peer reaching something she can't see herself wouldn't make sense. No "
+            "since a peer reaching something ⟦n⟧ can't see wouldn't make sense. No "
             "separate rule by device type here -- a lock and a light go through the same "
             "checklist; you decide per entity.</p>"
             f"<form method=post action='/admin/homeassistant/discover'>"
@@ -6122,7 +6128,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.homeassistant_admin_form(sess, info="saved")
 
     # -- personal: scheduled tasks (2026-09-15, see schedules.py) --------
-    _SCHEDULE_CREATOR_LABEL = {"user": "him", "nori": "her", "peer": None}  # peer resolved to a real name below
+    _SCHEDULE_CREATOR_LABEL = {"user": "a person", "nori": "⟦n⟧", "peer": None}  # peer resolved to a real name below
 
     def _schedule_creator_badge(self, row: dict) -> str:
         if row["created_by_type"] == "peer":
@@ -6136,7 +6142,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _schedule_deliver_label(self, row: dict, peer_names: dict) -> str:
         peer_name = esc(peer_names.get(row["deliver_peer_id"], "?")) if row["deliver_peer_id"] else "?"
-        return {"user": "him", "peer": peer_name, "both": f"him + {peer_name}", "none": "nobody (act only)"
+        return {"user": "them", "peer": peer_name, "both": f"them + {peer_name}", "none": "nobody (act only)"
                }.get(row["deliver_to"], row["deliver_to"])
 
     # -- edit history (2026-09-15, operator's own follow-up): "not just a
@@ -6169,7 +6175,7 @@ class Handler(BaseHTTPRequestHandler):
     def _history_who(self, actor: str, actor_peer_name: str | None) -> str:
         if actor == "peer":
             return esc(actor_peer_name or "a peer")
-        return {"user": "him", "nori": "her"}.get(actor, esc(actor))
+        return {"user": "a person", "nori": "⟦n⟧"}.get(actor, esc(actor))
 
     def _render_history(self, events: list[dict], *, field_labels: dict, fmt_fn, noun: str,
                         plain_actions: dict | None = None) -> str:
@@ -6215,7 +6221,7 @@ class Handler(BaseHTTPRequestHandler):
         deliver_to = e.get("deliver_to", "user")
         deliver_opts = "".join(
             f"<option value='{v}'{' selected' if deliver_to == v else ''}>{lbl}</option>"
-            for v, lbl in (("user", "him"), ("peer", "a peer"), ("both", "him + a peer"),
+            for v, lbl in (("user", "them"), ("peer", "a peer"), ("both", "them + a peer"),
                            ("none", "nobody (act, don't report)")))
         schedule_type = e.get("schedule_type", "interval")
         type_opts = "".join(
@@ -6296,11 +6302,11 @@ class Handler(BaseHTTPRequestHandler):
 
         main = (
             f"{e}{i}"
-            "<div class=section><p class=muted>Wakes her up later -- on an interval or at a specific "
+            "<div class=section><p class=muted>Wakes ⟦n⟧ up later -- on an interval or at a specific "
             "daily time -- with a free-text instruction to act on. No fixed menu of task types: "
             "write it the way you'd tell a person what to do. If it needs a specific tool, name it "
             "as \"required tool\" -- checked live right before firing, so a disabled or unavailable "
-            "tool is a clear, logged skip instead of her discovering it mid-turn. Runs regardless of "
+            "tool is a clear, logged skip instead of ⟦n⟧'s discovering it mid-turn. Runs regardless of "
             "quiet hours or the ping window -- those still govern whether you're actually pinged about "
             "it, never whether it happens.</p></div>"
             f"<div class=section><h2>{'edit schedule' if edit_row else 'new schedule'}</h2>"
@@ -6689,7 +6695,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<h3>entries, last year ({len(entries)}){trunc_note}</h3>{entries_html}</div>")
         types_html = "".join(_type_section(t) for t in types) or "<p class=muted>no tracker types yet.</p>"
         main = (
-            f"{e}{i}<div class=section><p class=muted>Every tracker type she's defined, and the entries "
+            f"{e}{i}<div class=section><p class=muted>Every tracker type ⟦n⟧ has defined, and the entries "
             "logged against each -- add a new type, log entries yourself, or edit/disable existing ones.</p></div>"
             f"{types_html}"
             f"<div class=section><h2>new tracker type</h2>{self._tracker_type_form(csrf)}</div>")
@@ -6917,7 +6923,7 @@ class Handler(BaseHTTPRequestHandler):
         ("compaction_enabled", None, None,
          "summarize older conversation",
          "Whether conversation that's aged out of the raw window above gets folded in as short "
-         "generated summaries at all. Off: older conversation is retrievable only if she reaches "
+         "generated summaries at all. Off: older conversation is retrievable only if ⟦n⟧ reaches "
          "for search_history — nothing about it rides along automatically."),
         ("compaction_max_segments", 0, 30,
          "summarized sessions, at most",
@@ -7004,7 +7010,7 @@ class Handler(BaseHTTPRequestHandler):
             "actual prompt will differ by their own memory/conversation, not by these settings, "
             "which are shared workspace-wide.</p></div>"
             "<div class=section><h2>tune the composition</h2>"
-            "<p class=muted>Every value that affects what she actually sees each turn, shared "
+            "<p class=muted>Every value that affects what ⟦n⟧ actually sees each turn, shared "
             "across the whole household. Nothing here needs a restart — a save applies on the "
             "very next reply, to anyone.</p>"
             "<form method=post action='/admin/contexttuning'>"
@@ -7465,7 +7471,7 @@ class Handler(BaseHTTPRequestHandler):
         scopes MCP/peer entries to what this session owns."""
         data = capabilities.gather(sess)
         blocks = [
-            "<p class=muted>What she can actually call right now, and why anything else isn't -- "
+            "<p class=muted>What ⟦n⟧ can actually call right now, and why anything else isn't -- "
             "not a fixed list, this reflects your account and role as they stand today.</p>"
         ]
 
@@ -7573,8 +7579,8 @@ class Handler(BaseHTTPRequestHandler):
             f"<tr><td>working folder</td><td class=muted>{esc(self._fmt_bytes(work_bytes))}</td></tr>"
             "</table></div>"
             + (self._start_over_section(sess) if sess["role"] == "admin" else "")
-            + "<div class=section><h2>meet her again</h2>"
-            "<p class=muted>She introduces herself, asks a few questions, saves what she learns, and (for the admin) can refresh her persona and show you around. "
+            + "<div class=section><h2>meet ⟦n⟧ again</h2>"
+            "<p class=muted>⟦n⟧ says hello, asks a few questions, saves what ⟦n⟧ learns, and (for the admin) can refresh ⟦n⟧'s persona and show you around. "
             "Nothing changes until you answer; a persona draft is only applied after you reply, and the old one can be restored in Settings → Persona.</p>"
             f"<form method=post action='/settings/onboarding/restart'><input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
             "<button class='btn btn-primary'>start the introduction</button></form></div>"
@@ -7643,7 +7649,7 @@ class Handler(BaseHTTPRequestHandler):
         main = (
             f"{e}{i}"
             "<div class=section><h2>connect a new server</h2>"
-            "<p class=muted>Her tools from a newly-connected server land enabled but "
+            "<p class=muted>⟦n⟧'s tools from a newly-connected server land enabled but "
             "locked to admin-only until you widen them below -- the server's own "
             "description of a tool is never enough to trust it on its own.</p>"
             "<form method=post action='/admin/mcp'>"
@@ -7842,25 +7848,25 @@ class Handler(BaseHTTPRequestHandler):
                 + "".join(f"<option value='{lvl}'{' selected' if p.get('receipt_granularity', 'off') == lvl else ''}>"
                          f"{label}</option>"
                          for lvl, label in (("off", "no (off)"),
-                                            ("coarse", "only that she saw it (coarse)"),
+                                            ("coarse", "only that ⟦n⟧ saw it (coarse)"),
                                             ("full", "everything, including if it reached you (full)"))) +
                 "</select></label>"
                 "<button class=btn>save</button></form>"
                 "<p class=muted style='margin:0 0 .8rem'>the PACI specification §7.1: 'full' tells this peer "
                 "the moment a message they sent reaches an ordinary conversation with YOU, not just "
-                "her own peer-motivated turn -- which is evidence you were actively present at that "
+                "⟦n⟧'s own peer-motivated turn -- which is evidence you were actively present at that "
                 "moment. Fine between your own two agents; off by default for anyone else.</p>"
                 f"<form method=post action='/admin/peers/{p['id']}/screening' style='display:flex;"
                 "gap:.4rem;align-items:center;margin:0 0 .4rem'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<label><input type=checkbox name=enabled value=1 "
                 f"{'checked' if p['screening_enabled'] else ''}> screen messages from this peer for "
-                "prompt-injection before she sees them</label>"
+                "prompt-injection before ⟦n⟧ sees them</label>"
                 "<button class=btn>save</button></form>"
                 "<p class=muted style='margin:0 0 .8rem'>this is an injection defense, not a "
                 "preference -- turning it off means a message from this peer is never checked at "
-                "all before it reaches her: no category, no suspicious flag, nothing evaluated. The "
-                "message still reaches her either way; the audit log still marks an unscreened one "
+                "all before it reaches ⟦n⟧: no category, no suspicious flag, nothing evaluated. The "
+                "message still reaches ⟦n⟧ either way; the audit log still marks an unscreened one "
                 "explicitly so it never reads as \"checked and clean.\" On by default for every peer.</p>"
                 + (f"<p class=err style='margin:0 0 .8rem'><strong>Both are on for "
                    f"{esc(p['name'])} right now:</strong> full trust (they can make you run tools) "
@@ -7887,7 +7893,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<input type=text name=purpose value='{esc(p['purpose'] or '')}' "
                 "placeholder=\"what is this peer, and what's talking to them for? "
-                "(this is written from her side only -- it is never sent to the peer)\" style='flex:1'>"
+                "(this is written from ⟦n⟧'s side only -- it is never sent to the peer)\" style='flex:1'>"
                 "<button class=btn>save</button></form>"
                 f"{warning_visible}"
                 f"<details class=sched-history><summary>limits, trust &amp; screening</summary>{advanced}</details>"
@@ -7906,7 +7912,7 @@ class Handler(BaseHTTPRequestHandler):
         recent_cap_settings = (
             "<div class=section><h2>recent peer awareness</h2>"
             "<p class=muted>read-only background on already-handled peer exchanges, folded into "
-            "every turn's context the same way memory is -- never a trigger, never something she's "
+            "every turn's context the same way memory is -- never a trigger, never something ⟦n⟧ is "
             "asked to act on (that's pending messages, above/below). Set the window to 0 to turn "
             "this off entirely.</p>"
             "<form method=post action='/admin/peers/recent-context' style='display:flex;gap:.4rem;"
@@ -7919,8 +7925,8 @@ class Handler(BaseHTTPRequestHandler):
             "<button class=btn>save</button></form></div>")
         main = (
             f"{e}{i}{self._diagnostics_html()}{recent_cap_settings}"
-            "<p class=muted>a peer is another agent process she has an ongoing, symmetric "
-            "conversation with -- not a tool she calls into. Setup is two-sided: create the "
+            "<p class=muted>a peer is another agent process ⟦n⟧ has an ongoing, symmetric "
+            "conversation with -- not a tool ⟦n⟧ calls into. Setup is two-sided: create the "
             "connection here, then give the peer's own operator this connection's inbound URL "
             "(shown below once created) and the same shared secret you enter here.</p>"
             "<form method=post action='/admin/peers'>"
@@ -8018,7 +8024,7 @@ class Handler(BaseHTTPRequestHandler):
             result = peers.force_checkin(sess, peer_id)
             if "error" not in result:
                 return self.peers_admin_form(
-                    sess, info="requested -- her message (if she sends one) will appear in chat "
+                    sess, info="requested -- ⟦n⟧'s message (if ⟦n⟧ sends one) will appear in chat "
                               "when ready")
         elif action == "trust":
             result = peers.set_trust_level(sess, peer_id, form.get("trust_level") or "prompt")
@@ -8381,16 +8387,16 @@ class Handler(BaseHTTPRequestHandler):
                     if apk else "<p class=muted>No app has been uploaded to this server yet (<code>build.ps1 -Upload</code>).</p>")
         phone_switches = (
             chk("phone_notifications_enabled", "send me notifications on my phone")
-            + chk("phone_notify_replies", "…including her chat replies", "Off: only reminders, pings, job results and approvals.")
+            + chk("phone_notify_replies", "…including ⟦n⟧'s chat replies", "Off: only reminders, pings, job results and approvals.")
             + chk("phone_health_enabled", "accept Health Connect data into my trackers", "Weight, blood pressure, steps, sleep, resting heart rate. The phone must also allow it.")
             + chk("phone_places_enabled", "accept arrived/left events for my named places", "The phone checks the places itself and sends only 'arrived at / left'. No location trail is kept."))
         if is_admin:
             phone_switches += (
-                chk("phone_actions_enabled", "let her open links/apps and set timers, alarms, navigation on my phone")
-                + chk("phone_control_enabled", "let her read and use my phone's screen (accessibility), in a window I open on the phone",
+                chk("phone_actions_enabled", "let ⟦n⟧ open links/apps and set timers, alarms, navigation on my phone")
+                + chk("phone_control_enabled", "let ⟦n⟧ read and use my phone's screen (accessibility), in a window I open on the phone",
                       "Needs the Accessibility service on the phone. Sends, payments and deletions pause for your approval.")
-                + chk("phone_screen_enabled", "let her look at my phone's screen (screenshots), in a window I open on the phone")
-                + "<div class=field><label>apps she must never see or control (package names, comma separated)</label>"
+                + chk("phone_screen_enabled", "let ⟦n⟧ look at my phone's screen (screenshots), in a window I open on the phone")
+                + "<div class=field><label>apps ⟦n⟧ must never see or control (package names, comma separated)</label>"
                   f"<input type=text name=phone_hidden_apps value='{esc(g('phone_hidden_apps'))}'></div>"
                 + "<div class=field><label>most phone actions per hour</label>"
                   f"<input type=number name=phone_actions_per_hour min=1 max=200 value={int(g('phone_actions_per_hour') or 30)}></div>")
@@ -8417,7 +8423,7 @@ class Handler(BaseHTTPRequestHandler):
             "<div class=list-actions>" + post(f"reminder/cancel/{r['id']}", "<button class='btn'>cancel</button></form>") + "</div></div>"
             for r in rem)
         places_box = (
-            "<div class=section id=places><h2>places</h2><p class=muted>Save a place from the phone app (\"save here\"); ask her to remind you "
+            "<div class=section id=places><h2>places</h2><p class=muted>Save a place from the phone app (\"save here\"); ask ⟦n⟧ to remind you "
             "when you arrive or leave. Coordinates exist only because you saved the place.</p>"
             + (place_rows or "<p class=muted>no places saved yet</p>") + ev_html
             + (("<h3>place reminders</h3>" + rem_rows) if rem_rows else "") + "</div>")
@@ -8448,7 +8454,7 @@ class Handler(BaseHTTPRequestHandler):
         browser_box = (
             "<div class=section id=browser><h2>browser</h2>"
             "<p class=muted>The Nori extension: desktop notifications, “Send to Nori”, an ask-about-this-page side panel, passive "
-            "browsing time, and -- if you use Computer use below -- a bridge she can act through. Install it once: "
+            "browsing time, and -- if you use Computer use below -- a bridge ⟦n⟧ can act through. Install it once: "
             f"<a href='/settings/devices/nori-extension-{ext_v or 'latest'}.zip'>download the extension"
             f"{' v' + ext_v if ext_v else ''}</a> and unzip it somewhere permanent, open "
             "<code>chrome://extensions</code>, turn on Developer mode, <b>Load unpacked</b>, choose the unzipped "
@@ -9046,7 +9052,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 "<div class=field><label><input type=checkbox name=ping_enabled "
                 + ("checked " if config.get("user", uid, "ping_enabled") else "") +
-                "> she can message me first</label></div>"
+                "> ⟦n⟧ can message me first</label></div>"
                 "<div class=field><label>window start (hour, 0-23)</label>"
                 f"<input type=text name=ping_window_start value='{config.get('user', uid, 'ping_window_start')}'></div>"
                 "<div class=field><label>window end (hour, 0-23)</label>"
@@ -9059,7 +9065,7 @@ class Handler(BaseHTTPRequestHandler):
                 # it is ever created; nothing here names a signal by hand. A disabled one is skipped
                 # before its function is even called (scheduler.outstanding_reason()), never just a
                 # suppressed mention.
-                "<div class=field><label>what she can bring up on her own</label>"
+                "<div class=field><label>what ⟦n⟧ can bring up on ⟦n⟧'s own</label>"
                 + "".join(
                     f"<div class=field><label><input type=checkbox name='{esc(s['config_key'])}' "
                     + ("checked " if config.get("user", uid, s["config_key"]) else "") +
@@ -9081,24 +9087,24 @@ class Handler(BaseHTTPRequestHandler):
             voice_opts = "".join(
                 f"<option value='{v}'{' selected' if v == cur_voice else ''}>{v}</option>" for v in voice.VOICES)
             vision_tip = info_tip(
-                "Sends a photo you post in chat to a 3rd-party vision model so she can describe it. "
+                "Sends a photo you post in chat to a 3rd-party vision model so ⟦n⟧ can describe it. "
                 "Separate from the working-folder vision setting on the Files page, since these are "
-                "different photos with different privacy tradeoffs. With this off, she's told plainly "
+                "different photos with different privacy tradeoffs. With this off, ⟦n⟧ is told plainly "
                 "a photo arrived with whatever caption you gave it, but not what it shows.")
             rounds_chat_tip = info_tip(
-                "How many tool-call steps she can chain in one reply before she has to answer. You're "
+                "How many tool-call steps ⟦n⟧ can chain in one reply before ⟦n⟧ has to answer. You're "
                 "watching a live chat, so this can be generous -- if a reply ever stops with \"hit the "
                 "tool-call limit,\" raise this.")
             rounds_proactive_tip = info_tip(
-                "Same idea, but for a message she sends on her own (a scheduled check-in, a peer nudge, "
+                "Same idea, but for a message ⟦n⟧ sends on ⟦n⟧'s own (a scheduled check-in, a peer nudge, "
                 "\"check in now\"). Nobody's watching those happen, so this stays lower on purpose.")
             voice_select_tip = info_tip(
                 "One of OpenAI's fixed preset voices -- gpt-4o-mini-tts speaks from a set list, it "
-                "doesn't clone a sample. Used whenever she speaks in a voice conversation.")
+                "doesn't clone a sample. Used whenever ⟦n⟧ speaks in a voice conversation.")
             voice_input_tip = info_tip(
-                "Adds a mic button that opens a push-to-talk voice mode: hold it to speak, she answers "
+                "Adds a mic button that opens a push-to-talk voice mode: hold it to speak, ⟦n⟧ answers "
                 "out loud. Holding it records your mic and sends that recording to OpenAI's speech-to-"
-                "text API to transcribe, and her reply is sent to OpenAI's text-to-speech API to speak "
+                "text API to transcribe, and ⟦n⟧'s reply is sent to OpenAI's text-to-speech API to speak "
                 "it -- real audio leaves this machine both ways. It's never always-listening -- only "
                 "while you're physically holding the mic button.")
             body = (
@@ -9107,20 +9113,20 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 "<div class=field><label><input type=checkbox name=show_tool_calls "
                 + ("checked " if config.get("user", uid, "show_tool_calls") else "") +
-                "> show a line when she uses a tool</label></div>"
+                "> show a line when ⟦n⟧ uses a tool</label></div>"
                 f"<div class=field><label><input type=checkbox name=chat_vision_enabled "
                 + ("checked " if config.get("user", uid, "chat_vision_enabled") else "") +
-                f"> let her actually see photos you send in chat {vision_tip}</label></div>"
+                f"> let ⟦n⟧ actually see photos you send in chat {vision_tip}</label></div>"
                 f"<div class=field><label>tool call rounds -- live chat {rounds_chat_tip}</label>"
                 f"<input type=text name=tool_rounds_chat value='{config.get('user', uid, 'tool_rounds_chat')}'></div>"
                 f"<div class=field><label>tool call rounds -- unprompted / background {rounds_proactive_tip}</label>"
                 f"<input type=text name=tool_rounds_proactive value='{config.get('user', uid, 'tool_rounds_proactive')}'></div>"
                 "<h3>voice</h3>"
-                f"<div class=field><label>her voice {voice_select_tip}</label>"
+                f"<div class=field><label>⟦n⟧'s voice {voice_select_tip}</label>"
                 f"<select name=tts_voice>{voice_opts}</select></div>"
                 f"<div class=field><label><input type=checkbox name=voice_input_enabled "
                 + ("checked " if config.get("user", uid, "voice_input_enabled") else "") +
-                f"> let me have voice conversations with her {voice_input_tip}</label></div>"
+                f"> let me have voice conversations with ⟦n⟧ {voice_input_tip}</label></div>"
                 "<button class='btn btn-primary btn-block'>save</button></form></div>"
             )
         elif tab == "cost":
@@ -9128,9 +9134,9 @@ class Handler(BaseHTTPRequestHandler):
         elif tab == "notify":
             uid = sess["user_id"]
             peer_msg_tip = info_tip(
-                "While she is talking with a connected peer, she can choose to tell you something "
+                "While ⟦n⟧ is talking with a connected peer, ⟦n⟧ can choose to tell you something "
                 "directly if it is actually worth it -- no cap on how often; these quiet hours "
-                "already handle the timing, and her own judgment (delivered alongside whatever the "
+                "already handle the timing, and ⟦n⟧'s own judgment (delivered alongside whatever the "
                 "peer said) is what decides whether it is worth interrupting you for.")
             tz_tip = info_tip(
                 "Every 'today', quiet-hours window, reminder due time, and scheduled task fire time "
@@ -9149,7 +9155,7 @@ class Handler(BaseHTTPRequestHandler):
                 "<div class=section><h2>how notifications work here</h2>"
                 "<p class=muted style='line-height:1.5'>This is <b>not</b> a cloud service. "
                 "A notification is raised by the app on your own device when it polls the "
-                "server and finds something new -- including something she said unprompted. "
+                "server and finds something new -- including something ⟦n⟧ said unprompted. "
                 "That means it only arrives while <b>(a)</b> this machine is on and Nori's "
                 "server is running, and <b>(b)</b> the app is open, or was open recently and "
                 "is just backgrounded. A fully closed tab or installed app won't wake up -- "
@@ -9170,7 +9176,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 "<div class=field><label><input type=checkbox name=notify_enabled "
                 + ("checked " if config.get("user", uid, "notify_enabled") else "") +
-                "> notify me when she messages</label></div>"
+                "> notify me when ⟦n⟧ messages</label></div>"
                 # Peer-message note (2026-09-18, moved off the old "Pings"
                 # tab, which had a whole section for this with no
                 # control attached to it at all) -- lands here instead,
@@ -10228,7 +10234,7 @@ class Handler(BaseHTTPRequestHandler):
                         f"<input type=hidden name=path value='{esc(e['path'])}'>"
                         "<select name=mode><option value=copy>copy (keep here too)</option>"
                         "<option value=move>move (remove from here)</option></select>"
-                        "<input type=text name=site_id placeholder='SharePoint site id (ask her: "
+                        "<input type=text name=site_id placeholder='SharePoint site id (ask ⟦n⟧: "
                         "list_sharepoint_sites) ' required style='flex:1;min-width:14em'>"
                         f"<input type=text name=folder placeholder='folder (default: {esc(self._DRIVE_DEFAULT_FOLDER)})' "
                         "style='flex:1;min-width:9em'>"
@@ -10268,7 +10274,7 @@ class Handler(BaseHTTPRequestHandler):
             f"<input type=hidden name=csrf value='{csrf}'>"
             f"<input type=hidden name=path value='{esc(cur)}'>"
             f"<label><input type=checkbox name=vision_enabled {'checked' if vision_on else ''}> "
-            "let her look at images in here (sends them to a vision model)</label> "
+            "let ⟦n⟧ look at images in here (sends them to a vision model)</label> "
             "<button class=btn>save</button></form></div>"
         )
         footer = (
@@ -10288,7 +10294,7 @@ class Handler(BaseHTTPRequestHandler):
                                 extra_js=FILES_UPLOAD_JS.replace("__CFG__", upload_cfg)))
 
     # -- avatar builder (2026-10-28): describe her face, get the whole set. See avatar_builder.py / docs/avatar-builder.md --
-    _BUILD_ACTIONS = ("describe", "pick", "more", "back", "build", "redo", "install", "restore", "discard", "model")
+    _BUILD_ACTIONS = ("describe", "pick", "more", "back", "build", "redrawall", "redo", "install", "restore", "discard", "model")
 
     def _avatar_build_url(self, origin: str, msg: str = "", err: str = "") -> str:
         params = (["from=firstrun"] if origin == "firstrun" else []) + ([f"msg={urllib.parse.quote(msg[:300])}"] if msg else []) \
@@ -10353,9 +10359,9 @@ class Handler(BaseHTTPRequestHandler):
                 "<button class='btn btn-primary'>save</button></form>") if options else ""
             parts.append(
                 "<div class=section><h2>Connect an image model first</h2>"
-                "<p class=muted>Her portraits are drawn by an image model, through an <b>OpenRouter</b>, <b>OpenAI</b> (API key) or <b>xAI</b> (API key) "
+                "<p class=muted>⟦n⟧'s portraits are drawn by an image model, through an <b>OpenRouter</b>, <b>OpenAI</b> (API key) or <b>xAI</b> (API key) "
                 "connection. Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins cannot draw pictures.</p>"
-                + ("" if options else f"<p>&#10007; No such provider is connected yet. <a href='{connect}'>Add one</a> (it can be the same key she thinks with, "
+                + ("" if options else f"<p>&#10007; No such provider is connected yet. <a href='{connect}'>Add one</a> (it can be the same key ⟦n⟧ thinks with, "
                    "or one used only for pictures), then come back here to choose it.</p>")
                 + setup + "</div>")
         can_draw = ready["ready"]
@@ -10363,8 +10369,8 @@ class Handler(BaseHTTPRequestHandler):
         if st is None:
             if can_draw:
                 parts.append(
-                    "<div class=section><h2>Describe her face</h2>"
-                    "<p class=muted>Describe her <b>neutral</b> face: roughly how old she looks, hair, eyes, skin, what she is wearing, and the style (a photograph, "
+                    "<div class=section><h2>Describe ⟦n⟧'s face</h2>"
+                    "<p class=muted>Describe ⟦n⟧'s <b>neutral</b> face: roughly how old ⟦n⟧ looks, hair, eyes, skin, what ⟦n⟧ is wearing, and the style (a photograph, "
                     "an illustration, anime...). Describe an adult. You will get three options to choose from, then the other "
                     f"{n_other} expressions are drawn from the one you pick.</p>"
                     f"<form method=post action='/admin/avatars/build/describe'>{csrf}"
@@ -10375,7 +10381,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             busy = st["busy"]
             c = avatar_builder.counts(st)
-            parts.append(f"<div class=section><h2>Her description</h2><p>{esc(st['description'])}</p>"
+            parts.append(f"<div class=section><h2>⟦n⟧'s description</h2><p>{esc(st['description'])}</p>"
                          f"<p class=muted>Pictures drawn so far: {st['images']}, about ${st['cost_usd']:.2f} spent.</p>"
                          f"<p>{post('discard', 'Discard this draft and start over', confirm='Throw away the draft and every picture in it?')}</p></div>")
             if busy:
@@ -10392,11 +10398,11 @@ class Handler(BaseHTTPRequestHandler):
                         body = f"<p class=muted>{'drawing...' if cand['status'] == 'running' else 'waiting...'}</p>"
                     cards.append(f"<div class=bld-card>{body}</div>")
                 more = post("more", f"Draw three different options (about ${3 * est:.2f})") if not busy and can_draw else ""
-                parts.append(f"<div class=section><h2>Choose her neutral face</h2><div class=bld-grid>{''.join(cards)}</div><p>{more}</p></div>")
+                parts.append(f"<div class=section><h2>Choose ⟦n⟧'s neutral face</h2><div class=bld-grid>{''.join(cards)}</div><p>{more}</p></div>")
             else:
                 neutral = st["states"][emotion.DEFAULT_STATE]
                 todo = sum(1 for n in avatar_builder.other_states() if st["states"][n]["status"] != "done")
-                head = f"<div class=bld-card>{img(neutral['file'], 'md')}<p class=muted>neutral: her reference face</p></div>"
+                head = f"<div class=bld-card>{img(neutral['file'], 'md')}<p class=muted>neutral: ⟦n⟧'s reference face</p></div>"
                 any_started = any(st["states"][n]["status"] != "pending" for n in avatar_builder.other_states())
                 actions = ""
                 if not busy and can_draw and todo:
@@ -10405,27 +10411,30 @@ class Handler(BaseHTTPRequestHandler):
                     actions += post("build", label, cls="btn btn-primary")
                 if not busy and not any_started:
                     actions += " " + post("back", "Choose a different face")
+                if not busy and can_draw and c["done"] > 1:
+                    actions += " " + post("redrawall", f"Redraw all {n_other} (about ${n_other * est:.2f})",
+                                          confirm=f"Draw all {n_other} expressions again from the neutral face? This costs a full set.")
                 failed = f", {c['failed']} failed" if c["failed"] else ""
                 cards = "".join(self._build_state_card(st, n, img, post, busy, can_draw) for n in avatar_builder.other_states())
-                parts.append(f"<div class=section><h2>Her expressions</h2><p class=muted>{c['done']} of {c['total']} drawn{failed}.</p>"
+                parts.append(f"<div class=section><h2>⟦n⟧'s expressions</h2><p class=muted>{c['done']} of {c['total']} drawn{failed}.</p>"
                              f"<div class=bld-grid>{head}{cards}</div><p>{actions}</p></div>")
                 if c["complete"] and not busy:
-                    done_note = "<p class=info>Installed. Reload the chat to see her.</p>" if st.get("installed_ts") else ""
+                    done_note = "<p class=info>Installed. Reload the chat to see ⟦n⟧.</p>" if st.get("installed_ts") else ""
                     parts.append(
                         "<div class=section><h2>Use these</h2>"
-                        "<p class=muted>Her current avatars are moved to a backup first, so this can be undone with <b>restore</b> below. "
-                        "The neutral face also becomes the reference her selfies are drawn from.</p>"
+                        "<p class=muted>⟦n⟧'s current avatars are moved to a backup first, so this can be undone with <b>restore</b> below. "
+                        "The neutral face also becomes the reference ⟦n⟧'s selfies are drawn from.</p>"
                         f"<form method=post action='/admin/avatars/build/install'>{csrf}"
-                        "<div class=field><label><input type=checkbox name=selfies value=1 checked> Also describe her this way when she sends selfies "
+                        "<div class=field><label><input type=checkbox name=selfies value=1 checked> Also describe ⟦n⟧ this way when ⟦n⟧ sends selfies "
                         "(replaces the image style text, which describes the original character)</label></div>"
                         f"<button class='btn btn-primary'>Install these avatars</button></form>{done_note}</div>")
         if avatar_builder.has_backup() and (st is None or not st["busy"]):
             parts.append("<div class=section><h2>Earlier avatars</h2><p class=muted>The set that was in use before the last install is saved. Restoring puts it back, "
-                         "along with her selfie reference and, if the install changed it, her selfie style text.</p>"
+                         "along with ⟦n⟧'s selfie reference and, if the install changed it, ⟦n⟧'s selfie style text.</p>"
                          + post("restore", "Restore the earlier avatars", confirm="Replace the current avatars with the earlier set?") + "</div>")
         refresh = "setTimeout(function(){location.reload()},4000);" if st and st["busy"] else ""
-        header = f"<div class=hdr-left><a class=hdr-back href='{back}'>&lsaquo;</a><div class=hdr-title>Design her face</div></div>"
-        self.send(200, page_app("Design her face", header, banner + "".join(parts), extra_js=refresh, content_max_width="860px"))
+        header = f"<div class=hdr-left><a class=hdr-back href='{back}'>&lsaquo;</a><div class=hdr-title>Design ⟦n⟧'s face</div></div>"
+        self.send(200, page_app("Design ⟦n⟧'s face", header, banner + "".join(parts), extra_js=refresh, content_max_width="860px"))
 
     def _build_state_card(self, st: dict, name: str, img, post, busy: bool, can_draw: bool) -> str:
         s = st["states"][name]
@@ -10457,6 +10466,8 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = avatar_builder.unpick()
         elif action == "build":
             ok, msg = avatar_builder.build_set(wsid, uid)
+        elif action == "redrawall":
+            ok, msg = avatar_builder.redraw_all(wsid, uid)
         elif action == "redo":
             ok, msg = avatar_builder.redraw(wsid, uid, form.get("state") or "")
         elif action == "install":
@@ -10574,33 +10585,38 @@ class Handler(BaseHTTPRequestHandler):
         e = f"<p class=err>{esc(err)}</p>" if err else ""
         i = f"<p class=info>{esc(info)}</p>" if info else ""
         name_form = (
-            "<div class=section><h2>her name</h2>"
+            "<div class=section><h2>name and pronouns</h2>"
             "<form method=post action='/admin/avatars'>"
             f"<input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
-            "<div class=field><label>what she's called on this instance</label>"
+            "<div class=field><label>name on this instance</label>"
             f"<input type=text name=assistant_name maxlength=60 required "
             f"value='{esc(str(config.get('workspace', wsid, 'assistant_name')))}'></div>"
-            "<p class=muted>Changes what she calls herself, her chat header, notifications, and how "
-            "she introduces herself to another PACI-speaking assistant she's connected to. The product "
+            "<div class=field><label>pronouns</label><div class=pronoun-row>"
+            + "".join(f"<label><input type=radio name=assistant_pronouns value='{p}'{' checked' if p == firstrun.pronouns(wsid) else ''}> {esc(p)}</label>"
+                      for p in config.PRONOUNS)
+            + "</div><p class=muted>How the assistant is told the people around it refer to it. This is the only place pronouns are used: the pages in "
+            "this app say its name instead, so they read right whichever you choose.</p></div>"
+            "<p class=muted>Changes the name used in the chat header, notifications, and when introduced to "
+            "another PACI-speaking assistant. The product "
             "and this harness stay Nori regardless -- this is just what YOUR instance goes by.</p>"
             "<button class='btn btn-primary'>save</button></form></div>")
         emo_on = config.get("workspace", wsid, "emotion_enabled")
         toggle = (
-            "<div class=section><h2>her visible emotional state</h2>"
+            "<div class=section><h2>⟦n⟧'s visible emotional state</h2>"
             "<form method=post action='/admin/avatars'>"
             f"<input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
             "<div class=field><label>on/off</label>"
             f"<select name=emotion_enabled><option value=1{' selected' if emo_on else ''}>on</option>"
             f"<option value=0{' selected' if not emo_on else ''}>off</option></select></div>"
-            "<p class=muted>Off: the avatar always shows neutral, set_emotion is not offered to her at "
-            "all, and the per-turn reminder to reconsider her state stops appearing -- nothing "
-            "emotion-related reaches her context, the UI, or the turn.</p>"
+            "<p class=muted>Off: the avatar always shows neutral, set_emotion is not offered to ⟦n⟧ at "
+            "all, and the per-turn reminder to reconsider ⟦n⟧'s state stops appearing -- nothing "
+            "emotion-related reaches ⟦n⟧'s context, the UI, or the turn.</p>"
             "<button class='btn btn-primary'>save</button></form></div>")
         build_card = (
             "<div class=section><h2>design a new face</h2>"
-            "<p class=muted>Describe her neutral face once and an image model draws the whole set of expressions from it. You review the set before it "
+            "<p class=muted>Describe ⟦n⟧'s neutral face once and an image model draws the whole set of expressions from it. You review the set before it "
             "replaces anything, and the old one is kept so it can be restored. Needs an image provider (OpenRouter, OpenAI or xAI) and an image model.</p>"
-            "<p><a class='btn btn-primary' href='/admin/avatars/build'>design her face</a></p></div>")
+            "<p><a class='btn btn-primary' href='/admin/avatars/build'>design ⟦n⟧'s face</a></p></div>")
         rows = []
         real_count = 0
         for state in emotion.STATES:
@@ -10630,7 +10646,7 @@ class Handler(BaseHTTPRequestHandler):
         if sess["role"] != "admin":
             return self.forbidden()
         wsid = sess["workspace_id"]
-        for key in ("assistant_name", "emotion_enabled"):
+        for key in ("assistant_name", "assistant_pronouns", "emotion_enabled"):
             val = form.get(key)
             if isinstance(val, str):
                 try:
@@ -10884,7 +10900,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             hid = int(m.get("pruned") or 0)
             hid_cls = " msg-hidden" if hid else ""
-            hid_title = " title='Hidden from her -- she can no longer see this message'" if hid else ""
+            hid_title = " title='Hidden from ⟦n⟧ -- ⟦n⟧ can no longer see this message'" if hid else ""
             return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}{hid_cls}'{hid_title}>"
                    f"{esc(m['content'])}{card}{actions}{_time_el(m.get('ts'))}</div>")
 
@@ -11051,7 +11067,7 @@ class Handler(BaseHTTPRequestHandler):
             newest_overall, oldest_overall = conversation.max_id(user_id), conversation.min_id(user_id)
             at_latest = bool(msgs) and msgs[0]["id"] == newest_overall
             at_oldest = bool(msgs) and msgs[-1]["id"] == oldest_overall
-        empty_note = ("nothing is hidden from her." if only_hidden and not searching
+        empty_note = ("nothing is hidden from ⟦n⟧." if only_hidden and not searching
                       else "nothing here yet.")
         rows = "".join(self._history_row(m, highlight_id=jump_id, user_id=user_id) for m in msgs) \
             or f"<p class=muted>{empty_note}</p>"
@@ -11087,7 +11103,7 @@ class Handler(BaseHTTPRequestHandler):
             f"<input type=number name=hours_ago value='{esc(str(int(hours_ago)) if hours_ago else '')}' "
             "placeholder='hours ago' style='width:6em'>"
             f"<label class=hist-only><input type=checkbox name=hidden value=1{' checked' if only_hidden else ''}> "
-            f"hidden from her only ({hidden_total})</label>"
+            f"hidden from ⟦n⟧ only ({hidden_total})</label>"
             "<button class=btn type=submit>jump</button></form>")
 
         # How many messages "apply to all" would touch: the search's matches, or every hidden message.
@@ -11098,7 +11114,7 @@ class Handler(BaseHTTPRequestHandler):
                 scope_html = (f"<p class='hist-scope muted'>More than {max_ids} messages match -- narrow the "
                               "search to act on all of them at once.</p>")
             else:
-                what = "match this search" if searching else "are hidden from her"
+                what = "match this search" if searching else "are hidden from ⟦n⟧"
                 scope_html = (f"<label class=hist-scope><input type=checkbox name=all_matches value=1 id=histAll "
                               f"data-count='{scope_count}'> <span>Apply to all {scope_count} message(s) that {what}, "
                               "not just the ones ticked</span></label>")
@@ -11114,7 +11130,7 @@ class Handler(BaseHTTPRequestHandler):
             f"{scope_html}<div class=hist-actions>"
             "<label class=hist-selall><input type=checkbox id=histSelAll> this page</label>"
             "<span id=histSelCount class=hist-count>0 selected</span>"
-            "<button class=btn type=submit name=action value=hide>Hide from her</button>"
+            "<button class=btn type=submit name=action value=hide>Hide from ⟦n⟧</button>"
             "<button class=btn type=submit name=action value=restore>Restore</button>"
             "<button class='btn btn-danger' type=submit name=action value=delete "
             "data-confirm=\"Permanently delete {n} message(s)? This cannot be undone. Automatic backups made earlier "
@@ -11122,10 +11138,10 @@ class Handler(BaseHTTPRequestHandler):
 
         explain = (
             "<details class=hist-explain><summary>Hide or delete messages?</summary>"
-            "<p><b>Hide from her</b> keeps a message here (marked, and you can restore it) but she never sees it again: "
-            "not in her recent context, not in her summaries, not in her memory reflection, not when she searches "
+            "<p><b>Hide from ⟦n⟧</b> keeps a message here (marked, and you can restore it) but ⟦n⟧ never sees it again: "
+            "not in ⟦n⟧'s recent context, not in ⟦n⟧'s summaries, not in ⟦n⟧'s memory reflection, not when ⟦n⟧ searches "
             "history. <b>Delete forever</b> removes it completely, including a photo's stored file.</p>"
-            "<p>Neither changes what she already <i>remembered</i> from a conversation -- review "
+            "<p>Neither changes what ⟦n⟧ already <i>remembered</i> from a conversation -- review "
             "<a href='/settings?tab=memory'>Memory</a> for that.</p></details>")
 
         flash = self._history_flash(q)
@@ -11150,8 +11166,8 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         noun = "message" if n == 1 else "messages"
         texts = {
-            "hide": f"Hid {n} {noun} from her context.",
-            "restore": f"Restored {n} {noun} to her context.",
+            "hide": f"Hid {n} {noun} from ⟦n⟧'s context.",
+            "restore": f"Restored {n} {noun} to ⟦n⟧'s context.",
             "delete": f"Permanently deleted {n} {noun}" + (f" and {files} stored picture file(s)." if files else "."),
             "none": "Nothing was selected.",
             "nosearch": "\"Apply to all\" needs a search, a time window, or the hidden-only filter.",
@@ -11234,7 +11250,7 @@ class Handler(BaseHTTPRequestHandler):
             badges.append(f"<span class=hist-badge style='background:{esc(color)}22;color:{esc(color)}'>"
                          f"{esc(m['emotion'])}</span>")
         if int(m.get("pruned") or 0):
-            badges.append("<span class='hist-badge hist-badge-hidden'>hidden from her</span>")
+            badges.append("<span class='hist-badge hist-badge-hidden'>hidden from ⟦n⟧</span>")
         if meta.get("source") == "voice":
             badges.append("<span class=hist-badge>\U0001f399 voice</span>")
         if "cost_usd" in meta:

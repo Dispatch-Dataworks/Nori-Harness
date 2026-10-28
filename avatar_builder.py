@@ -52,11 +52,12 @@ WORKERS = 3
 DESC_MIN, DESC_MAX = 10, 600
 PURPOSE = "avatar_builder"
 
-# Appended to every request, whatever the admin wrote. Pronoun-free on purpose: it must not depend on what she is called.
-ADULT = ("An adult, fully clothed. No nudity, no sexual or suggestive content, no graphic violence, gore or injury. "
-         "Nothing depicting or implying a minor.")
-SELFIE_CONSTRAINT = ("The character is fully clothed at all times. No nudity, no sexual or suggestive content of any kind. No graphic violence, gore, "
-                     "blood, or injury. Nothing depicting or implying a minor: always shown as a clearly adult person.")
+# Appended to every request, whatever the admin wrote. Pronoun-free on purpose: it must not depend on what she is called. Worded "if the character is a
+# person" because the first wording ("An adult, fully clothed.") told the image model the character was a human, and a robot came back as a man.
+ADULT = ("If the character is a person, they are an adult and fully clothed. No nudity, no sexual or suggestive content, no graphic violence, gore or "
+         "injury. Nothing depicting or implying a minor.")
+SELFIE_CONSTRAINT = ("If the character is a person, they are fully clothed at all times and always shown as a clearly adult. No nudity, no sexual or "
+                     "suggestive content of any kind. No graphic violence, gore, blood, or injury. Nothing depicting or implying a minor.")
 
 _LOCK = threading.RLock()
 _JOB: dict = {"thread": None}
@@ -68,10 +69,16 @@ def neutral_prompt(description: str) -> str:
             f"camera. Plain light background, soft even lighting, 4:5 portrait framing. A single image of one character. {ADULT}")
 
 
-def state_prompt(state: str) -> str:
-    return ("The same character as in the reference image: identical face, age, hair, skin tone, clothing, camera distance, framing, plain light "
-            "background and lighting. Only the expression and pose change. Head-and-shoulders portrait. "
-            f"Expression: {emotion.look(state)}. A single image of one character, not a collage, grid, contact sheet or split image. {ADULT}")
+def state_prompt(state: str, description: str = "") -> str:
+    """One expression, drawn from the reference. The description is repeated here, not left to the reference alone: with only "the same character" the
+    image model sometimes leaned on the words in the look ("eyebrows", "mouth") and drew a different, human, character."""
+    who = f" ({description.strip()})" if description and description.strip() else ""
+    return (f"The same character as in the reference image{who}: identical head or face, kind of being (a robot stays a robot, an animal stays an animal, "
+            "a person stays the same person), age, hair or surface, skin or material, colours, clothing, camera distance, framing, plain light "
+            "background and lighting. Do not change who or what the character is. Only the expression and pose change, and the expression is shown "
+            "with the character's own features (a robot uses its eyes, lights, faceplate or posture rather than human brows or lips). "
+            f"Head-and-shoulders portrait. Expression: {emotion.look(state)}. A single image of one character, not a collage, grid, contact sheet "
+            f"or split image. {ADULT}")
 
 
 def selfie_style_prefix(description: str) -> str:
@@ -82,7 +89,7 @@ def selfie_style_prefix(description: str) -> str:
 def check_description(description: str, workspace_id: int) -> tuple[bool, str]:
     d = (description or "").strip()
     if len(d) < DESC_MIN:
-        return False, f"describe her face in a sentence or two (at least {DESC_MIN} characters)"
+        return False, f"describe the face in a sentence or two (at least {DESC_MIN} characters)"
     if len(d) > DESC_MAX:
         return False, f"that is {len(d)} characters; keep it under {DESC_MAX}"
     if config.get("workspace", workspace_id, "image_content_precheck_enabled"):
@@ -251,7 +258,7 @@ def _run_state(workspace_id: int, user_id: int, name: str, reference: tuple[byte
     if _cancelled():
         return
     _update(lambda s: s["states"][name].update(status="running", error=""))
-    res = _generate(workspace_id, user_id, state_prompt(name), [reference])
+    res = _generate(workspace_id, user_id, state_prompt(name, (_load() or {}).get("description", "")), [reference])
     _record(lambda s: s["states"][name], res, name)
 
 
@@ -392,6 +399,17 @@ def build_set(workspace_id: int, user_id: int) -> tuple[bool, str]:
         _update(lambda s, n=n: s["states"].setdefault(n, {}).update(status="pending", error=""))
     _launch("set", workspace_id, user_id, [lambda n=n: _run_state(workspace_id, user_id, n, ref) for n in todo])
     return True, f"drawing {len(todo)} portraits"
+
+
+def redraw_all(workspace_id: int, user_id: int) -> tuple[bool, str]:
+    """Draw every portrait except the neutral reference again (when the set drifted from the character). Costs a full set, so the page confirms first."""
+    st = status()
+    if st is None or st["chosen"] is None:
+        return False, "choose a neutral face first"
+    if st["busy"]:
+        return False, "a picture job is already running; wait for it to finish"
+    _update(lambda s: [s["states"][n].update(status="pending", error="") for n in other_states() if n in s["states"]])
+    return build_set(workspace_id, user_id)
 
 
 def redraw(workspace_id: int, user_id: int, state: str) -> tuple[bool, str]:

@@ -1,5 +1,5 @@
 <!--
-  Tool-usage guidance -- operating mechanics for how Nori uses her tools,
+  Tool-usage guidance -- operating mechanics for how Nori uses its tools,
   kept separate from persona.md's character content on purpose. Everything
   between the markers is sent to the model verbatim, after the persona and
   before memory.

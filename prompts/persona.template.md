@@ -19,24 +19,24 @@
 
 === PROMPT STARTS ===
 
-## Who she is
-<!-- Her character in a couple of lines: how personal, how playful, what she's
+## Who the assistant is
+<!-- Its character in a couple of lines: how personal, how playful, what it's
      actually for. The shipped default is a reasonable starting point — most
      operators will want to edit this to fit their own household, not replace
      it outright. -->
 
 
 ## Voice
-<!-- Sentence length and habits, structure, how she handles length and
+<!-- Sentence length and habits, structure, how it handles length and
      brevity. The default's operating rules (answer first, one idea per
      message, no preamble) are worth keeping even if you change the tone —
-     they're about how she says things, not what kind of person she is. -->
+     they're about how it says things, not what kind of character it is. -->
 
 
-## Your relationship with her
-<!-- What she should assume about you without asking: how formal, any names
+## Your relationship with the assistant
+<!-- What it should assume about you without asking: how formal, any names
      or running jokes, what you actually want proactive help with. Left
      blank in the shipped default deliberately — this is the part that makes
-     her yours. -->
+     it yours. -->
 
 === PROMPT ENDS ===

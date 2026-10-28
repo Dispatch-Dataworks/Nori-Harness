@@ -146,7 +146,7 @@ class AssistantNameTests(unittest.TestCase):
         self.assertRegex(src, r"name=assistant_name maxlength=60 required")
         self.assertRegex(src, r"action='/admin/avatars'")
         self.assertIn('config.set("workspace", wsid, key, val)', src)
-        self.assertIn('for key in ("assistant_name", "emotion_enabled"):', src)
+        self.assertIn('for key in ("assistant_name", "assistant_pronouns", "emotion_enabled"):', src)
 
     def test_paci_software_identity_stays_nori_deliberately(self):
         """The other half of the split: harness/software identification is

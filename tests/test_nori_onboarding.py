@@ -146,7 +146,7 @@ class Guide(unittest.TestCase):
 
     def test_the_admin_guide_covers_name_persona_and_the_tour_and_reports_state(self):
         g = onboarding.guide(_user(UID))
-        for needle in ("Ben", "Her name: not settled yet (currently 'Nori')", "Their timezone: not confirmed", "0 thing(s) saved", "Her persona: not started",
+        for needle in ("Ben", "Nori's name: not settled yet (currently 'Nori')", "Their timezone: not confirmed", "0 thing(s) saved", "Nori's persona: not started",
                        "onboarding_set_name", "onboarding_propose_persona", "Apply and Discard", "You cannot apply it", "{{ASSISTANT_NAME}}",
                        "onboarding_tour", "onboarding_finish", "skipped=true", "remember"):
             self.assertIn(needle, g, needle)
@@ -157,7 +157,7 @@ class Guide(unittest.TestCase):
         self.assertIn("household member", g)
         self.assertNotIn("onboarding_set_name", g)
         self.assertNotIn("onboarding_propose_persona", g)
-        self.assertNotIn("Her persona:", g)
+        self.assertNotIn("Nori's persona:", g)
         self.assertIn("onboarding_set_timezone", g)
 
     def test_the_checklist_follows_real_state(self):
@@ -174,7 +174,7 @@ class Guide(unittest.TestCase):
         onboarding._save(UID, draft_persona="x")
         self.assertIn("a draft is on screen as a card", onboarding.guide(_user(UID)))
         onboarding.settle_draft(UID, "applied")
-        self.assertIn("Her persona: applied by them", onboarding.guide(_user(UID)))
+        self.assertIn("Nori's persona: applied by them", onboarding.guide(_user(UID)))
         onboarding.settle_draft(UID, "discarded")
         self.assertIn("they discarded your last draft", onboarding.guide(_user(UID)))
         onboarding._mark(UID, persona=None)
@@ -551,7 +551,7 @@ class Server(unittest.TestCase):
         self.assertEqual(onboarding.status(UID), "pending")
         text = Path(ROOT / "server.py").read_text(encoding="utf-8")
         self.assertIn('if path == "/settings/onboarding/restart":', text)
-        self.assertIn("meet her again", text)
+        self.assertIn("meet ⟦n⟧ again", text)
 
 
 if __name__ == "__main__":
