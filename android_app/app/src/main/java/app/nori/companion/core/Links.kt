@@ -63,6 +63,12 @@ object Deeplink {
 
     fun prefillLink(text: String): String = "$APP_SCHEME://prefill?text=" + enc(text.take(400))
 
+    /** A link that opens the chat of one particular connection (what a notification from that server uses). */
+    fun chatLink(slot: Int): String = "$APP_SCHEME://chat?conn=$slot"
+
+    /** The connection a link asks for (`?conn=1`), or null when it names none. */
+    fun connOf(link: String?): Int? = queryOf(link ?: "")["conn"]?.toIntOrNull()?.takeIf { it in 0 until Connections.MAX }
+
     fun enc(s: String): String = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     private fun dec(s: String): String = try { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") } catch (e: Exception) { s }

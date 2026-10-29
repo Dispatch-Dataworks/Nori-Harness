@@ -39,6 +39,22 @@ If the server ever answers 401 the app says "pair again" and stops until you do;
 
 Deep links: `nori-pair://pair?code=XXXX-XXXX&server=https://...` and `nori-app://settings` (opens the settings screen). Widgets, launcher shortcuts and notifications use the same app routes (`nori-app://talk`, `task`, `chat`, `prefill?text=`) through explicit intents only.
 
+## Several servers (Nori and Iron)
+
+One phone can be paired with up to four Nori servers at once. Each is a **connection**, shown as a tab along the top of the app once there are two or more (with one, there is no bar). The last tab you looked at is where widgets, shortcuts and the Share sheet start.
+
+**Adding a second one:** make a pairing code in the *other* Nori's Settings -> Devices and open its link on the phone (the app asks you to confirm the address and says it is adding a connection), or open the app's settings -> *Add another connection* and type the address and code. Pairing a server the phone already has replaces that connection's pairing; it does not add a duplicate. Two servers on the same host name cannot be kept apart (the web view's login cookies are per host), so give each its own host name. In the app's settings you can rename a connection (the tab's title; the default is the first part of its host name, `iron.example.com` -> Iron), unpair it, or remove it.
+
+**What is per connection:** the address and token, which of its messages were already shown, what that server last said the phone may do, its place list, the health readings it was sent, the update it offers.
+
+**What is shared (the phone's own):** pause, every switch under *What I allow*, the control and screen windows, and the hourly limits. Notifications and access are therefore the same for every connection. Every capability still needs the server's switch too, so turning health data on here sends it only to a server that allows it, and a place event goes only to the server that owns that place. While a control or screen window is open, any connection whose server allows it may use it, one request at a time.
+
+**Notifications:** a notification opens the tab it came from, and Approve / Deny go to the server that asked. The notification channels are shared (their title already carries the assistant's name). Only the tab in front counts as "the chat is open" for that server; the other server keeps sending notifications.
+
+**Updates:** the app offers the newest version any connection has, downloaded from that server. `build.ps1 -Upload` copies the APK into the `nori` container only: put the same APK and `version.txt` on each server you want to update from.
+
+An existing pairing is the first connection and carries over with no steps (it keeps its old storage names). A phone that already has its connections keeps them across updates.
+
 ## What it does
 
 | Feature | Where |

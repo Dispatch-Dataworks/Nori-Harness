@@ -142,22 +142,24 @@ object CommandExecutor {
     private val interactCap by lazy { HourlyCap.parse(Prefs.get(appCtx!!, "cap_interact")) }
     @Volatile private var appCtx: Context? = null
 
-    private fun gateState(c: Context): GateState = GateState(
-        now = System.currentTimeMillis(), paused = Prefs.paused(c), server = Prefs.serverSettings(c), owner = Prefs.owner(c),
+    /** The phone's own half is the same for every connection; the server's half is the settings of the server that sent the command. */
+    private fun gateState(c: Context, slot: Int): GateState = GateState(
+        now = System.currentTimeMillis(), paused = Prefs.paused(c), server = Prefs.serverSettings(c, slot), owner = Prefs.owner(c),
         interactUntil = Prefs.interactUntil(c), shareUntil = Prefs.shareUntil(c),
         accessibilityRunning = NoriAccessibilityService.running(c), projectionRunning = ScreenShareService.active(),
     )
 
-    fun execute(c: Context, cmd: Command): JSONObject {
+    fun execute(c: Context, slot: Int, cmd: Command): JSONObject {
         appCtx = c.applicationContext
-        val body = try { run(c.applicationContext, cmd) } catch (e: Exception) { Protocol.resultError(cmd.id, "the phone could not do that (${e.javaClass.simpleName})") }
+        val body = try { run(c.applicationContext, slot, cmd) } catch (e: Exception) { Protocol.resultError(cmd.id, "the phone could not do that (${e.javaClass.simpleName})") }
         val tag = if (body.optBoolean("needs_approval")) "needs your approval" else if (body.optBoolean("ok")) "done" else "refused (${body.optString("error")})"
-        SentLog.add(c, ("command ${cmd.action}: $tag").take(300))
+        val who = if (Prefs.slots(c).size > 1) " from ${Prefs.name(c, slot)}" else ""
+        SentLog.add(c, ("command ${cmd.action}$who: $tag").take(300))
         return body
     }
 
-    private fun run(c: Context, cmd: Command): JSONObject {
-        val st = gateState(c)
+    private fun run(c: Context, slot: Int, cmd: Command): JSONObject {
+        val st = gateState(c, slot)
         CommandGate.check(cmd.action, st)?.let { return Protocol.resultError(cmd.id, it) }
         val s = st.server
         val guard = { pkg: String? -> AppGuard.check(pkg, s.hiddenApps, s.neverControlApps) }

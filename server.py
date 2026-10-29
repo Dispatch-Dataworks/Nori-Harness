@@ -1577,6 +1577,15 @@ APP_JS = (
     "document.body.addEventListener('submit',function(e){"
     "var msg=e.target.getAttribute('data-confirm');"
     "if(msg&&!confirm(msg))e.preventDefault();});"
+    # data-copy-from='<id>' on a button: copies that text box's contents (connection strings on the Peers page)
+    "document.body.addEventListener('click',function(e){"
+    "var b=e.target.closest&&e.target.closest('[data-copy-from]');if(!b)return;"
+    "var t=document.getElementById(b.getAttribute('data-copy-from'));if(!t)return;"
+    "t.focus();t.select();var old=b.textContent;"
+    "var done=function(){b.textContent='copied';setTimeout(function(){b.textContent=old;},1400);};"
+    "var legacy=function(){try{if(document.execCommand('copy'))done();}catch(x){}};"
+    "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t.value).then(done,legacy);}else{legacy();}"
+    "});"
     "window.matchMedia('(min-width:900px)').addEventListener('change',nbCloseAll);"
     "document.querySelectorAll('.settings-tabs').forEach(function(row){var active=row.querySelector('.active');"
     "if(active)row.scrollLeft=Math.max(0,active.offsetLeft-row.clientWidth+active.offsetWidth+2);});"
@@ -3411,6 +3420,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.peers_recent_context_post(sess, form)
         if path == "/admin/peers/debug-limit":
             return self.peers_debug_limit_post(sess, form)
+        if path == "/admin/peers/invite":
+            return self.peers_invite_post(sess, form)
+        if path.startswith("/admin/peers/invite/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] in ("accept", "discard"):
+                return self.peers_invite_action_post(sess, parts[4], parts[5], form)
         if path.startswith("/admin/peers/"):
             parts = path.split("/")
             if len(parts) == 5 and parts[4] in ("toggle", "delete", "purpose", "limits", "pingnow", "trust", "resync"):
@@ -7926,9 +7941,13 @@ class Handler(BaseHTTPRequestHandler):
         main = (
             f"{e}{i}{self._diagnostics_html()}{recent_cap_settings}"
             "<p class=muted>a peer is another agent process ⟦n⟧ has an ongoing, symmetric "
-            "conversation with -- not a tool ⟦n⟧ calls into. Setup is two-sided: create the "
-            "connection here, then give the peer's own operator this connection's inbound URL "
-            "(shown below once created) and the same shared secret you enter here.</p>"
+            "conversation with -- not a tool ⟦n⟧ calls into.</p>"
+            f"{self._peer_invites_html(sess)}"
+            "<details class=sched-history><summary>connect by hand (another PACI implementation, or if "
+            "a connection string will not do)</summary>"
+            "<p class=muted>Setup is two-sided: create the connection here, then give the peer's own operator "
+            "this connection's inbound URL (<code>https://your-address/paci/inbound/&lt;this connection's id&gt;</code>) "
+            "and the same shared secret you enter here.</p>"
             "<form method=post action='/admin/peers'>"
             f"<input type=hidden name=csrf value='{csrf}'>"
             "<div class=field><input type=text name=name placeholder='a short name for this peer' required></div>"
@@ -7945,10 +7964,84 @@ class Handler(BaseHTTPRequestHandler):
             "<div class=field><select name=scope>"
             "<option value=user>just me</option><option value=workspace>whole household</option>"
             "</select></div>"
-            "<button class='btn btn-primary btn-block'>connect</button></form>"
+            "<button class='btn btn-primary btn-block'>connect</button></form></details>"
             + "".join(blocks)
         )
         self._settings_response(sess, "peers", main + self._peer_messages_panel(sess, open_log=bool(err or info)))
+
+    def _peer_invites_html(self, sess: dict) -> str:
+        """Connect two agents with one paste each way (see peers.py, "connection strings")."""
+        csrf = esc(sess["csrf"])
+        base = os.environ.get("NORI_PUBLIC_URL", "").rstrip("/") or f"https://{self.headers.get('Host', 'your-address')}"
+        cards = []
+        for inv in peers.list_invites(sess):
+            iid = inv["id"]
+            cards.append(
+                "<div class=card style='margin:.8rem 0;padding:.8rem'>"
+                "<label><b>1.</b> copy this and paste it into the <i>other</i> agent's Peers page "
+                "(<i>connect to another agent</i>)</label>"
+                f"<textarea readonly rows=4 id='inv-{iid}' style='width:100%;font-family:monospace;font-size:.78rem;"
+                f"word-break:break-all'>{esc(inv['string'] or '')}</textarea>"
+                f"<p><button type=button class=btn data-copy-from='inv-{iid}'>copy</button> "
+                f"<span class=muted>reachable at <code>{esc(inv['address'] or '')}</code></span></p>"
+                f"<form method=post action='/admin/peers/invite/{iid}/accept'>"
+                f"<input type=hidden name=csrf value='{csrf}'>"
+                "<div class=field><label><b>2.</b> paste the connection string the other agent shows you</label>"
+                "<textarea name=string rows=4 required autocomplete=off style='width:100%;font-family:monospace;"
+                "font-size:.78rem;word-break:break-all' placeholder='paci1:...'></textarea></div>"
+                "<div class=field><input type=text name=name placeholder='what to call them (optional: their own name is used)'></div>"
+                "<div class=field><input type=text name=purpose placeholder=\"what is this peer for? (optional) e.g. "
+                "'my other assistant: it handles the garden and the car'\"></div>"
+                "<div class=field><select name=scope><option value=user>just me</option>"
+                "<option value=workspace>whole household</option></select></div>"
+                "<button class='btn btn-primary'>connect</button></form>"
+                f"<form method=post action='/admin/peers/invite/{iid}/discard' style='margin-top:.4rem'>"
+                f"<input type=hidden name=csrf value='{csrf}'><button class='btn btn-danger'>cancel this one</button></form>"
+                "</div>")
+        return (
+            "<div class=section><h2>connect to another agent</h2>"
+            "<p class=muted>Do this on <b>both</b> agents: make a connection string, copy it, and paste it into the other "
+            "one. The string carries the name, address and half of the shared secret; the two halves combine into the key, "
+            "so there is nothing else to type or match up. Send it over a private channel: anyone who gets both strings can "
+            "talk to both agents. An unused one is dropped after 7 days.</p>"
+            + "".join(cards) +
+            "<form method=post action='/admin/peers/invite' style='margin-top:.6rem'>"
+            f"<input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><label>the address the other agent will use to reach this one "
+            "<span class=muted>(its public address; if both run on the same machine, an internal one such as "
+            "<code>http://iron:8080</code>)</span></label>"
+            f"<input type=text name=address value='{esc(base)}' required autocomplete=off></div>"
+            "<button class='btn btn-primary'>make my connection string</button></form></div>")
+
+    def peers_invite_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        result = peers.create_invite(sess, address=form.get("address") or "")
+        if "error" in result:
+            return self.peers_admin_form(sess, err=result["error"])
+        return self.peers_admin_form(
+            sess, info="made your connection string (below): copy it into the other agent, then paste theirs here")
+
+    def peers_invite_action_post(self, sess: dict, invite_id_raw: str, action: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            invite_id = int(invite_id_raw)
+        except ValueError:
+            return self.peers_admin_form(sess, err="bad id")
+        if action == "discard":
+            result = peers.discard_invite(sess, invite_id)
+            if "error" in result:
+                return self.peers_admin_form(sess, err=result["error"])
+            return self.peers_admin_form(sess, info="cancelled")
+        result = peers.accept_connection_string(
+            sess, invite_id, form.get("string") or "", name=form.get("name") or None,
+            purpose=form.get("purpose") or None, scope=form.get("scope") or "user")
+        if "error" in result:
+            return self.peers_admin_form(sess, err=result["error"])
+        return self.peers_admin_form(
+            sess, info=f"connected to {result['name']}. It shows as connected once the other agent has pasted this "
+                       f"one's string too; a health chip below says what is still missing.")
 
     def peers_recent_context_post(self, sess: dict, form: dict):
         if sess["role"] != "admin":

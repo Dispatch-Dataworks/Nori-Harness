@@ -17,74 +17,72 @@ import com.google.android.gms.location.GeofencingEvent
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
 
-/** The persisted tracker and outbox (the receiver and the service both touch them, so every access goes through here). */
+/** The persisted tracker and outbox of each connection (the receiver and the service both touch them, so every access goes through here). Place ids are per server, so each connection keeps its own. */
 object PlaceState {
     private const val TRACKER = "place_tracker"
     private const val OUTBOX = "event_outbox"
 
     @Synchronized
-    fun transition(c: Context, kind: String, placeId: Long, ts: Long) {
-        val t = PlaceTracker.parse(Prefs.get(c, TRACKER))
+    fun transition(c: Context, slot: Int, kind: String, placeId: Long, ts: Long) {
+        val t = PlaceTracker.parse(Prefs.getFor(c, slot, TRACKER))
         val e = t.onTransition(kind, placeId, ts)
-        if (e != null) enqueue(c, e)
-        Prefs.put(c, TRACKER, t.serialize())
-        updateCurrent(c, t)
+        if (e != null) enqueue(c, slot, e)
+        Prefs.putFor(c, slot, TRACKER, t.serialize())
+        updateCurrent(c, slot, t)
     }
 
     /** Held exits that have settled become events. */
     @Synchronized
-    fun flush(c: Context, now: Long) {
-        val t = PlaceTracker.parse(Prefs.get(c, TRACKER))
+    fun flush(c: Context, slot: Int, now: Long) {
+        val t = PlaceTracker.parse(Prefs.getFor(c, slot, TRACKER))
         val evs = t.flush(now)
         if (evs.isEmpty()) return
-        evs.forEach { enqueue(c, it) }
-        Prefs.put(c, TRACKER, t.serialize())
-        updateCurrent(c, t)
+        evs.forEach { enqueue(c, slot, it) }
+        Prefs.putFor(c, slot, TRACKER, t.serialize())
+        updateCurrent(c, slot, t)
     }
 
     @Synchronized
-    fun retain(c: Context, ids: Set<Long>) {
-        val t = PlaceTracker.parse(Prefs.get(c, TRACKER))
+    fun retain(c: Context, slot: Int, ids: Set<Long>) {
+        val t = PlaceTracker.parse(Prefs.getFor(c, slot, TRACKER))
         t.retain(ids)
-        Prefs.put(c, TRACKER, t.serialize())
-        updateCurrent(c, t)
+        Prefs.putFor(c, slot, TRACKER, t.serialize())
+        updateCurrent(c, slot, t)
     }
 
     @Synchronized
-    fun clear(c: Context) {
-        Prefs.put(c, TRACKER, "")
-        Prefs.put(c, OUTBOX, "")
-        Prefs.setCurrentPlace(c, "")
+    fun clear(c: Context, slot: Int) {
+        Prefs.putFor(c, slot, TRACKER, "")
+        Prefs.putFor(c, slot, OUTBOX, "")
+        Prefs.setCurrentPlace(c, slot, "")
     }
 
-    private fun updateCurrent(c: Context, t: PlaceTracker) {
+    private fun updateCurrent(c: Context, slot: Int, t: PlaceTracker) {
         val id = t.currentPlaceId()
-        val name = if (id == null) "" else Prefs.serverSettings(c).placesList.firstOrNull { it.id == id }?.name ?: ""
-        Prefs.setCurrentPlace(c, name)
+        val name = if (id == null) "" else Prefs.serverSettings(c, slot).placesList.firstOrNull { it.id == id }?.name ?: ""
+        Prefs.setCurrentPlace(c, slot, name)
     }
 
-    private fun enqueue(c: Context, e: PlaceEvent) {
-        val o = EventOutbox.parse(Prefs.get(c, OUTBOX))
+    private fun enqueue(c: Context, slot: Int, e: PlaceEvent) {
+        val o = EventOutbox.parse(Prefs.getFor(c, slot, OUTBOX))
         o.add(e)
-        Prefs.put(c, OUTBOX, o.serialize())
+        Prefs.putFor(c, slot, OUTBOX, o.serialize())
     }
 
-    @Synchronized fun outbox(c: Context): EventOutbox = EventOutbox.parse(Prefs.get(c, OUTBOX))
+    @Synchronized fun outbox(c: Context, slot: Int): EventOutbox = EventOutbox.parse(Prefs.getFor(c, slot, OUTBOX))
 
     @Synchronized
-    fun dropSent(c: Context, count: Int) {
-        val o = EventOutbox.parse(Prefs.get(c, OUTBOX))
+    fun dropSent(c: Context, slot: Int, count: Int) {
+        val o = EventOutbox.parse(Prefs.getFor(c, slot, OUTBOX))
         o.drop(count)
-        Prefs.put(c, OUTBOX, o.serialize())
+        Prefs.putFor(c, slot, OUTBOX, o.serialize())
     }
-
-    @Synchronized fun hasPending(c: Context): Boolean = PlaceTracker.parse(Prefs.get(c, TRACKER)).hasPending()
 }
 
 /**
- * On-device geofencing for the places the owner defined on the server. The phone itself decides when it arrives or leaves; only "arrived" / "left" with the place id
- * ever leave it (see EventOutbox). No coordinates are sent here, and there is no location trail: the fences are evaluated by Google Play services, not by this app.
- * Needs the owner's switch AND the server's, location permission, and "Allow all the time" (Android's rule for fences that work with the app closed).
+ * On-device geofencing for the places the owner defined on each server. The phone itself decides when it arrives or leaves; only "arrived" / "left" with the place id
+ * ever leave it (see EventOutbox), and each event goes only to the server that owns that place. No coordinates are sent here, and there is no location trail: the fences are
+ * evaluated by Google Play services, not by this app. Needs the owner's switch AND the server's, location permission, and "Allow all the time" (Android's rule for fences that work with the app closed).
  */
 object PlaceManager {
     @Volatile private var registeredSignature: String? = null
@@ -93,7 +91,7 @@ object PlaceManager {
     fun hasBackgroundLocation(c: Context) = Build.VERSION.SDK_INT < 29 || c.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
     fun ready(c: Context) = hasFineLocation(c) && hasBackgroundLocation(c)
 
-    fun wanted(c: Context): Boolean = Prefs.active(c) && Prefs.ownerPlaces(c) && Prefs.serverSettings(c).places
+    fun wanted(c: Context, slot: Int): Boolean = Prefs.active(c, slot) && Prefs.ownerPlaces(c) && Prefs.serverSettings(c, slot).places
 
     /** Forget what was registered (the service calls this at start, so a reboot or an update registers the fences again). */
     fun forget() { registeredSignature = null }
@@ -102,31 +100,33 @@ object PlaceManager {
         PendingIntent.getBroadcast(c.applicationContext, 31, Intent(c.applicationContext, GeofenceReceiver::class.java).setAction("app.nori.companion.GEOFENCE"),
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0))
 
-    /** Registers the right fences for the current server list and switches, or removes them all. Safe to call as often as you like. */
+    /** Registers the right fences for every connection's place list and the switches, or removes them all. Safe to call as often as you like. */
     @Synchronized
     fun sync(c: Context) {
         val app = c.applicationContext
         val client: GeofencingClient = try { LocationServices.getGeofencingClient(app) } catch (e: Exception) { return }
         val pi = pendingIntent(app)
-        if (!wanted(app) || !hasFineLocation(app)) {
+        val wanting = Prefs.slots(app).filter { wanted(app, it) }
+        if (wanting.isEmpty() || !hasFineLocation(app)) {
             if (registeredSignature != "") {
                 try { client.removeGeofences(pi) } catch (e: Exception) { /* none */ }
                 registeredSignature = ""
-                PlaceState.clear(app)
+                for (slot in Prefs.slots(app)) PlaceState.clear(app, slot)
             }
             return
         }
-        val settings = Prefs.serverSettings(app)
-        val places = Geo.registrable(settings.placesList)
-        val sig = Geo.signature(settings.placesList)
+        val perSlot = wanting.associateWith { Geo.registrable(Prefs.serverSettings(app, it).placesList) }
+        val sig = wanting.joinToString("#") { "$it:" + Geo.signature(Prefs.serverSettings(app, it).placesList) }
         if (registeredSignature == sig) return
-        PlaceState.retain(app, places.map { it.id }.toSet())
+        for (slot in Prefs.slots(app)) {
+            if (slot in perSlot) PlaceState.retain(app, slot, perSlot.getValue(slot).map { it.id }.toSet()) else PlaceState.clear(app, slot)   // a connection that stopped wanting places forgets them
+        }
         try { client.removeGeofences(pi) } catch (e: Exception) { /* none */ }
-        if (places.isEmpty()) { registeredSignature = sig; return }
-        val fences = places.map {
-            Geofence.Builder().setRequestId(Geo.requestId(it.id)).setCircularRegion(it.lat, it.lon, it.radiusM.toFloat()).setExpirationDuration(Geofence.NEVER_EXPIRE)
+        val fences = perSlot.flatMap { (slot, places) -> places.map { slot to it } }.take(Geo.MAX_TOTAL_GEOFENCES).map { (slot, p) ->
+            Geofence.Builder().setRequestId(Geo.requestId(p.id, slot)).setCircularRegion(p.lat, p.lon, p.radiusM.toFloat()).setExpirationDuration(Geofence.NEVER_EXPIRE)
                 .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_DWELL or Geofence.GEOFENCE_TRANSITION_EXIT).setLoiteringDelay(120_000).build()
         }
+        if (fences.isEmpty()) { registeredSignature = sig; return }
         val request = GeofencingRequest.Builder().setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_DWELL).addGeofences(fences).build()
         try {
             client.addGeofences(request, pi)
@@ -141,7 +141,6 @@ class GeofenceReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         val e = GeofencingEvent.fromIntent(i) ?: return
         if (e.hasError()) { SentLog.add(c, "place watching reported an error (${e.errorCode})"); return }
-        if (!PlaceManager.wanted(c)) return                        // switched off or paused since the fence was set
         val kind = when (e.geofenceTransition) {
             Geofence.GEOFENCE_TRANSITION_DWELL -> "arrived"
             Geofence.GEOFENCE_TRANSITION_EXIT -> "left"
@@ -149,8 +148,9 @@ class GeofenceReceiver : BroadcastReceiver() {
         }
         val now = System.currentTimeMillis()
         for (g in e.triggeringGeofences ?: emptyList()) {
-            val id = Geo.placeIdFromRequest(g.requestId) ?: continue
-            PlaceState.transition(c, kind, id, now)
+            val (slot, id) = Geo.parseRequest(g.requestId) ?: continue
+            if (!PlaceManager.wanted(c, slot)) continue                  // switched off, paused or unpaired since the fence was set
+            PlaceState.transition(c, slot, kind, id, now)
         }
         try { SyncService.start(c) } catch (x: Exception) { /* the next periodic run sends it */ }
         SyncService.workNow(c)

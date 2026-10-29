@@ -16,13 +16,15 @@ object Approvals {
     const val EXTRA_ID = "approval_id"
     const val EXTRA_APPROVE = "approve"
     const val EXTRA_NOTIF = "notif_id"
+    const val EXTRA_CONN = "conn"
 
-    /** Blocking: call off the main thread. Returns an error text, or null when the server took the decision. */
-    fun send(c: Context, id: Long, approve: Boolean, notifId: Int): String? {
-        if (!Prefs.isPaired(c) || Prefs.needsRepair(c)) return "this phone is not paired"
+    /** Blocking: call off the main thread. The decision goes to the server of connection [slot] (the one the approval came from). Returns an error text, or null when the server took it. */
+    fun send(c: Context, slot: Int, id: Long, approve: Boolean, notifId: Int): String? {
+        if (!Prefs.isPaired(c, slot) || Prefs.needsRepair(c, slot)) return "this phone is not paired"
         if (Prefs.paused(c)) return "Nori is paused on this phone: resume it first"
-        val r = Api.post(c, "/device/approval", Protocol.approval(id, approve))
-        SentLog.add(c, if (r.ok) "approval #$id: ${if (approve) "approved" else "denied"}" else "approval #$id could not be sent: ${r.error}")
+        val r = Api.post(c, slot, "/device/approval", Protocol.approval(id, approve))
+        val who = if (Prefs.slots(c).size > 1) " (${Prefs.name(c, slot)})" else ""
+        SentLog.add(c, if (r.ok) "approval #$id$who: ${if (approve) "approved" else "denied"}" else "approval #$id$who could not be sent: ${r.error}")
         if (r.ok) Notifier.cancelMessage(c, notifId)
         return if (r.ok) null else (r.error ?: "could not reach the server")
     }
@@ -37,11 +39,12 @@ class ApprovalReceiver : BroadcastReceiver() {
         if (id < 0) return
         val approve = i.getBooleanExtra(Approvals.EXTRA_APPROVE, false)
         val notif = i.getIntExtra(Approvals.EXTRA_NOTIF, 0)
+        val slot = i.getIntExtra(Approvals.EXTRA_CONN, 0)
         val pending = goAsync()
         val app = c.applicationContext
         Thread {
             try {
-                val err = Approvals.send(app, id, approve, notif)
+                val err = Approvals.send(app, slot, id, approve, notif)
                 Approvals.toast(app, if (err == null) (if (approve) "Approved" else "Denied") else "Not sent: $err")
             } finally { pending.finish() }
         }.start()
@@ -58,6 +61,7 @@ class ApprovalActivity : Activity() {
         val id = intent.getLongExtra(Approvals.EXTRA_ID, -1L)
         val approve = intent.getBooleanExtra(Approvals.EXTRA_APPROVE, false)
         val notif = intent.getIntExtra(Approvals.EXTRA_NOTIF, 0)
+        val slot = intent.getIntExtra(Approvals.EXTRA_CONN, 0)
         if (id < 0) { finish(); return }
         AlertDialog.Builder(this)
             .setTitle(if (approve) "Approve this?" else "Deny this?")
@@ -65,7 +69,7 @@ class ApprovalActivity : Activity() {
             .setPositiveButton(if (approve) "Approve" else "Deny") { _, _ ->
                 val app = applicationContext
                 Thread {
-                    val err = Approvals.send(app, id, approve, notif)
+                    val err = Approvals.send(app, slot, id, approve, notif)
                     Approvals.toast(app, if (err == null) (if (approve) "Approved" else "Denied") else "Not sent: $err")
                 }.start()
                 finish()

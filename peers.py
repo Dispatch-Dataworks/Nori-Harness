@@ -42,6 +42,7 @@ gets, no special case for "but this one's mine."
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -49,6 +50,7 @@ import secrets
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -268,11 +270,159 @@ def create_peer(session: dict, *, scope: str, name: str, url: str, psk: str,
 
 
 def list_peers(session: dict) -> list[dict]:
+    """Connected (or at least fully configured) peers. A pending invitation (see create_invite) is not a peer yet and is not listed."""
     rows = store.read(lambda c: c.execute(
-        "SELECT * FROM peers WHERE (scope='user' AND scope_id=?) "
-        "OR (scope='workspace' AND scope_id=?) ORDER BY id",
+        "SELECT * FROM peers WHERE ((scope='user' AND scope_id=?) "
+        "OR (scope='workspace' AND scope_id=?)) AND invite_key_enc IS NULL ORDER BY id",
         (session["user_id"], session["workspace_id"])).fetchall())
     return [dict(r) for r in rows]
+
+
+# ── connection strings ───────────────────────────────────────────────────
+# Setting a peer up by hand needs four things to line up across two pages: each side's inbound URL (which ends in
+# that side's own row id for the other, so neither can know it until the other row exists), a shared secret typed
+# identically on both, and the names. A connection string carries all of it in one paste each way:
+#
+#   1. On each agent, "make my connection string" reserves a row (a pending invitation) and shows
+#      `paci1:<base64url json>` = {v, name, url (where THIS agent receives: its address + /paci/inbound/<row id>), key}.
+#   2. Paste each agent's string into the other. The pasting side learns the other's name and URL, and the shared
+#      secret is derived from BOTH keys (sha256 of the two, sorted), so neither side "generates" it and it is the
+#      same on both without either string having to be the one true secret.
+#
+# The row is the same one that carries the connection from then on: pasting completes it in place.
+_INVITE_PREFIX = "paci1:"
+_INVITE_VERSION = 1
+_INVITE_TTL_S = 7 * 86400   # an invitation nobody completed is dropped, so an unused half-secret is not left lying around
+
+
+def _web_address(raw) -> str | None:
+    """A usable http(s) address (no spaces, no credentials, no query/fragment), trailing slash removed; None otherwise."""
+    s = (raw or "").strip()
+    if not s or len(s) > 500 or any(ch.isspace() for ch in s):
+        return None
+    parts = urllib.parse.urlsplit(s)
+    if parts.scheme not in ("http", "https") or not parts.netloc or "@" in parts.netloc or parts.query or parts.fragment:
+        return None
+    return s.rstrip("/")
+
+
+def _combine_keys(a: str, b: str) -> str:
+    """The shared secret both sides arrive at from their own half and the other's: order-independent, so it matches on both."""
+    return hashlib.sha256(("paci1\n" + "\n".join(sorted([a, b]))).encode("utf-8")).hexdigest()
+
+
+def _purge_stale_invites() -> None:
+    cutoff = time.time() - _INVITE_TTL_S
+    store.write(lambda c: c.execute("DELETE FROM peers WHERE invite_key_enc IS NOT NULL AND created_ts < ?", (cutoff,)))
+
+
+def _own_invite(session: dict, peer_id: int) -> dict | None:
+    peer = get_peer(peer_id)
+    if peer is None or not peer.get("invite_key_enc"):
+        return None
+    if peer["scope"] != "user" or peer["scope_id"] != session["user_id"]:
+        return None
+    return peer
+
+
+def create_invite(session: dict, *, address: str) -> dict:
+    """Reserve a peer row and this side's half of the secret. `address` is how the OTHER agent reaches this one (its public
+    URL, or an internal one such as http://iron:8080 when both run on one host)."""
+    base = _web_address(address)
+    if base is None:
+        return {"error": "the address must look like https://your-host (or http://host:port), with no spaces"}
+    now = time.time()
+    name = config.get("workspace", session["workspace_id"], "assistant_name")
+    half = secrets.token_hex(16)
+    self_agent_id = f"nori:{secrets.token_hex(4)}"
+
+    def _w(c):
+        return c.execute(
+            "INSERT INTO peers(scope, scope_id, name, purpose, self_agent_id, self_agent_name, url, psk_enc, enabled, "
+            "created_ts, created_by, invite_key_enc, invite_address) VALUES ('user',?,?,?,?,?,?,?,0,?,?,?,?)",
+            (session["user_id"], "(waiting for the other agent)", None, self_agent_id, name, "",
+             crypto.encrypt(secrets.token_hex(16)), now, session["user_id"], crypto.encrypt(half), base)).lastrowid
+    return {"ok": True, "peer_id": store.write(_w)}
+
+
+def connection_string(session: dict, peer_id: int) -> str | None:
+    """The string to give the other agent, or None when this is not a pending invitation of this user."""
+    peer = _own_invite(session, peer_id)
+    if peer is None:
+        return None
+    payload = {"v": _INVITE_VERSION, "name": config.get("workspace", session["workspace_id"], "assistant_name"),
+               "url": f"{peer['invite_address']}/paci/inbound/{peer_id}", "key": crypto.decrypt(peer["invite_key_enc"])}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return _INVITE_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def list_invites(session: dict) -> list[dict]:
+    """Pending invitations of this user, oldest first, each with its string."""
+    _purge_stale_invites()
+    rows = store.read(lambda c: c.execute(
+        "SELECT id, invite_address, created_ts FROM peers WHERE invite_key_enc IS NOT NULL AND scope='user' AND scope_id=? "
+        "ORDER BY id", (session["user_id"],)).fetchall())
+    return [{"id": r["id"], "address": r["invite_address"], "created_ts": r["created_ts"],
+             "string": connection_string(session, r["id"])} for r in rows]
+
+
+def discard_invite(session: dict, peer_id: int) -> dict:
+    if _own_invite(session, peer_id) is None:
+        return {"error": "no such pending invitation"}
+    store.write(lambda c: c.execute("DELETE FROM peers WHERE id=? AND invite_key_enc IS NOT NULL", (peer_id,)))
+    return {"ok": True}
+
+
+def parse_connection_string(text: str) -> tuple[dict | None, str]:
+    """(fields, "") for a good string, else (None, a message the person can act on). Whitespace and line breaks inside it
+    are ignored, because a long string gets wrapped by chat apps and email."""
+    t = "".join((text or "").split())
+    if not t.startswith(_INVITE_PREFIX):
+        return None, f"That is not a connection string: it should start with {_INVITE_PREFIX!r}. Copy it again from the other agent's Peers page."
+    body = t[len(_INVITE_PREFIX):]
+    try:
+        d = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None, "That connection string is damaged (part of it is missing or changed). Copy it again, all of it."
+    if not isinstance(d, dict):
+        return None, "That connection string is damaged. Copy it again, all of it."
+    if not isinstance(d.get("v"), int) or d["v"] > _INVITE_VERSION:
+        return None, "That connection string was made by a newer version of the app than this one. Update this one first."
+    name, url, key = d.get("name"), _web_address(d.get("url")), d.get("key")
+    if not isinstance(name, str) or url is None or not isinstance(key, str) or not (16 <= len(key) <= 128):
+        return None, "That connection string is incomplete. Copy it again, all of it."
+    return {"name": name.strip()[:60], "url": url, "key": key}, ""
+
+
+def accept_connection_string(session: dict, peer_id: int, text: str, *, name: str | None = None,
+                             purpose: str | None = None, scope: str = "user") -> dict:
+    """Complete the pending invitation `peer_id` with the other agent's string: it becomes an ordinary, enabled peer."""
+    mine = _own_invite(session, peer_id)
+    if mine is None:
+        return {"error": "no such pending invitation (it may have expired: make a new connection string)"}
+    fields, err = parse_connection_string(text)
+    if fields is None:
+        return {"error": err}
+    my_key = crypto.decrypt(mine["invite_key_enc"])
+    if hmac.compare_digest(fields["key"], my_key):
+        return {"error": "That is this agent's own connection string. Paste the one the OTHER agent shows you."}
+    if scope not in _VALID_SCOPES:
+        return {"error": f"scope must be one of: {', '.join(_VALID_SCOPES)}"}
+    existing = store.read(lambda c: c.execute(
+        "SELECT name FROM peers WHERE url=? AND invite_key_enc IS NULL", (fields["url"],)).fetchone())
+    if existing is not None:
+        return {"error": f"Already connected to that address (as {existing['name']!r}). Delete that connection first to start over."}
+    chosen = (name or "").strip()[:60] or fields["name"] or "peer"
+    purpose = (purpose or "").strip() or None
+    scope_id = session["user_id"] if scope == "user" else session["workspace_id"]
+    psk = _combine_keys(my_key, fields["key"])
+    store.write(lambda c: c.execute(
+        "UPDATE peers SET scope=?, scope_id=?, name=?, purpose=?, url=?, psk_enc=?, enabled=1, "
+        "invite_key_enc=NULL, invite_address=NULL WHERE id=?",
+        (scope, scope_id, chosen, purpose, fields["url"], crypto.encrypt(psk), peer_id)))
+    _apply_registration(peer_id)
+    renegotiate_now(peer_id)           # introduce ourselves at once; if the other side has not pasted yet, the routine tick retries
+    return {"ok": True, "peer_id": peer_id, "name": chosen}
 
 
 def get_peer(peer_id: int) -> dict | None:
@@ -299,7 +449,7 @@ def _owner_check_for(peer: dict):
 
 def set_peer_enabled(session: dict, peer_id: int, enabled: bool) -> dict:
     peer = get_peer(peer_id)
-    if peer is None or not _owns_peer(session, peer):
+    if peer is None or not _owns_peer(session, peer) or peer.get("invite_key_enc"):
         return {"error": "no such peer"}
     store.write(lambda c: c.execute("UPDATE peers SET enabled=? WHERE id=?", (1 if enabled else 0, peer_id)))
     _apply_registration(peer_id)
@@ -2583,6 +2733,10 @@ def resync_now(session: dict, peer_id: int) -> dict:
 
 
 def tick() -> None:
+    try:
+        _purge_stale_invites()
+    except Exception as exc:  # noqa: BLE001 -- housekeeping must never stop the real work below
+        print(f"peers.tick: purging stale invitations failed: {type(exc).__name__}: {exc}"[:300], flush=True)
     rows = store.read(lambda c: c.execute("SELECT id FROM peers WHERE enabled=1").fetchall())
     for r in rows:
         peer = get_peer(r["id"])

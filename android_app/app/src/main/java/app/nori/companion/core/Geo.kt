@@ -43,8 +43,24 @@ object Geo {
     fun signature(places: List<PlaceDef>): String =
         registrable(places).sortedBy { it.id }.joinToString(";") { "${it.id}|${it.name}|${String.format(java.util.Locale.US, "%.5f", it.lat)}|${String.format(java.util.Locale.US, "%.5f", it.lon)}|${it.radiusM}" }
 
-    fun requestId(placeId: Long) = "nori-place-$placeId"
+    /** Android allows 100 fences per app: with several connections the total is capped, not each connection's own list. */
+    const val MAX_TOTAL_GEOFENCES = 100
+
+    /** The fence's name. Place ids are per server, so a connection above slot 0 puts its slot in the name; slot 0 keeps the original form (fences registered by older versions still resolve). */
+    fun requestId(placeId: Long, slot: Int = 0) = if (slot <= 0) "nori-place-$placeId" else "nori-place-s$slot-$placeId"
     fun placeIdFromRequest(id: String): Long? = if (id.startsWith("nori-place-")) id.removePrefix("nori-place-").toLongOrNull() else null
+
+    /** (slot, place id) for a fence name made by [requestId], or null when it is not one of ours. */
+    fun parseRequest(id: String): Pair<Int, Long>? {
+        if (!id.startsWith("nori-place-")) return null
+        val rest = id.removePrefix("nori-place-")
+        if (rest.startsWith("s")) {
+            val slot = rest.removePrefix("s").substringBefore('-').toIntOrNull() ?: return null
+            val place = rest.substringAfter('-', "").toLongOrNull() ?: return null
+            return slot to place
+        }
+        return rest.toLongOrNull()?.let { 0 to it }
+    }
 }
 
 /** A place enter/exit as sent to the server. Never carries coordinates. */

@@ -2,6 +2,7 @@ package app.nori.companion
 
 import android.content.Context
 import android.os.Build
+import app.nori.companion.core.Connections
 import app.nori.companion.core.PollAction
 import app.nori.companion.core.PollPolicy
 import app.nori.companion.core.Protocol
@@ -9,6 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 /** The phone's side of Nori's /device endpoints (see docs/devices.md). Plain HttpURLConnection and org.json: nothing to download, nothing to go stale. */
 object Api {
@@ -17,13 +19,12 @@ object Api {
         val action: PollAction get() = PollPolicy.classify(code)
     }
 
-    @Volatile
-    private var pollConn: HttpURLConnection? = null
-    @Volatile
-    private var cancelled = false
+    /** One long poll per connection can be waiting at a time. */
+    private val pollConns = ConcurrentHashMap<Int, HttpURLConnection>()
+    private val cancelled = ConcurrentHashMap.newKeySet<Int>()
 
-    /** True once if the last poll ended because [cancelPoll] hung up on it (not because the network failed). */
-    fun wasCancelled(): Boolean { val v = cancelled; cancelled = false; return v }
+    /** True once if the last poll of [slot] ended because [cancelPoll] hung up on it (not because the network failed). */
+    fun wasCancelled(slot: Int): Boolean = cancelled.remove(slot)
 
     private fun userAgent() = "NoriCompanion/${BuildConfig.VERSION_NAME} Android/${Build.VERSION.RELEASE}"
 
@@ -38,10 +39,13 @@ object Api {
         }
     }
 
-    /** POST JSON to /device/... with the device token. [server] and [token] override the stored ones (used by pairing, which has no token). */
-    fun post(c: Context, path: String, body: JSONObject, timeoutMs: Int = 20000, token: String? = null, server: String? = null, isPoll: Boolean = false): Result {
-        val base = server ?: Prefs.server(c)
-        val tok = token ?: Prefs.token(c)
+    /**
+     * POST JSON to /device/... on the server of connection [slot], with that connection's device token. [server] and [token] override the stored ones (used by pairing,
+     * which has no token yet: it passes [Connections.NONE] as the slot and both overrides).
+     */
+    fun post(c: Context, slot: Int, path: String, body: JSONObject, timeoutMs: Int = 20000, token: String? = null, server: String? = null, isPoll: Boolean = false): Result {
+        val base = server ?: Prefs.server(c, slot)
+        val tok = token ?: Prefs.token(c, slot)
         if (base.isEmpty()) return Result(0, null, "", "no server address")
         var conn: HttpURLConnection? = null
         return try {
@@ -56,7 +60,7 @@ object Api {
                 setRequestProperty("User-Agent", userAgent())
                 if (tok.isNotEmpty()) setRequestProperty("Authorization", "Bearer $tok")
             }
-            if (isPoll) { cancelled = false; pollConn = conn }
+            if (isPoll) { cancelled.remove(slot); pollConns[slot] = conn }
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
@@ -66,28 +70,32 @@ object Api {
         } catch (e: Exception) {
             Result(0, null, "", e.javaClass.simpleName + ": " + (e.message ?: "").take(120))
         } finally {
-            if (isPoll) pollConn = null
+            if (isPoll) conn?.let { pollConns.remove(slot, it) }
             try { conn?.disconnect() } catch (e: Exception) { /* closing */ }
         }
     }
 
-    /** Cancel a long poll that is waiting. Safe: the server only advances its cursor on `ack`, so anything not yet acknowledged comes again. */
+    /** Cancel the long poll of every connection that is waiting. Safe: a server only advances its cursor on `ack`, so anything not yet acknowledged comes again. */
     fun cancelPoll() {
-        val c = pollConn ?: return
-        cancelled = true
+        for (slot in pollConns.keys.toList()) cancelPoll(slot)
+    }
+
+    fun cancelPoll(slot: Int) {
+        val c = pollConns[slot] ?: return
+        cancelled.add(slot)
         try { c.disconnect() } catch (e: Exception) { /* already gone */ }
     }
 
     fun register(c: Context, server: String, code: String): Result =
-        post(c, "/device/register", Protocol.register(code, Build.MODEL ?: "Android phone", Build.MODEL ?: "", Build.VERSION.RELEASE, BuildConfig.VERSION_NAME), 20000, token = "", server = server)
+        post(c, Connections.NONE, "/device/register", Protocol.register(code, Build.MODEL ?: "Android phone", Build.MODEL ?: "", Build.VERSION.RELEASE, BuildConfig.VERSION_NAME), 20000, token = "", server = server)
 
-    /** Download the update APK with the device token (the caller resolves the address so it is always on the paired server). Returns an error text or null. */
-    fun download(c: Context, url: String, dest: File, maxBytes: Long = 200L * 1024 * 1024): String? {
+    /** Download the update APK from connection [slot] with its device token (the caller resolves the address so it is always on that paired server). Returns an error text or null. */
+    fun download(c: Context, slot: Int, url: String, dest: File, maxBytes: Long = 200L * 1024 * 1024): String? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15000; readTimeout = 60000; instanceFollowRedirects = false
-                setRequestProperty("Authorization", "Bearer " + Prefs.token(c))
+                setRequestProperty("Authorization", "Bearer " + Prefs.token(c, slot))
                 setRequestProperty("User-Agent", userAgent())
             }
             val code = conn.responseCode

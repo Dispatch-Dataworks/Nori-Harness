@@ -42,8 +42,13 @@ object Channels {
 
     fun titleFor(m: Message): String = m.title.ifBlank { "Nori" }
 
-    /** Stable notification id for a server message id (fits an Int, never collides with the app's fixed ids below 100). */
-    fun notificationId(messageId: Long): Int = (100 + Math.floorMod(messageId, 1_000_000_000L)).toInt()
+    /**
+     * Stable notification id for a server message id (fits an Int, never collides with the app's fixed ids below 100). Two servers number their messages from 1 each, so the
+     * connection is part of the id: slot 0 is exactly what it always was, slots above it get their own range.
+     */
+    fun notificationId(messageId: Long, slot: Int = 0): Int =
+        if (slot <= 0) (100 + Math.floorMod(messageId, 1_000_000_000L)).toInt()
+        else (1_000_000_100L + (slot - 1).coerceAtMost(2) * 300_000_000L + Math.floorMod(messageId, 300_000_000L)).toInt()
 }
 
 /** A size-limited, newest-last text log (the "everything this app sent" list). The Android wrapper only reads and writes the lines. */

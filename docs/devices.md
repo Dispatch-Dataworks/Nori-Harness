@@ -35,6 +35,8 @@ The settings page also shows a deep link `nori-pair://pair?code=XXXX-XXXX&server
 (Browser extension: `POST /bridge/register` with the same shape, `kind:"browser"`.) Existing "create a token" for the browser
 keeps working.
 
+**One phone, several servers.** The contract is per server and has not changed: a server sees the phone as one ordinary device and knows nothing about any other. The Android app (0.2.0) can hold up to four pairings at once, one long poll each, with the phone's own switches, pause and windows shared by all of them (see `android_app/README.md`, "Several servers"). The 6-phones-per-user limit is per server.
+
 401 on any later call = revoked/unknown: the device says "re-pair", stops. 403 = feature switched off server-side: back off 60 s.
 429 = slow down.
 

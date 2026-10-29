@@ -124,36 +124,51 @@ object HealthReader {
     private fun idOf(id: String): String? = id.takeIf { it.isNotBlank() }?.let { "hc-$it" }
 }
 
-/** Reads and sends health data. Called every 15 minutes by the service, and when the app is opened. */
+/**
+ * Reads and sends health data. Called every 15 minutes by the service, and when the app is opened. Each connection has its own consent (its server's switch and list, and its own
+ * ledger of what it was already sent); the phone's switches are shared. A server that did not allow health data is never sent any.
+ */
 object HealthSync {
     @Volatile var lastRun = 0L
     private val lock = Any()
 
-    fun enabledMetrics(c: Context): Set<String> {
-        if (!Prefs.active(c)) return emptySet()
-        val s = Prefs.serverSettings(c)
+    fun enabledMetrics(c: Context, slot: Int): Set<String> {
+        if (!Prefs.active(c, slot)) return emptySet()
+        val s = Prefs.serverSettings(c, slot)
         return HealthMetrics.enabled(s.health, s.healthMetrics, Prefs.ownerHealth(c), Prefs.healthMetrics(c))
     }
 
     /** Blocking. Returns a short status for the log, or null when there was nothing to do. */
     fun run(c: Context, reason: String): String? = synchronized(lock) {
-        val metrics = enabledMetrics(c)
-        if (metrics.isEmpty()) return null
+        var total = 0
+        var any = false
+        for (slot in Prefs.slots(c)) {
+            val metrics = enabledMetrics(c, slot)
+            if (metrics.isEmpty()) continue
+            any = true
+            total += runFor(c, slot, metrics, reason)
+        }
+        if (!any) return null
         lastRun = System.currentTimeMillis()
-        val ledger = HealthLedger.parse(Prefs.get(c, "health_ledger"))
+        return "sent $total"
+    }
+
+    private fun runFor(c: Context, slot: Int, metrics: Set<String>, reason: String): Int {
+        val ledger = HealthLedger.parse(Prefs.getFor(c, slot, "health_ledger"))
         val samples = try { HealthReader.read(c, metrics, ledger) } catch (e: Exception) { HealthReader.lastError = e.javaClass.simpleName; emptyList() }
         if (HealthReader.lastError.isNotEmpty()) SentLog.add(c, "health: ${HealthReader.lastError}")
-        if (samples.isEmpty()) return null
+        if (samples.isEmpty()) return 0
+        val who = if (Prefs.slots(c).size > 1) " to ${Prefs.name(c, slot)}" else ""
         var sent = 0
         for (chunk in samples.chunked(HealthLedger.MAX_PER_POST)) {
-            val r = Api.post(c, "/device/health", HealthLedger.body(chunk))
-            if (!r.ok) { SentLog.add(c, "health data not sent: ${r.error}"); break }
+            val r = Api.post(c, slot, "/device/health", HealthLedger.body(chunk))
+            if (!r.ok) { SentLog.add(c, "health data not sent$who: ${r.error}"); break }
             ledger.markSent(chunk)
-            Prefs.put(c, "health_ledger", ledger.serialize())
+            Prefs.putFor(c, slot, "health_ledger", ledger.serialize())
             sent += chunk.size
         }
-        if (sent > 0) SentLog.add(c, "sent $sent health reading${if (sent == 1) "" else "s"} (" + samples.take(sent).map { HealthMetrics.label(it.type) }.distinct().joinToString(", ") + ") [$reason]")
-        return "sent $sent"
+        if (sent > 0) SentLog.add(c, "sent $sent health reading${if (sent == 1) "" else "s"}$who (" + samples.take(sent).map { HealthMetrics.label(it.type) }.distinct().joinToString(", ") + ") [$reason]")
+        return sent
     }
 }
 

@@ -1982,6 +1982,12 @@ _MIGRATIONS: list[str] = [
     # emitting a receipt at all is an explicit opt-in, never something a
     # peer connection acquires silently on upgrade.
     "ALTER TABLE peers ADD COLUMN receipt_granularity TEXT NOT NULL DEFAULT 'off'",
+    # Connection strings (2026-10-29): a peer row made by "make my connection string" before the other agent's string has
+    # been pasted. It exists so this side's inbound URL (which carries the row id) can be told to the other side at once.
+    # invite_key_enc is this side's half of the shared secret and is NULL on every ordinary peer; a row with it set is a
+    # pending invitation (disabled, no URL yet, hidden from list_peers). invite_address is the address it advertised.
+    "ALTER TABLE peers ADD COLUMN invite_key_enc TEXT",
+    "ALTER TABLE peers ADD COLUMN invite_address TEXT",
     # sub_agents.model_id is NOT here -- see init()'s own comment on why
     # (same models-rename FK-rewrite hazard as model_chain).
 ]

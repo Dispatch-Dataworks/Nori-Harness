@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import app.nori.companion.core.Channels
+import app.nori.companion.core.Deeplink
 import app.nori.companion.core.Message
 import app.nori.companion.core.ShowOutcome
 import app.nori.companion.core.Windows
@@ -42,9 +43,9 @@ object Notifier {
         (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(c, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
             NotificationManagerCompat.from(c).areNotificationsEnabled()
 
-    /** Tapping a notification opens the web view at the chat. */
-    fun openChat(c: Context, requestCode: Int = 0): PendingIntent =
-        PendingIntent.getActivity(c, requestCode, Intent(Intent.ACTION_VIEW, Uri.parse("nori-app://chat")).setClass(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP), IMMUTABLE_UPDATE)
+    /** Tapping a notification opens the web view at the chat of the connection it came from (its tab). */
+    fun openChat(c: Context, requestCode: Int = 0, slot: Int = Prefs.selected(c)): PendingIntent =
+        PendingIntent.getActivity(c, requestCode, Intent(Intent.ACTION_VIEW, Uri.parse(Deeplink.chatLink(slot))).setClass(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP), IMMUTABLE_UPDATE)
 
     private fun openSettings(c: Context, requestCode: Int): PendingIntent =
         PendingIntent.getActivity(c, requestCode, Intent(c, SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), IMMUTABLE_UPDATE)
@@ -55,10 +56,12 @@ object Notifier {
     // ── the ongoing "connected" notice (the foreground service's own) ─
     fun syncNotification(c: Context): Notification {
         val paused = Prefs.paused(c)
-        val repair = Prefs.needsRepair(c)
+        val needRepair = Prefs.pairedSlots(c).filter { Prefs.needsRepair(c, it) }
+        val repair = needRepair.isNotEmpty()
+        val several = Prefs.pairedSlots(c).size > 1
         val b = NotificationCompat.Builder(c, Channels.SYNC)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle(if (paused) "Nori is paused" else if (repair) "Nori needs pairing again" else "Nori is connected")
+            .setContentTitle(if (paused) "Nori is paused" else if (repair) (if (several) needRepair.joinToString(", ") { Prefs.name(c, it) } + " needs pairing again" else "Nori needs pairing again") else "Nori is connected")
             .setContentText(if (paused) "Nothing is sent except a heartbeat" else if (repair) "Tap to open the app settings" else "Replies and reminders arrive here. Tap to open.")
             .setOngoing(true).setOnlyAlertOnce(true).setShowWhen(false)
             .setContentIntent(if (repair) openSettings(c, 10) else openChat(c, 11))
@@ -110,10 +113,10 @@ object Notifier {
 
     // ── Nori's messages ──────────────────────────────────────────────
     /** One server message as an Android notification. Returns FAILED when it could not be shown, so it is not acknowledged and comes again. */
-    fun showMessage(c: Context, m: Message): ShowOutcome {
+    fun showMessage(c: Context, slot: Int, m: Message): ShowOutcome {
         if (!canNotify(c)) return ShowOutcome.FAILED
         val channel = Channels.forCategory(m.category)
-        val notifId = Channels.notificationId(m.id)
+        val notifId = Channels.notificationId(m.id, slot)
         val body = m.text.ifBlank { m.approval?.summary ?: "" }
         val b = NotificationCompat.Builder(c, channel)
             .setSmallIcon(R.drawable.ic_stat)
@@ -121,15 +124,15 @@ object Notifier {
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
-            .setContentIntent(openChat(c, notifId))
+            .setContentIntent(openChat(c, notifId, slot))
             .setPriority(if (Channels.importanceOf(channel) >= Channels.IMPORTANCE_HIGH) NotificationCompat.PRIORITY_HIGH else if (Channels.importanceOf(channel) == Channels.IMPORTANCE_DEFAULT) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_LOW)
             .setCategory(when (channel) { Channels.REMINDER -> NotificationCompat.CATEGORY_REMINDER; Channels.APPROVAL -> NotificationCompat.CATEGORY_MESSAGE; else -> NotificationCompat.CATEGORY_MESSAGE })
         if (m.ts > 0) b.setWhen(m.ts)
         val ap = m.approval
         if (ap != null && channel == Channels.APPROVAL) {
             if (ap.host.isNotBlank()) b.setSubText(ap.host)
-            b.addAction(approvalAction(c, ap.id, true, notifId))
-            b.addAction(approvalAction(c, ap.id, false, notifId))
+            b.addAction(approvalAction(c, slot, ap.id, true, notifId))
+            b.addAction(approvalAction(c, slot, ap.id, false, notifId))
         }
         return try {
             NotificationManagerCompat.from(c).notify(notifId, b.build())
@@ -141,15 +144,16 @@ object Notifier {
      * Approve / Deny. On Android 12+ the action itself requires the device to be unlocked (setAuthenticationRequired), so nobody holding a locked phone can approve.
      * On Android 10-11 that flag does not exist, so the buttons open a small confirmation screen instead, and Android asks for the unlock before it appears.
      */
-    private fun approvalAction(c: Context, approvalId: Long, approve: Boolean, notifId: Int): NotificationCompat.Action {
+    private fun approvalAction(c: Context, slot: Int, approvalId: Long, approve: Boolean, notifId: Int): NotificationCompat.Action {
         val label = if (approve) "Approve" else "Deny"
-        val req = (approvalId % 100_000).toInt() * 2 + (if (approve) 1 else 0) + 1000
+        // Two servers number their approvals from 1 each, and PendingIntents that differ only in their extras are the same PendingIntent: the connection is part of the request code.
+        val req = Math.floorMod(approvalId, 50_000L).toInt() * 2 + (if (approve) 1 else 0) + 1000 + slot * 200_000
         return if (Build.VERSION.SDK_INT >= 31) {
-            val i = Intent(c, ApprovalReceiver::class.java).putExtra(Approvals.EXTRA_ID, approvalId).putExtra(Approvals.EXTRA_APPROVE, approve).putExtra(Approvals.EXTRA_NOTIF, notifId)
+            val i = Intent(c, ApprovalReceiver::class.java).putExtra(Approvals.EXTRA_ID, approvalId).putExtra(Approvals.EXTRA_APPROVE, approve).putExtra(Approvals.EXTRA_NOTIF, notifId).putExtra(Approvals.EXTRA_CONN, slot)
             val pi = PendingIntent.getBroadcast(c, req, i, IMMUTABLE_UPDATE)
             NotificationCompat.Action.Builder(0, label, pi).setAuthenticationRequired(true).build()
         } else {
-            val i = Intent(c, ApprovalActivity::class.java).putExtra(Approvals.EXTRA_ID, approvalId).putExtra(Approvals.EXTRA_APPROVE, approve).putExtra(Approvals.EXTRA_NOTIF, notifId)
+            val i = Intent(c, ApprovalActivity::class.java).putExtra(Approvals.EXTRA_ID, approvalId).putExtra(Approvals.EXTRA_APPROVE, approve).putExtra(Approvals.EXTRA_NOTIF, notifId).putExtra(Approvals.EXTRA_CONN, slot)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_HISTORY)
             NotificationCompat.Action.Builder(0, label, PendingIntent.getActivity(c, req, i, IMMUTABLE_UPDATE)).build()
         }

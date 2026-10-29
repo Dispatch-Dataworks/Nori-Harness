@@ -19,7 +19,7 @@ object WindowControl {
 
     /** Why the control window cannot be opened now, or null when it can. */
     fun interactBlocker(c: Context): String? {
-        if (!Prefs.isPaired(c) || Prefs.needsRepair(c)) return "Pair this phone with Nori first."
+        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with Nori first."
         if (Prefs.paused(c)) return "Nori is paused: resume it first."
         if (!Prefs.ownerControl(c)) return "Switch on \"Let Nori control this phone\" in the Nori app first."
         if (!NoriAccessibilityService.isEnabled(c)) return "Turn on the Nori accessibility service in Android's settings first."
@@ -27,7 +27,7 @@ object WindowControl {
     }
 
     fun shareBlocker(c: Context): String? {
-        if (!Prefs.isPaired(c) || Prefs.needsRepair(c)) return "Pair this phone with Nori first."
+        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with Nori first."
         if (Prefs.paused(c)) return "Nori is paused: resume it first."
         if (!Prefs.ownerScreen(c)) return "Switch on \"Let Nori look at this screen\" in the Nori app first."
         if (!NoriAccessibilityService.isEnabled(c)) return "Turn on the Nori accessibility service first: it is how the phone knows which app is in front, so private apps are never captured."
@@ -137,7 +137,7 @@ class BootReceiver : BroadcastReceiver() {
             Prefs.setInteractUntil(c, 0L)
             Prefs.setShareUntil(c, 0L)
         }
-        if (Prefs.isPaired(c)) SyncService.start(c)          // the service re-registers the place fences and the health schedule
+        if (Prefs.anyPaired(c)) SyncService.start(c)          // the service re-registers the place fences and the health schedule
     }
 }
 
@@ -160,7 +160,7 @@ private fun TileService.openApp(cls: Class<*>, req: Int, vararg extras: Pair<Str
 class PauseTile : TileService() {
     override fun onStartListening() { refresh() }
     override fun onClick() {
-        if (!Prefs.isPaired(this)) { openApp(SettingsActivity::class.java, 20); return }
+        if (!Prefs.anyPaired(this)) { openApp(SettingsActivity::class.java, 20); return }
         Control.setPaused(this, !Prefs.paused(this))
         refresh()
     }
@@ -168,7 +168,7 @@ class PauseTile : TileService() {
     private fun refresh() {
         val t = qsTile ?: return
         t.label = "Nori"
-        if (!Prefs.isPaired(this)) { t.state = Tile.STATE_UNAVAILABLE; t.subtitle = "Not paired" }
+        if (!Prefs.anyPaired(this)) { t.state = Tile.STATE_UNAVAILABLE; t.subtitle = "Not paired" }
         else if (Prefs.paused(this)) { t.state = Tile.STATE_INACTIVE; t.subtitle = "Paused" }
         else { t.state = Tile.STATE_ACTIVE; t.subtitle = "On" }
         t.updateTile()

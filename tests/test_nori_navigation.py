@@ -10,6 +10,7 @@
 import ast
 import html
 import json
+import os
 import re
 from pathlib import Path
 import sys
@@ -80,7 +81,7 @@ def _fake_timing():
 
 def handler(role="admin"):
     sess = dict(role=role, user_id=1, workspace_id=1, csrf="test-csrf")
-    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, re=re, PWA_HEAD="", PWA_JS="",
+    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, re=re, os=os, PWA_HEAD="", PWA_JS="",
                AVATAR_DIR=Path("avatars"), timing=_fake_timing(), store=_fake_store(),
                accounts=SimpleNamespace(any_users_exist=lambda: True, get_session=lambda _: sess,
                                         get_workspace=lambda _: {"name": "Test household"},
@@ -117,7 +118,7 @@ def handler(role="admin"):
                models=SimpleNamespace(list_enabled=lambda: [], list_all=lambda: []),
                providers=SimpleNamespace(list_all=lambda _: [], TYPES={}),
                mcp_servers=SimpleNamespace(list_servers=lambda _: []),
-               peers=SimpleNamespace(list_peers=lambda _: []),
+               peers=SimpleNamespace(list_peers=lambda _: [], list_invites=lambda _: []),
                diagnostics=SimpleNamespace(events=lambda _n: []),
                tool_builder=SimpleNamespace(list_drafts=lambda: []),
                connected_accounts=SimpleNamespace(list_for_user=lambda _: {}),
@@ -159,9 +160,10 @@ def handler(role="admin"):
         "memory_backend_migrate_post", "memory_backend_categories_post", "memory_backend_category_post",
         "memory_backend_broad_post", "sandbox_admin_form", "sandbox_enabled_post", "updates_admin_form", "updates_post", "computeruse_admin_form", "computeruse_post",
         "context_admin_form", "persona_admin_form", "persona_admin_post", "persona_preview_get", "context_preview_get", "context_admin_action", "context_admin_post", "media_admin_form", "backups_admin_form", "integration_health_admin_form",
-        "_diagnostics_html", "_peer_messages_panel", "_fmt_peer_ts", "_peer_msg_preview", "peers_approval_post"}]
+        "_diagnostics_html", "_peer_invites_html", "_peer_messages_panel", "_fmt_peer_ts", "_peer_msg_preview", "peers_approval_post"}]
     exec(compile(ast.Module(body=[cls], type_ignores=[]), "server.py", "exec"), env)
     instance = env["Handler"]()
+    instance.headers = {"Host": "nori.example.com"}
     instance.send = Mock()
     instance.forbidden = lambda: instance.send(403, b"Forbidden")
     instance.token = lambda: "test-session"
