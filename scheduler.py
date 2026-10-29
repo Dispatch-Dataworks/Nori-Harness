@@ -37,6 +37,7 @@ import chat
 import config
 import conversation
 import emotion
+import features
 import memory
 import own_output
 import peers
@@ -62,7 +63,8 @@ def _signal_config_key(key: str) -> str:
 
 def register_signal(fn: Callable[[int], "str | tuple[str, str] | None"], *, key: str, label: str,
                     tier: str = "routine", cooldown_seconds: float = _DEFAULT_COOLDOWN_S,
-                    min_check_interval_seconds: "float | Callable[[int], float] | None" = None) -> None:
+                    min_check_interval_seconds: "float | Callable[[int], float] | None" = None,
+                    feature: "str | None" = None) -> None:
     """A domain module (household inventory, meal planning, overdue tasks,
     ...) calls this once at import time.
 
@@ -90,6 +92,11 @@ def register_signal(fn: Callable[[int], "str | tuple[str, str] | None"], *, key:
     for a per-user cadence (the email signal's "N checks spread across his
     own waking hours" -- see email_calendar.py).
 
+    feature: the optional feature (features.py: trackers, inventory, meals, ...) this signal
+    belongs to, if any. While a person has that feature switched off the signal is never even
+    called for them, on top of its own per-signal toggle -- turning a feature off is what stops
+    its pings, so a signal for a switchable feature must name it.
+
     This is also the ONLY place a per-signal toggle gets created (the operator,
     2026-09-26: "the settings tab is derived from what the ping actually
     pushes, never a hand-maintained list") -- registering here adds the
@@ -101,18 +108,21 @@ def register_signal(fn: Callable[[int], "str | tuple[str, str] | None"], *, key:
         raise ValueError(f"tier must be one of {_TIERS}, not {tier!r}")
     if any(s["key"] == key for s in _SIGNAL_PROVIDERS):
         raise ValueError(f"a ping signal with key {key!r} is already registered")
+    if feature is not None and feature not in {f["key"] for f in features.FEATURES}:
+        raise ValueError(f"ping signal {key!r} names an unknown feature {feature!r}")
     config_key = _signal_config_key(key)
     config._SPEC[config_key] = (True, bool, "user", False, f"ping: {label}")
     _SIGNAL_PROVIDERS.append({"fn": fn, "key": key, "label": label, "config_key": config_key,
                               "tier": tier, "cooldown_seconds": cooldown_seconds,
-                              "min_check_interval_seconds": min_check_interval_seconds})
+                              "min_check_interval_seconds": min_check_interval_seconds, "feature": feature})
 
 
 def signal_registry() -> list[dict]:
-    """Every registered ping signal -- {"key", "label", "config_key", "tier"}
+    """Every registered ping signal -- {"key", "label", "config_key", "tier", "feature"}
     -- for the settings page and its guard test to derive from. Never
     hand-duplicated elsewhere."""
-    return [{"key": s["key"], "label": s["label"], "config_key": s["config_key"], "tier": s["tier"]}
+    return [{"key": s["key"], "label": s["label"], "config_key": s["config_key"], "tier": s["tier"],
+            "feature": s["feature"]}
            for s in _SIGNAL_PROVIDERS]
 
 
@@ -163,6 +173,8 @@ def outstanding_reason(user_id: int) -> dict | None:
     for s in _SIGNAL_PROVIDERS:
         if not config.get("user", user_id, s["config_key"]):
             continue  # disabled: the function is never even called -- genuinely absent, not suppressed
+        if s["feature"] is not None and not features.enabled(user_id, s["feature"]):
+            continue  # its whole feature is switched off (features.py): same rule
         min_interval = s["min_check_interval_seconds"]
         if min_interval is not None:
             interval = min_interval(user_id) if callable(min_interval) else min_interval

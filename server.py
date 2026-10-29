@@ -146,6 +146,7 @@ import conversation
 import drive
 import email_calendar
 import emotion
+import features
 import household
 import homeassistant
 import imagegen
@@ -209,6 +210,52 @@ AVATAR_MAX_DIM = 256
 # generated per-request like the avatars above (there's no per-state
 # variation to justify that here -- one fixed icon set for the whole app).
 PWA_DIR = HERE / "static" / "pwa"
+_ICON_SIZES = {"icon-192.png": 192, "icon-512.png": 512, "icon-180.png": 180}
+_ICON_CACHE: dict = {}
+
+
+def _icon_source():
+    """The picture the app's icon is made from (2026-10-29): the neutral avatar -- the untouched original the avatar builder keeps if there is one,
+    else the neutral avatar itself -- so the favicon, the installed-app icon and notification icons follow whichever avatar set is installed.
+    None when there is neither (or it is an SVG), which leaves the shipped static icons."""
+    candidates = [imagegen._REFERENCE_PATH] + [AVATAR_DIR / f"{emotion.DEFAULT_STATE}.{e}" for e in _AVATAR_EXTS if e != "svg"]
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def _icon_query() -> str:
+    """"?v=..." for the icon links: changes when the avatar it is drawn from does, so a browser that cached the old favicon fetches the new one."""
+    src = _icon_source()
+    if src is None:
+        return ""
+    st = src.stat()
+    return f"?v={st.st_mtime_ns // 1_000_000_000}-{st.st_size}"
+
+
+def _icon_png(size: int):
+    """(png bytes, etag) of the app icon at this size, drawn from _icon_source(), or None to use the shipped static file (no source, no Pillow, or an
+    image Pillow can't read). Square centre-crop, then resize; kept in memory per source version, so a new avatar set replaces it on the next request."""
+    src = _icon_source()
+    if src is None:
+        return None
+    st = src.stat()
+    stamp = (str(src), st.st_mtime_ns, st.st_size)
+    hit = _ICON_CACHE.get(stamp + (size,))
+    if hit:
+        return hit
+    try:
+        import io
+        from PIL import Image, ImageOps
+        with Image.open(src) as img:
+            img = ImageOps.fit(img.convert("RGB"), (size, size), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, "PNG", optimize=True)
+    except Exception:  # noqa: BLE001 -- Pillow missing or an unreadable image: the shipped icon still works
+        return None
+    for k in [k for k in _ICON_CACHE if k[:3] != stamp]:
+        del _ICON_CACHE[k]
+    out = (buf.getvalue(), f'"{st.st_mtime_ns // 1_000_000_000}-{st.st_size}-{size}"')
+    _ICON_CACHE[stamp + (size,)] = out
+    return out
 # Emoji picker data (2026-09-15): the standard Unicode emoji set -- built
 # from Unicode's own emoji-test.txt (group/name per codepoint), skin-tone
 # and hair-style variants of People & Body dropped (default presentation
@@ -1321,8 +1368,8 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 PWA_HEAD = (
     "<meta name=theme-color content='#15171c'>"
     "<link rel=manifest href='/manifest.webmanifest'>"
-    "<link rel=icon href='/icon-192.png' type='image/png'>"
-    "<link rel=apple-touch-icon href='/icon-180.png'>"
+    "<link rel=icon href='/icon-192.png{v}' type='image/png'>"
+    "<link rel=apple-touch-icon href='/icon-180.png{v}'>"
 )
 
 # Registers the service worker on every page for the same reason PWA_HEAD
@@ -2608,6 +2655,12 @@ NOTE_VIEWER_JS = (
     "})();</script>"
 )
 
+# (feature key, menu label, page) for each switchable feature (features.py); the order is the order in the
+# "⋯" menu and the chat's quick-action bar
+_FEATURE_LINKS = (("inventory", "Inventory", "/inventory"), ("meals", "Meals", "/meals"),
+                  ("trackers", "Trackers", "/trackers"))
+
+
 def _instance_name() -> str:
     """What this instance calls her, for pages that have no session (the tab title, the login page). Nori before anything is set up."""
     wsid = accounts.the_workspace_id()
@@ -2684,7 +2737,7 @@ def page_app(title: str, header_inner: str, main_inner: str, footer_inner: str =
     return (
         "<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1,viewport-fit=cover'>"
-        f"{PWA_HEAD}"
+        + PWA_HEAD.replace("{v}", _icon_query()) +
         f"<meta name=application-name content='{esc(_instance_name())}'>"
         f"<meta name=apple-mobile-web-app-title content='{esc(_instance_name())}'>"
         f"<title>{esc(title if raw_title else _tab_title(title))}</title><style>{BASE_CSS}</style></head>"
@@ -3009,6 +3062,8 @@ class Handler(BaseHTTPRequestHandler):
         if sess is None:
             return self.send(303, b"", {"Location": "/login"})
 
+        if self._feature_off_redirect(sess, path):
+            return
         if path == "/":
             if self._first_run_redirect(sess):
                 return
@@ -3211,8 +3266,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/logout":
             accounts.delete_session(self.token())
             return self.send(303, b"", {**self.clear_cookie(), "Location": "/login"})
+        if self._feature_off_redirect(sess, path):
+            return
         if path == "/settings/pings":
             return self.settings_pings_post(sess, form)
+        if path == "/settings/features":
+            return self.settings_features_post(sess, form)
         if path == "/settings/chatvoice":
             return self.settings_chatvoice_post(sess, form)
         if path == "/settings/notify":
@@ -3586,10 +3645,26 @@ class Handler(BaseHTTPRequestHandler):
                                               back_href="/about"))
         return self.send(303, b"", {**self.cookie(accounts.new_session(user, self.ip())), "Location": "/"})
 
+    # -- optional features (features.py) --
+    def _feature_links(self, sess: dict) -> str:
+        """The links to the optional pages this person hasn't switched off."""
+        return "".join(f"<a href='{href}'>{label}</a>" for key, label, href in _FEATURE_LINKS
+                       if features.enabled(sess["user_id"], key))
+
+    def _feature_off_redirect(self, sess: dict, path: str) -> bool:
+        """A page or form of an optional feature this person switched off goes to Settings -> Features, where it
+        can be switched back on, instead of rendering (or saving) anything. True when it sent the response."""
+        key = features.feature_for_path(path)
+        if key is None or features.enabled(sess["user_id"], key):
+            return False
+        query = urllib.parse.urlencode({"tab": "features", "msg": f"{features.label(key)} is switched off. Turn it on below."})
+        self.send(303, b"", {"Location": "/settings?" + query})
+        return True
+
     # -- shared app-shell header --
     def _hdr_menu(self, sess: dict) -> str:
-        items = ("<a href='/'>Chat</a><a href='/inventory'>Inventory</a><a href='/meals'>Meals</a>"
-                "<a href='/trackers'>Trackers</a><a href='/files'>Files</a><a href='/settings'>Settings</a>")
+        items = ("<a href='/'>Chat</a>" + self._feature_links(sess) +
+                 "<a href='/files'>Files</a><a href='/settings'>Settings</a>")
         items += (f"<form method=post action='/logout'><input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
                  "<button class=menu-logout type=submit>log out</button></form>")
         return ("<div class=menu-wrap>"
@@ -3779,7 +3854,8 @@ class Handler(BaseHTTPRequestHandler):
         # /inventory and /meals) rather than a second, duplicate view --
         # that page already does everything ("view and update") a
         # board-reachable tracker surface would need.
-        trackers_btn = "<a class=board-trackers-btn href='/trackers'>📊 Trackers</a>"
+        trackers_btn = ("<a class=board-trackers-btn href='/trackers'>📊 Trackers</a>"
+                        if features.enabled(sess["user_id"], "trackers") else "")
         return (
             "<div class=board id=board>"
             "<div class=board-head><h2>Board</h2>"
@@ -6867,6 +6943,32 @@ class Handler(BaseHTTPRequestHandler):
     # everything else" (his own instruction). One page, all domains --
     # matches the tool surface's own single category_* family rather
     # than a separate admin page per item type.
+    def features_form(self, sess: dict, err: str = "", info: str = ""):
+        """Settings -> Features: one switch per optional feature (features.py). Off hides the page and its links,
+        stops its pings and takes its tools away from Nori; the data stays. Nori can flip these too, with update_settings."""
+        csrf = esc(sess["csrf"])
+        uid = sess["user_id"]
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        rows = "".join(
+            f"<div class=field><label><input type=checkbox name='{esc(f['config_key'])}' "
+            + ("checked " if features.enabled(uid, f["key"]) else "") +
+            f"> <b>{esc(f['label'])}</b></label><div class=muted>{esc(f['blurb'])}</div></div>"
+            for f in features.registry())
+        body = (e + i +
+                "<p class=muted>Switch off what you don't use. An off feature disappears from the menu, stops "
+                "messaging you first, and ⟦n⟧ stops using it; what you already saved is kept, and turning it back "
+                "on brings it all back. You can also just ask ⟦n⟧ to turn one off or on.</p>"
+                "<div class=section><form method=post action='/settings/features'>"
+                f"<input type=hidden name=csrf value='{csrf}'>" + rows +
+                "<button class='btn btn-primary btn-block'>save</button></form></div>")
+        return self._settings_response(sess, "features", body)
+
+    def settings_features_post(self, sess: dict, form: dict):
+        for f in features.registry():
+            config.set("user", sess["user_id"], f["config_key"], f["config_key"] in form)
+        return self.settings_page(sess, "features", info="saved")
+
     def categories_admin_form(self, sess: dict, err: str = "", info: str = ""):
         csrf = esc(sess["csrf"])
         e = f"<p class=err>{esc(err)}</p>" if err else ""
@@ -8931,7 +9033,7 @@ class Handler(BaseHTTPRequestHandler):
                                  ("devices", "Devices"), ("memory", "Memory"), ("accounts", "Connected accounts"),
                                  ("active_tools", "Active tools"), ("schedules", "Scheduled tasks"),
                                  ("tasks", "Tasks"), ("notes", "Notes"), ("reminders", "Reminders"),
-                                 ("categories", "Categories"), ("about", "About")))]
+                                 ("categories", "Categories"), ("features", "Features"), ("about", "About")))]
         if sess["role"] == "admin":
             groups.append(("Administration", (("household", "Household"), ("peers", "Peer connections"),
                                                ("subagents", "Sub-agents"), ("mcp", "MCP servers"),
@@ -9109,6 +9211,8 @@ class Handler(BaseHTTPRequestHandler):
             # Same reasoning as tasks -- lists active+closed, with each
             # one's own history (nags, progress, completion/missed).
             return self.reminders_admin_form(sess, category=cat_filter or None)
+        if tab == "features":
+            return self.features_form(sess, err=err, info=info)
         if tab == "categories":
             # Personal, same as tasks/notes -- not shared workspace
             # state, one page covering every domain (task/note/reminder)
@@ -9162,7 +9266,10 @@ class Handler(BaseHTTPRequestHandler):
                 + "".join(
                     f"<div class=field><label><input type=checkbox name='{esc(s['config_key'])}' "
                     + ("checked " if config.get("user", uid, s["config_key"]) else "") +
-                    f"> {esc(s['label'])}</label></div>"
+                    f"> {esc(s['label'])}"
+                    + (f" <span class=muted>(off while {esc(features.label(s['feature']))} is switched off)</span>"
+                       if s["feature"] and not features.enabled(uid, s["feature"]) else "")
+                    + "</label></div>"
                     for s in scheduler.signal_registry()
                 ) +
                 "</div>"
@@ -10639,8 +10746,8 @@ class Handler(BaseHTTPRequestHandler):
             "orientation": "any",
             "background_color": "#0b0c10", "theme_color": "#15171c",
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+                {"src": "/icon-192.png" + _icon_query(), "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icon-512.png" + _icon_query(), "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
             ],
         }
         self.send(200, json.dumps(m).encode(), {"Cache-Control": "no-cache"},
@@ -10660,6 +10767,12 @@ class Handler(BaseHTTPRequestHandler):
                  ctype="application/json")
 
     def serve_pwa_icon(self, filename: str):
+        made = _icon_png(_ICON_SIZES[filename]) if filename in _ICON_SIZES else None
+        if made:
+            data, etag = made
+            if self.headers.get("If-None-Match") == etag:
+                return self.send(304, b"", {"ETag": etag, "Cache-Control": "no-cache"})
+            return self.send(200, data, ctype="image/png", extra={"ETag": etag, "Cache-Control": "no-cache"})
         p = PWA_DIR / filename
         if not p.is_file():
             return self.not_found()
@@ -11043,8 +11156,7 @@ class Handler(BaseHTTPRequestHandler):
                    "</div></div>")
         header = self._app_header(sess, hdr_left, board_button=True)
         header += ("<nav class=chat-actions aria-label='Chat quick actions'>"
-                   "<a href='/inventory'>Inventory</a><a href='/meals'>Meals</a>"
-                   "<a href='/trackers'>Trackers</a><a href='/files'>Files</a><a href='/history'>History</a>"
+                   + self._feature_links(sess) + "<a href='/files'>Files</a><a href='/history'>History</a>"
                    "<a href='/photos'>Photos</a><a href='/settings'>Settings</a></nav>")
         # Safe against a stray "</script>" inside a state name or the csrf
         # token (neither can actually contain one, but this costs nothing

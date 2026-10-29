@@ -132,4 +132,5 @@ def _register_tools() -> None:
 _register_tools()
 
 import scheduler  # local-at-module-bottom on purpose: registers this module's signal once, at import
-scheduler.register_signal(scheduler_signal, key="household_inventory", label="Household inventory running low or out")
+scheduler.register_signal(scheduler_signal, key="household_inventory", label="Household inventory running low or out",
+                         feature="inventory")

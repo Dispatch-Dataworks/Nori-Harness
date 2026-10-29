@@ -40,6 +40,7 @@ call.
 from __future__ import annotations
 
 import config
+import features
 
 # Started as exactly "ping and notification settings" (operator's own
 # wording); widened 2026-09-15 (operator's own explicit ask) to add the
@@ -63,6 +64,9 @@ PEER_SETTINGS_KEYS = (
     "notify_enabled", "notify_quiet_start", "notify_quiet_end",
     "web_search_enabled", "web_fetch_enabled", "image_gen_enabled",
     "workfile_vision_enabled", "chat_vision_enabled", "voice_input_enabled",
+    # the optional-feature switches (features.py: trackers, inventory, meal planning, and whatever
+    # joins them): "turn off trackers" is one update_settings call, and so is turning it back on
+    *features.config_keys(),
 )
 
 _HOUR_KEYS = ("ping_window_start", "ping_window_end", "notify_quiet_start", "notify_quiet_end")
@@ -182,8 +186,12 @@ def _register_tools() -> None:
         "update_settings",
         {"type": "function", "function": {
             "name": "update_settings",
-            "description": "Change one of the operator's own ping or notification settings -- "
-                           "the same values his own /settings page edits. When the operator "
+            "description": "Change one of the operator's own ping, notification or optional-feature "
+                           "settings -- the same values his own /settings page edits. The "
+                           "feature_<name>_enabled ones switch a whole feature (Trackers, "
+                           "Inventory, Meal planning, ...) on or off for them: off hides its "
+                           "pages and menu links, stops its pings and takes its tools away "
+                           "(the data is kept; on brings it all back). When the operator "
                            "asks directly, do it -- don't negotiate about it. If a connected "
                            "PEER asked for this instead, use that peer's own peer{id}_act tool "
                            "instead of calling this directly -- it goes through your trust "

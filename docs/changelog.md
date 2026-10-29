@@ -2,6 +2,14 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-29 — the icon follows the avatars
+
+The browser-tab favicon, the home-screen / installed-app icon and the notification icon were fixed files made from the default Nori avatar, so an instance with its own avatars (Iron's) still showed Nori's icon. They are now drawn from the installed neutral avatar (the avatar builder's untouched original when there is one), cropped square and resized to each size, and revalidated on every use; the icon links and manifest carry a version that changes with the avatar, so a browser that cached the old favicon fetches the new one. With no usable neutral avatar the shipped icons are served as before. An installed PWA may keep its old home-screen icon until it is reinstalled, or until the OS refreshes it from the manifest.
+
+## 2026-10-29 — optional features can be switched off
+
+Trackers, the inventory and meal planning each have a switch under **Settings -> Features** (per person, on by default). Off hides the page and its links (the "⋯" menu, the chat's quick-action bar, the board's trackers button; a direct visit lands on the Features tab), stops its proactive pings, and withdraws its tools from Nori, so she stops using something you turned off. Nothing is deleted: switching it back on restores everything. Nori can flip them herself with the existing `update_settings` tool (`feature_trackers_enabled`, `feature_inventory_enabled`, `feature_meals_enabled`), so asking in chat works too. A future feature of this kind is one entry in `features.py` plus `feature="<key>"` on its ping signal, and gets all of the above. See [Household planning](household-planning.md#they-can-be-switched-off).
+
 ## 2026-10-29 — peers: one connection string each way
 
 Connecting two agents (Nori and Iron) meant lining up four values across two pages: each side's inbound URL (which ends in that side's own row id for the other, so it could not be known until the other row existed), a shared secret typed identically, and the names. **Settings -> Peers -> connect to another agent** now has **make my connection string**: it reserves the row, and shows one `paci1:` string holding the name, the address the other agent should use and half of the shared secret. Paste each agent's string into the other and press connect; the two halves combine into the shared key, so neither side generates it and nothing is typed twice. Own string, an already-connected address, a damaged or newer-version string are each refused with a message that says which; an unused invitation expires after 7 days. The by-hand form is kept under "connect by hand" for other PACI implementations. Nothing on the wire changed. See [Peer agents](peer-agents.md#setting-one-up).

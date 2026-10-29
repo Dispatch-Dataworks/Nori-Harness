@@ -26,6 +26,8 @@ Or by hand (after pointing `JAVA_HOME`, `ANDROID_HOME`, `GRADLE_USER_HOME` at th
 
 The release APK is signed with the **debug key** (`~/.android/debug.keystore`) on purpose: a personal sideload that updates in place without a keystore to look after. Keep that file; Android only updates in place when the signature matches and `versionCode` goes up. **Bump `version.properties` (`versionName`, `versionCode`) for every build you install.**
 
+Releases attach the APK automatically: `scriptselease.ps1` (see `docs/updates.md`) builds it and publishes it as `nori-companion-<versionName>.apk` on the GitHub release.
+
 `-Upload` copies the APK to `/app/data/phone_app/nori-companion.apk` and the version string to `/app/data/phone_app/version.txt` in the `nori` container. The server's `GET /device/app.apk` serves that file and `app.latest` in the poll answer carries `version.txt`.
 
 ## Install and pair

@@ -31,6 +31,7 @@ Each picture is one image call. The page shows the estimate before each button (
 - **One build at a time**, kept as `state.json` plus the images; no schema. If the process restarts mid-build, the pictures that were in flight come back as retryable.
 - **Each state's look** is an optional `"look"` in `emotions.json` (a phrase such as "one eyebrow raised, a smirk pulled to one side"); a state without one still gets a vaguer picture. Adding a state is still just an entry plus a picture.
 - **Avatars are revalidated, not cached blind.** `/avatar/<state>` used to be cached for an hour; it now sends an ETag from the file's modified time and size, so a newly installed set shows on the next page load.
+- **The app icon follows the set.** The favicon, the home-screen icon and the notification icon are drawn from the installed neutral avatar (the untouched original the builder keeps, else `neutral.*`), and the icon links carry a version that changes with it, so install and restore update them too (`tests/test_nori_icons.py`). An installed PWA may keep its old home-screen icon until reinstalled.
 - **Formats.** Whatever the model returns (PNG, JPEG or WebP, checked by the file's contents) is kept as is. Install removes every old file of a state in any format first, because `png` outranks the others and an old `happy.png` would hide a new `happy.webp`.
 - The selfie tools still describe themselves in photographic terms ("a single ordinary photograph"); an illustrated or anime character works for the avatars, and selfies of one are a known rough edge.
 

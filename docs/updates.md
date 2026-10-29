@@ -47,14 +47,16 @@ The `VERSION` file in the repo root (for example `0.10.0-beta`), baked into the 
 ## Cutting a release (maintainers)
 
 1. Bump `VERSION` (bare number, no `v`), add the changelog entry (`docs/changelog.md`), commit.
-2. Tag and publish. One command does both and writes the notes people will read in the Updates tab:
+2. Push, then tag and publish with the script, which also builds the Android app and attaches it to the release:
 
    ```
-   gh release create v0.11.0 --title "Nori 0.11.0" --generate-notes
-   gh release create v0.11.0-beta.1 --title "Nori 0.11.0 beta 1" --generate-notes --prerelease    # a pre-release
+   .\scriptselease.ps1 -Notes "what changed"       # the notes are what people read in the Updates tab
+   .\scriptselease.ps1 -NotesFile notes.md         # or from a file; with neither, GitHub generates them
    ```
 
-   (`git tag` + `git push --tags` alone is **not** enough: a tag without a Release isn't announced.)
+   It reads `VERSION` (a version with a dash is published as a pre-release), refuses to run unless everything is committed and pushed and the tag is new, runs the Android unit tests, builds the APK, and publishes `v<VERSION>` with `nori-companion-<versionName>.apk` attached (`versionName` is `android_appersion.properties`: bump it, and `versionCode`, whenever the app changed). Options: `-SkipTests`, `-NoApk` (a server-only release), `-DryRun` (everything except publishing). It runs on your machine, not in CI, because the APK is signed with your local debug key and must be the same key every time.
+
+   To do it by hand instead: `gh release create v0.11.0 --title v0.11.0 --generate-notes` (add `--prerelease` for a beta). `git tag` + `git push --tags` alone is **not** enough: a tag without a Release isn't announced.
 3. Within a day every instance with the check on shows the pill. Use **check now** on your own instance to see it immediately.
 
 Pre-release identifiers compare numerically (`beta.2` < `beta.10`), so a numbered beta series sorts correctly.

@@ -117,4 +117,6 @@ A new household-signal source registers a function with
 a short reason string or `None`; one provider's own exception is
 caught and skipped so it can never take the whole cycle down. See
 [Household planning](household-planning.md) for the first two real
-signal providers (inventory, meal planning).
+signal providers (inventory, meal planning). A signal that belongs to a switchable feature
+(trackers, inventory, meal planning, ... see `features.py`) passes `feature="<key>"`: while a person
+has that feature switched off, the signal's function is not called for them at all.

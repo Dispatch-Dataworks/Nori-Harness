@@ -40,6 +40,7 @@ import threading
 import time
 
 import accounts
+import features
 import timing
 
 _VALID_ROLES = ("admin", "member")
@@ -113,6 +114,8 @@ _REGISTRY: dict[str, Tool] = {}
 
 
 def _is_enabled(t: Tool, session: dict) -> bool:
+    if not features.tool_allowed(t.name, session.get("user_id")):
+        return False  # an optional feature this person switched off (features.py): absent from the list, refused if called
     return t.enabled(session) if callable(t.enabled) else t.enabled
 
 
@@ -193,6 +196,10 @@ def dispatch(name: str, args: dict, session: dict, *, timing_turn: "timing.Turn 
     one cheap check when no turn was passed and genuinely nothing when
     the setting's off."""
     t = _REGISTRY.get(name)
+    if t is not None and not features.tool_allowed(name, session.get("user_id")):
+        key = features.feature_for_tool(name)
+        return {"error": f"{features.label(key)} is switched off for this person, so {name} is unavailable. "
+                         f"If they ask for it back, set {features.config_key(key)} to true with update_settings."}
     if t is None or not _is_enabled(t, session):
         return {"error": f"no such tool: {name}"}
     if session["role"] != "admin" and t.min_role == "admin":

@@ -48,7 +48,7 @@ def definitions(filename, names, namespace):
 
 
 def render_fixture():
-    env = dict(esc=html.escape, json=json, PWA_HEAD="", PWA_JS="",
+    env = dict(esc=html.escape, json=json, PWA_HEAD="", PWA_JS="", _icon_query=lambda: "",
                emotion=SimpleNamespace(STATES=("neutral", "determined", "happy"),
                                        DEFAULT_STATE="neutral", COLORS={}, get_state=lambda _: "determined"),
                accounts=SimpleNamespace(get_user=lambda _: {"display_name": "Test user"}),

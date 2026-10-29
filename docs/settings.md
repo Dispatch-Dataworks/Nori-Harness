@@ -69,6 +69,9 @@ registration in `settings_tool.py` for exactly which keys that
 excludes today, since this is exactly the kind of boundary worth
 verifying against the source rather than trusting a paraphrase).
 
+`update_settings` can change a short, enumerated list of keys (`settings_tool.PEER_SETTINGS_KEYS`): ping and notification settings, a few capability switches, and the optional-feature switches
+`feature_<key>_enabled` (`features.py`: trackers, inventory, meal planning, and whatever joins them). Reading is wider than writing.
+
 ## Where a value actually shows up
 
 The **Settings** page in the running app (`server.py`'s own

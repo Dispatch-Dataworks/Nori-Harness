@@ -81,7 +81,7 @@ def _fake_timing():
 
 def handler(role="admin"):
     sess = dict(role=role, user_id=1, workspace_id=1, csrf="test-csrf")
-    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, re=re, os=os, PWA_HEAD="", PWA_JS="",
+    env = dict(esc=html.escape, json=json, time=time, urllib=urllib, re=re, os=os, PWA_HEAD="", PWA_JS="", _icon_query=lambda: "",
                AVATAR_DIR=Path("avatars"), timing=_fake_timing(), store=_fake_store(),
                accounts=SimpleNamespace(any_users_exist=lambda: True, get_session=lambda _: sess,
                                         get_workspace=lambda _: {"name": "Test household"},
@@ -94,6 +94,9 @@ def handler(role="admin"):
                # toggles (2026-09-26) -- empty here is fine, this harness
                # doesn't need a real signal to render, just to not NameError.
                scheduler=SimpleNamespace(signal_registry=lambda: []),
+               # every optional feature is on in this harness (the switches have their own test file, test_nori_features.py)
+               features=SimpleNamespace(enabled=lambda uid, key: True, label=lambda key: key, registry=lambda: [],
+                                        feature_for_path=lambda path: None),
                persona_admin=SimpleNamespace(render=lambda *a, **k: "<p>persona tab</p>", ACTIONS=()),
                # settings_page's notify tab reads this for the timezone
                # field's own placeholder value (2026-09-18).
@@ -128,7 +131,7 @@ def handler(role="admin"):
     # all call directly -- added in the same design pass that split Pings
     # into three tabs, never added here.
     definitions("server.py", {"BASE_CSS", "APP_JS", "KEYBOARD_JS", "NOTIFY_STATUS_JS", "page_app", "info_tip",
-                                  "_instance_name", "_tab_title", "_TITLE_TAIL_RE"}, env)
+                                  "_instance_name", "_tab_title", "_TITLE_TAIL_RE", "_FEATURE_LINKS"}, env)
     tree = ast.parse((ROOT / "server.py").read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Handler")
     cls.bases = []
@@ -151,7 +154,7 @@ def handler(role="admin"):
     # real body -- which reads the real backup/oauth/integration_health
     # modules -- ever actually runs in this harness).
     cls.body = [n for n in cls.body if getattr(n, "name", None) in {
-        "do_GET", "_do_GET_inner", "_load_session", "_hdr_menu", "_hdr_back", "_app_header", "_settings_groups",
+        "do_GET", "_do_GET_inner", "_load_session", "_hdr_menu", "_feature_links", "_feature_off_redirect", "_hdr_back", "_app_header", "_settings_groups",
         "_settings_rail", "_settings_shell", "settings_menu_page",
         "_settings_response", "settings_page", "_household_members", "invite_admin_form", "invite_admin_post",
         "subagents_admin_form", "mcp_admin_form", "peers_admin_form", "tools_admin_form",
