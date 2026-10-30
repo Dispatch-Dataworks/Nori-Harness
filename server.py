@@ -1524,6 +1524,7 @@ APP_JS = (
     "if(window.closeVoiceModal)window.closeVoiceModal();"
     "nbBackdrop(false);}"
     "function nbShowPeek(manual){var p=$('peek');if(!p||window.matchMedia('(min-width:900px)').matches)return;"
+    "if(!manual&&!window.__noriPeekAuto__)return;"   # the automatic pop-up on a change of expression is opt-in (avatar_popup_enabled)
     "if(!manual&&(window.__peekManual||$('menuSheet')?.classList.contains('show')||$('board')?.classList.contains('open')))return;"
     "if(manual){nbCloseAll();window.__peekManual=true;nbBackdrop(true);}"
     # Never let the popup open behind (or squeezed above) the on-screen
@@ -9348,6 +9349,12 @@ class Handler(BaseHTTPRequestHandler):
                 "<div class=field><label><input type=checkbox name=show_tool_calls "
                 + ("checked " if config.get("user", uid, "show_tool_calls") else "") +
                 "> show a line when ⟦n⟧ uses a tool</label></div>"
+                "<div class=field><label><input type=checkbox name=avatar_popup_enabled "
+                + ("checked " if config.get("user", uid, "avatar_popup_enabled") else "") +
+                "> pop the full-screen avatar up when ⟦n⟧'s expression changes "
+                + info_tip("On a phone, a big portrait covers the chat for a few seconds each time the expression changes. Off by default. "
+                           "Tapping the avatar at the top of the chat still opens it whenever you like.")
+                + "</label></div>"
                 f"<div class=field><label><input type=checkbox name=chat_vision_enabled "
                 + ("checked " if config.get("user", uid, "chat_vision_enabled") else "") +
                 f"> let ⟦n⟧ actually see photos you send in chat {vision_tip}</label></div>"
@@ -9593,6 +9600,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (1 <= rounds_proactive <= 40):
             return self.settings_page(sess, "chatvoice", err="background tool rounds must be 1-40")
         config.set("user", uid, "show_tool_calls", "show_tool_calls" in form)
+        config.set("user", uid, "avatar_popup_enabled", "avatar_popup_enabled" in form)
         config.set("user", uid, "chat_vision_enabled", "chat_vision_enabled" in form)
         config.set("user", uid, "tool_rounds_chat", rounds_chat)
         config.set("user", uid, "tool_rounds_proactive", rounds_proactive)
@@ -11216,6 +11224,7 @@ class Handler(BaseHTTPRequestHandler):
             self._image_viewer_html() +
             self._note_viewer_html() +
             f"<script>window.__noriStateChanged__={'true' if state_changed else 'false'};"
+            f"window.__noriPeekAuto__={'true' if config.get('user', sess['user_id'], 'avatar_popup_enabled') else 'false'};"
             f"window.NORI_CHAT={chat_cfg};window.NOTIFY={notify_cfg};</script>"
         )
         # Voice conversation mode -- only rendered at all if the per-user

@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-30 — the full-screen avatar pop-up is opt-in
+
+On a phone, a full-portrait avatar used to cover the chat for a few seconds every time the expression changed. That automatic pop-up is now a setting, **off by default**: Settings -> Chat & voice -> *pop the full-screen avatar up when her expression changes* (`avatar_popup_enabled`, per person). Tapping the avatar at the top of the chat still opens the portrait whenever you like, and the avatar in the header still changes live.
+
 ## 2026-10-30 — the Android app's settings are in the menu
 
 With one connection the app has no tab bar, so no gear, and its native settings screen (connections, what it may do, pause) could only be reached from a launcher long-press. The "⋯" menu on every page now has **App settings** when the page is open inside the app (the server recognises the `NoriApp/` user agent; a browser never sees it), so it works with the app you already have installed.

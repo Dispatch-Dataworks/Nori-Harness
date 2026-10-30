@@ -73,3 +73,7 @@ example) registers with `precheck.register(fn)` the same way a
 change to `precheck.py` itself required, and no risk of quietly
 reintroducing the standing-prompt failure mode this module exists to
 avoid.
+
+## The full-screen pop-up is opt-in
+
+On a phone the header avatar changes live, and tapping it opens the full portrait. The portrait used to also pop up by itself for a few seconds whenever the expression changed; that is now the per-person setting `avatar_popup_enabled` (Settings -> Chat & voice), **off by default**. It governs only the automatic pop-up: a tap on the header avatar always works. Desktop shows the portrait in a permanent side panel and has no pop-up either way. `tests/test_nori_avatar_popup.py`.

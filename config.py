@@ -103,6 +103,9 @@ _SPEC: dict[str, tuple] = {
     # (name only, never arguments or results). See conversation.py's
     # include_tool param and chat.py's run() for where this is read.
     "show_tool_calls": (True, bool, "user", False, "show tool-call lines in chat"),
+    # Off by default (2026-10-30, operator's own ask): the full-portrait avatar that used to cover the phone chat for a few seconds every time her
+    # expression changed. Tapping the avatar in the header still opens it on demand; this only governs the automatic pop-up.
+    "avatar_popup_enabled": (False, bool, "user", False, "pop the full-screen avatar up when her expression changes"),
     # Poll-driven local notifications (see server.py's PWA/notify section)
     # -- not push, no VAPID, honest about that in the settings copy.
     "notify_enabled": (True, bool, "user", False, "local notifications enabled"),
