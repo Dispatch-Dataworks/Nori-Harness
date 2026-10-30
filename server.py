@@ -3662,10 +3662,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send(303, b"", {"Location": "/settings?" + query})
         return True
 
+    def _in_android_app(self) -> bool:
+        """Is this request from the Android companion app's web view (it appends NoriApp/<version> to the user agent)?"""
+        headers = getattr(self, "headers", None)
+        return bool(headers) and "NoriApp/" in (headers.get("User-Agent") or "")
+
     # -- shared app-shell header --
     def _hdr_menu(self, sess: dict) -> str:
         items = ("<a href='/'>Chat</a>" + self._feature_links(sess) +
                  "<a href='/files'>Files</a><a href='/settings'>Settings</a>")
+        if self._in_android_app():
+            # The companion app's own settings (connections, what it may do, pause) are a native screen, not a page of ours; the app opens this
+            # link itself. Shown only inside the app: in a browser the scheme means nothing. (With two or more connections the app also has a
+            # gear in its tab bar, but with one it has no bar at all.)
+            items += "<a href='nori-app://settings'>App settings</a>"
         items += (f"<form method=post action='/logout'><input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
                  "<button class=menu-logout type=submit>log out</button></form>")
         return ("<div class=menu-wrap>"

@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-30 — the Android app's settings are in the menu
+
+With one connection the app has no tab bar, so no gear, and its native settings screen (connections, what it may do, pause) could only be reached from a launcher long-press. The "⋯" menu on every page now has **App settings** when the page is open inside the app (the server recognises the `NoriApp/` user agent; a browser never sees it), so it works with the app you already have installed.
+
 ## 2026-10-29 — servers fetch the Android app from the release themselves
 
 A phone updates its app from the server it is paired with, and a server only had an app to offer if someone copied one into it by hand, so a server updated to a release still had nothing to give the phone even though the release carried the APK. Now when the daily update check sees a release with a newer `nori-companion-<version>.apk`, the server downloads it (GitHub only, the size and SHA-256 GitHub published, and a structure check) and offers it to paired phones, with a switch and a *fetch the app now* button under Settings -> Updates. See [Updates](updates.md#the-android-app-comes-with-it).

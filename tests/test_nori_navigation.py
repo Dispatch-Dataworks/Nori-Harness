@@ -154,7 +154,7 @@ def handler(role="admin"):
     # real body -- which reads the real backup/oauth/integration_health
     # modules -- ever actually runs in this harness).
     cls.body = [n for n in cls.body if getattr(n, "name", None) in {
-        "do_GET", "_do_GET_inner", "_load_session", "_hdr_menu", "_feature_links", "_feature_off_redirect", "_hdr_back", "_app_header", "_settings_groups",
+        "do_GET", "_do_GET_inner", "_load_session", "_hdr_menu", "_in_android_app", "_feature_links", "_feature_off_redirect", "_hdr_back", "_app_header", "_settings_groups",
         "_settings_rail", "_settings_shell", "settings_menu_page",
         "_settings_response", "settings_page", "_household_members", "invite_admin_form", "invite_admin_post",
         "subagents_admin_form", "mcp_admin_form", "peers_admin_form", "tools_admin_form",
@@ -185,6 +185,17 @@ class NavigationTests(unittest.TestCase):
             self.assertEqual(menu.count("<a "), 6)
             self.assertNotIn("/peers", menu)
             self.assertNotIn("/admin/", menu)
+
+    def test_the_android_apps_own_settings_are_one_tap_away_inside_the_app_only(self):
+        # With one connection the app has no tab bar (and so no gear), so its native settings screen is reached from the menu.
+        h, sess, _ = handler()
+        self.assertNotIn("nori-app://settings", h._hdr_menu(sess), "a browser gets no link that means nothing to it")
+        h.headers = {"Host": "nori.example.com", "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"}
+        self.assertNotIn("nori-app://settings", h._hdr_menu(sess), "an ordinary mobile browser either")
+        h.headers = {"Host": "nori.example.com", "User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile Safari/537.36 NoriApp/0.2.0"}
+        menu = h._hdr_menu(sess)
+        self.assertIn("<a href='nori-app://settings'>App settings</a>", menu)
+        self.assertEqual(menu.count("<a "), 7)
 
     def test_every_settings_tab_renders_with_one_selected_tab(self):
         for tab in ADMIN_TABS + PERSONAL_TABS:

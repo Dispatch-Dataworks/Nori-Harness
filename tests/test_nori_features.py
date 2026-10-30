@@ -63,10 +63,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirect)
 
 
-def http(path, form=None):
+def http(path, form=None, headers=None):
     data = None if form is None else urllib.parse.urlencode(form).encode()
     req = urllib.request.Request(BASE + path, data=data, method="POST" if form is not None else "GET")
     req.add_header("Cookie", f"ns={TOKEN}")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     try:
         with _opener.open(req, timeout=20) as r:
             return r.status, r.read().decode("utf-8", "replace"), r.headers
@@ -307,6 +309,12 @@ class Pages(unittest.TestCase):
         status, page, _ = http("/settings?tab=features")
         self.assertIn("name='feature_inventory_enabled' checked", page)
         self.assertNotIn("name='feature_meals_enabled' checked", page)
+
+    def test_the_android_app_gets_a_link_to_its_own_settings_in_the_menu_and_a_browser_does_not(self):
+        for path in ("/", "/files", "/settings"):
+            self.assertNotIn("nori-app://settings", http(path)[1], path)
+            self.assertIn("<a href='nori-app://settings'>App settings</a>",
+                          http(path, headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile Safari/537.36 NoriApp/0.2.0"})[1], path)
 
     def test_the_pings_tab_says_why_a_signal_is_quiet(self):
         _off("meals")
