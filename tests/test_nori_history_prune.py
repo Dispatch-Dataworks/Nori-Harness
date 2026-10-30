@@ -578,6 +578,7 @@ class EveryReaderOfMessagesIsClassified(unittest.TestCase):
 
     def test_no_other_module_reads_messages_for_a_prompt(self):
         allowed = {"conversation.py": "see above", "store.py": "schema/migrations", "diagnostics.py": "kind='tool' meta",
+                   "infra.py": "updates the status on the approval card it posted (meta only)",
                    "debug_api.py": "the debug endpoint (read-only, scrubbed, token-gated): shows a developer messages including pruned ones; never a model",
                    "bridge.py": "updates one message's meta", "peers.py": "an existence check on user messages"}
         for fname in sorted(os.listdir(ROOT)):

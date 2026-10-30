@@ -152,6 +152,8 @@ import features
 import household
 import homeassistant
 import imagegen
+import infra
+import infra_proxmox  # noqa: F401  (registers the proxmox_* tools; off until an admin switches them on)
 import integration_health
 import jobs
 import logbuf
@@ -406,7 +408,8 @@ def approval_card_html(a) -> str:
         return ""
     return (f"<div class=approval-card data-id='{esc(str(a.get('id')))}' "
             f"data-status='{esc(str(a.get('status') or 'pending'))}' data-host='{esc(str(a.get('host') or ''))}' "
-            f"data-reason='{esc(str(a.get('reason') or ''))}'></div>")
+            f"data-reason='{esc(str(a.get('reason') or ''))}' data-src='{esc(str(a.get('source') or ''))}' "
+            f"data-summary='{esc(str(a.get('summary') or ''))}'></div>")
 
 
 def info_tip(text: str) -> str:
@@ -1677,7 +1680,7 @@ CHAT_JS = (
     "box.dataset.status=status;while(box.firstChild)box.removeChild(box.firstChild);"
     "if(status==='pending'){"
     "var q=document.createElement('div');q.className='approval-q';"
-    "q.textContent='Allow this on '+(box.dataset.host||'the page')+'?';box.appendChild(q);"
+    "q.textContent=box.dataset.src==='infra'?('Allow: '+(box.dataset.summary||'this change')+'?'):('Allow this on '+(box.dataset.host||'the page')+'?');box.appendChild(q);"
     "var row=document.createElement('div');row.className='approval-btns';"
     "['approve','deny'].forEach(function(d){var b=document.createElement('button');b.type='button';"
     "b.className='btn '+(d==='approve'?'btn-primary':'btn-danger');b.dataset.decision=d;"
@@ -1687,7 +1690,7 @@ CHAT_JS = (
     "}else{var t=document.createElement('div');t.className='approval-done muted';"
     "t.textContent=detail||APPROVAL_TEXT[status]||status;box.appendChild(t);}}"
     "function approvalBox(a){var box=document.createElement('div');box.className='approval-card';"
-    "box.dataset.id=a.id;box.dataset.host=a.host||'';box.dataset.reason=a.reason||'';"
+    "box.dataset.id=a.id;box.dataset.host=a.host||'';box.dataset.reason=a.reason||'';box.dataset.src=a.source||'';box.dataset.summary=a.summary||'';"
     "renderApproval(box,a.status||'pending');return box;}"
     "function hydrateApprovals(){var boxes=msglist?msglist.querySelectorAll('.approval-card'):[];"
     "for(var i=0;i<boxes.length;i++){renderApproval(boxes[i],boxes[i].dataset.status||'pending');}}"
@@ -1695,7 +1698,7 @@ CHAT_JS = (
     "var btn=e.target.closest?e.target.closest('.approval-card button[data-decision]'):null;if(!btn)return;"
     "var box=btn.closest('.approval-card');var btns=box.querySelectorAll('button');"
     "for(var i=0;i<btns.length;i++)btns[i].disabled=true;"
-    "fetch('/bridge/approval',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+    "fetch(box.dataset.src==='infra'?'/infra/approval':'/bridge/approval',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
     "body:'csrf='+encodeURIComponent(CSRF)+'&id='+encodeURIComponent(box.dataset.id)+'&decision='+btn.dataset.decision})"
     ".then(function(r){return r.json();}).then(function(j){"
     "if(j&&j.ok)renderApproval(box,j.status||'approved');"
@@ -3260,7 +3263,7 @@ class Handler(BaseHTTPRequestHandler):
         # reasoning /send and /retry already document -- a stale/expired
         # session must come back as JSON the JS can actually read, not an
         # HTML redirect fetch() would follow and then fail to parse.
-        is_json_api = path in ("/send", "/retry") or (
+        is_json_api = path in ("/send", "/retry", "/infra/approval") or (
             path.startswith("/board/notes/") and path.endswith("/read"))
         if sess is None:
             if is_json_api:
@@ -3433,6 +3436,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.computeruse_post(sess, path, form)
         if path == "/bridge/approval":
             return self.bridge_approval_post(sess, form)
+        if path == "/infra/approval":
+            return self.infra_approval_post(sess, form)
+        if path.startswith("/admin/infra/"):
+            return self.infra_admin_post(sess, path, form)
         if path == "/admin/memorybackend/connection":
             return self.memory_backend_connection_post(sess, form)
         if path == "/admin/memorybackend/categories":
@@ -7044,6 +7051,117 @@ class Handler(BaseHTTPRequestHandler):
             config.set("user", sess["user_id"], f["config_key"], f["config_key"] in form)
         return self.settings_page(sess, "features", info="saved")
 
+    # -- infrastructure tools (infra.py, infra_proxmox.py) --
+    def infra_approval_post(self, sess: dict, form: dict):
+        """Approve / Deny from the chat card (fetch, JSON back). Admin only, and only your own pending requests; the framework runs a change exactly once."""
+        if sess["role"] != "admin":
+            return self.send_json({"ok": False, "message": "admin only", "status": "error"}, 403)
+        try:
+            pid = int(form.get("id", ""))
+        except (TypeError, ValueError):
+            return self.send_json({"ok": False, "message": "bad id", "status": "error"}, 400)
+        decision = form.get("decision", "")
+        if decision not in ("approve", "deny"):
+            return self.send_json({"ok": False, "message": "decision must be approve or deny", "status": "error"}, 400)
+        ok, msg, status = infra.resolve(sess["user_id"], pid, decision == "approve")
+        return self.send_json({"ok": ok, "message": msg, "status": status}, 200 if ok else 409)
+
+    def infra_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        csrf = esc(sess["csrf"])
+        ws = sess["workspace_id"]
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        pols = infra.policies(ws)
+        sections = []
+        for key, spec in infra.SERVICES.items():
+            on = infra.enabled(key, ws)
+            fields = []
+            for f in infra.credential_status(ws, key):
+                label = esc(spec["fields"][[x["key"] for x in spec["fields"]].index(f["key"])]["label"])
+                if f["secret"]:
+                    inp = (f"<input type=password name='{esc(f['key'])}' autocomplete=off spellcheck=false "
+                           f"placeholder='{'saved: leave blank to keep it' if f['set'] else 'not set'}'>")
+                elif spec["fields"][[x["key"] for x in spec["fields"]].index(f["key"])].get("kind") == "textarea":
+                    inp = f"<textarea name='{esc(f['key'])}' rows=3 spellcheck=false>{esc(f['value'])}</textarea>"
+                else:
+                    inp = f"<input type=text name='{esc(f['key'])}' value='{esc(f['value'])}' autocomplete=off spellcheck=false>"
+                fields.append(f"<div class=field><label>{label}</label>{inp}</div>")
+            perms = [p for p in infra.PERMISSIONS.values() if p["service"] == key]
+            perm_rows = "".join(
+                f"<form method=post action='/admin/infra/{esc(key)}/policy' style='display:flex;gap:.5rem;align-items:center;margin:.3rem 0'>"
+                f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=permission value='{esc(p['name'])}'>"
+                f"<span style='flex:1'><b>{esc(p['label'])}</b><br><small class=muted>{esc(p['description'])}</small></span>"
+                "<select name=policy>" + "".join(f"<option value={o}{' selected' if pols[p['name']] == o else ''}>{lbl}</option>" for o, lbl in
+                                                  (("ask", "ask me first"), ("auto", "do it without asking"), ("deny", "never"))) + "</select>"
+                "<button class=btn>save</button></form>" for p in perms)
+            log = "".join(
+                f"<div class=list-row><div class=list-meta><b>{esc(r['kind'])}</b> {esc(r['action'] or '')} {esc(r['target'] or '')}"
+                f"<small>{esc(usertime.fmt(sess['user_id'], r['ts'], '%b %d, %H:%M:%S'))}{'' if r['ok'] else ' · failed'} {esc(r['detail'] or '')}</small></div></div>"
+                for r in infra.recent_log(12, key)) or "<p class=muted>nothing yet</p>"
+            steps = "".join(
+                f"<h4 style='margin:.8rem 0 .2rem'>{esc(s['title'])}</h4><p class=muted>{esc(s['text'])}</p>"
+                + (f"<pre style='white-space:pre-wrap;user-select:all;overflow-x:auto'>{esc(s['code'])}</pre>" if s.get("code") else "")
+                for s in spec.get("setup", []))
+            guide = (f"<details{'' if infra.configured(ws, key) else ' open'} style='margin:.6rem 0'><summary><b>how to set this up</b></summary>{steps}</details>"
+                     if steps else "")
+            sections.append(
+                f"<div class=section><h2>{esc(spec['label'])} <span class='chip{' active' if on else ''}'>{'ON' if on else 'off'}</span></h2>"
+                f"<p class=muted>{esc(spec['help'])}</p>" + guide +
+                f"<form method=post action='/admin/infra/{esc(key)}/credentials'><input type=hidden name=csrf value='{csrf}'>" + "".join(fields) +
+                "<button class='btn btn-primary'>save credentials</button></form>"
+                f"<form method=post action='/admin/infra/{esc(key)}/test' style='display:inline'><input type=hidden name=csrf value='{csrf}'>"
+                "<button class=btn>test the connection</button></form> "
+                f"<form method=post action='/admin/infra/{esc(key)}/switch' style='display:inline'><input type=hidden name=csrf value='{csrf}'>"
+                + (f"<button class=btn name=on value=0>switch off</button>" if on else "<button class='btn btn-primary' name=on value=1>switch on</button>") + "</form> "
+                + (f"<form method=post action='/admin/infra/{esc(key)}/clear' style='display:inline' data-confirm='Delete the saved credentials and switch it off?'>"
+                   f"<input type=hidden name=csrf value='{csrf}'><button class='btn btn-danger'>remove credentials</button></form>" if any(f['set'] for f in infra.credential_status(ws, key)) else "")
+                + "<h3 style='margin-top:1rem'>changes</h3>"
+                + (perm_rows or "<p class=muted>Read-only for now: there is nothing here that can change anything yet. When change actions are added, each one appears here, set to "
+                                "<b>ask me first</b>, and you can later let a trusted one run without asking.</p>")
+                + "<h3 style='margin-top:1rem'>recent use</h3>" + log + "</div>")
+        waiting = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(p['summary'])}</b><small>{esc(usertime.fmt(sess['user_id'], p['created_ts'], '%b %d, %H:%M'))} · {esc(p['service'])}</small></div></div>"
+            for p in infra.pending(ws))
+        body = (e + i +
+                "<div class=section><h2>infrastructure tools</h2>"
+                "<p class=muted>Let ⟦n⟧ work with your servers. <b>Everything here is off until you switch it on</b>, per service, and ⟦n⟧ cannot switch it on (it can switch it off). "
+                "Reading is free once a service is on; any change asks you first in the chat unless you have told it, here, that a particular kind of change may run by itself. "
+                "Credentials are stored encrypted and never shown again. Use accounts made just for this, with the fewest permissions that work.</p>"
+                + (f"<h3>waiting for your approval</h3>{waiting}<p class=muted>Approve or deny these in the chat.</p>" if waiting else "") + "</div>"
+                + "".join(sections))
+        return self._settings_response(sess, "infra", body)
+
+    def infra_admin_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        ws, uid = sess["workspace_id"], sess["user_id"]
+        parts = path[len("/admin/infra/"):].strip("/").split("/")
+        if len(parts) != 2 or parts[0] not in infra.SERVICES:
+            return self.not_found()
+        svc, action = parts
+        spec = infra.SERVICES[svc]
+        if action == "credentials":
+            ok, msg = infra.save_credentials(ws, svc, {f["key"]: form.get(f["key"], "") for f in spec["fields"]}, uid)
+            return self.infra_admin_form(sess, info=msg) if ok else self.infra_admin_form(sess, err=msg)
+        if action == "switch":
+            ok, msg = infra.set_enabled(ws, svc, form.get("on") == "1", uid)
+            return self.infra_admin_form(sess, info=msg) if ok else self.infra_admin_form(sess, err=msg)
+        if action == "test":
+            if not infra.configured(ws, svc):
+                return self.infra_admin_form(sess, err="enter the credentials first")
+            res = spec["test"](ws) if spec.get("test") else {"ok": False, "detail": "no test for this service"}
+            infra.log(ws, uid, svc, "test", "connection", None, res["ok"], res["detail"])
+            return self.infra_admin_form(sess, info=res["detail"]) if res["ok"] else self.infra_admin_form(sess, err=res["detail"])
+        if action == "policy":
+            ok, msg = infra.set_policy(ws, form.get("permission", ""), form.get("policy", ""), uid)
+            return self.infra_admin_form(sess, info=msg) if ok else self.infra_admin_form(sess, err=msg)
+        if action == "clear":
+            infra.clear_credentials(ws, svc, uid)
+            return self.infra_admin_form(sess, info="credentials removed and the tools are off")
+        return self.not_found()
+
     # -- the debug endpoint (debug_api.py) --
     def debug_get(self, path: str, qs: str):
         """GET /debug[/<section>]: read-only diagnostics for the developer, behind a bearer token. While it is off it is indistinguishable from a path
@@ -9207,7 +9325,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
                                                ("backups", "Backups"), ("health", "Integration health"),
-                                               ("debug", "Debug endpoint"))))
+                                               ("infra", "Infrastructure"), ("debug", "Debug endpoint"))))
         else:
             groups.append(("Connections", (("peers", "Peer connections"),)))
         return groups
@@ -9382,7 +9500,7 @@ class Handler(BaseHTTPRequestHandler):
             # state, one page covering every domain (task/note/reminder)
             # rather than a separate admin page per item type.
             return self.categories_admin_form(sess, err=err, info=info)
-        admin_pages = {"debug": self.debug_admin_form, "subagents": self.subagents_admin_form, "mcp": self.mcp_admin_form,
+        admin_pages = {"infra": self.infra_admin_form, "debug": self.debug_admin_form, "subagents": self.subagents_admin_form, "mcp": self.mcp_admin_form,
                        "tools": self.tools_admin_form, "models": self.models_admin_form,
                        "avatars": self.avatars_admin_page, "webtools": self.webtools_admin_form,
                        "homeassistant": self.homeassistant_admin_form,

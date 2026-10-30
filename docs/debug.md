@@ -52,6 +52,7 @@ NORI_DEBUG_TOKEN=... NORI_DEBUG_AGENTS="nori=https://a,iron=https://b" python sc
 | `settings` | every non-secret setting, workspace and per user, flagged where it differs from the default; the safe environment values |
 | `peers` | each PACI peer's configuration and health, its recent messages **with the screening result of each** (so "could not be screened" and "screened and flagged" can be told apart), compulsion log |
 | `memory` | counts by type, recent items, memory events |
+| `infra` | infrastructure tools ([docs](infra.md)): which services are on, which credential fields are *set* (never values), change policies, pending approvals, the audit log |
 | `jobs`, `schedules`, `pings`, `tools`, `db` | sub-agent jobs and roster; schedules and their runs; proactive-ping signals, their state and recent unprompted messages; the tool registry; row counts per table |
 
 The log ring (`logbuf.py`) is a copy of what the server prints, kept in memory only and lost on restart; nothing about the logging itself changes.

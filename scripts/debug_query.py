@@ -39,6 +39,11 @@ def ask(base: str, section: str, params: dict, token: str, timeout: float) -> tu
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):                       # conversations contain any character; a Windows console would choke on some
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--agent", action="append", default=[], metavar="NAME=URL", help="an agent to ask (repeatable); default: NORI_DEBUG_AGENTS")
     ap.add_argument("--token-env", default="NORI_DEBUG_TOKEN", help="the environment variable holding the token")

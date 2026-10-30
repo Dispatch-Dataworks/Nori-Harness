@@ -475,6 +475,19 @@ def tools_section(params: dict) -> dict:
     return {"count": len(rows), "tools": rows}
 
 
+def infra_section(params: dict) -> dict:
+    """Infrastructure tools (infra.py): which services are on, which credential fields are SET (never their values), the change policies, what is waiting for
+    approval, and the audit log."""
+    import infra
+    import infra_proxmox  # noqa: F401
+    ws = _ws()
+    return {"services": {k: {"label": s["label"], "switch_on": bool(config.get("workspace", ws, infra.switch_key(k))), "enabled": infra.enabled(k, ws),
+                             "fields_set": [{"field": f["key"], "set": f["set"]} for f in infra.credential_status(ws, k)]} for k, s in infra.SERVICES.items()},
+            "policies": infra.policies(ws), "pending": infra.pending(ws),
+            "recent_pending_requests": _rows("SELECT id, user_id, service, action, summary, status, created_ts, resolved_ts, error FROM infra_pending ORDER BY id DESC LIMIT 20"),
+            "log": infra.recent_log(int(params.get("limit", 80) or 80))}
+
+
 def db(params: dict) -> dict:
     names = [r["name"] for r in _rows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
     counts = {}
@@ -498,6 +511,7 @@ SECTIONS = {
     "schedules": (schedules_section, "schedules and recent runs"),
     "pings": (pings, "proactive ping signals, their state, recent unprompted messages"),
     "tools": (tools_section, "the tool registry"),
+    "infra": (infra_section, "infrastructure tools: which are on, credential fields set (never values), change policies, pending approvals, audit log"),
     "db": (db, "row counts per table"),
 }
 

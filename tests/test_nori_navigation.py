@@ -96,6 +96,8 @@ def handler(role="admin"):
                scheduler=SimpleNamespace(signal_registry=lambda: []),
                # every optional feature is on in this harness (the switches have their own test file, test_nori_features.py)
                debug_api=SimpleNamespace(is_enabled=lambda ws: False),
+               infra=SimpleNamespace(SERVICES={}, PERMISSIONS={}, policies=lambda ws: {}, pending=lambda ws=None: [], recent_log=lambda *a, **k: [],
+                                     credential_status=lambda ws, k: [], enabled=lambda *a, **k: False),
                features=SimpleNamespace(enabled=lambda uid, key: True, label=lambda key: key, registry=lambda: [],
                                         feature_for_path=lambda path: None),
                persona_admin=SimpleNamespace(render=lambda *a, **k: "<p>persona tab</p>", ACTIONS=()),
@@ -164,7 +166,7 @@ def handler(role="admin"):
         "memory_backend_migrate_post", "memory_backend_categories_post", "memory_backend_category_post",
         "memory_backend_broad_post", "sandbox_admin_form", "sandbox_enabled_post", "updates_admin_form", "updates_post", "computeruse_admin_form", "computeruse_post",
         "context_admin_form", "persona_admin_form", "persona_admin_post", "persona_preview_get", "context_preview_get", "context_admin_action", "context_admin_post", "media_admin_form", "backups_admin_form", "integration_health_admin_form",
-        "_diagnostics_html", "debug_admin_form", "_peer_invites_html", "_peer_messages_panel", "_fmt_peer_ts", "_peer_msg_preview", "peers_approval_post"}]
+        "_diagnostics_html", "debug_admin_form", "infra_admin_form", "_peer_invites_html", "_peer_messages_panel", "_fmt_peer_ts", "_peer_msg_preview", "peers_approval_post"}]
     exec(compile(ast.Module(body=[cls], type_ignores=[]), "server.py", "exec"), env)
     instance = env["Handler"]()
     instance.headers = {"Host": "nori.example.com"}

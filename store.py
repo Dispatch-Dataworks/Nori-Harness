@@ -1745,6 +1745,53 @@ CREATE INDEX IF NOT EXISTS ix_tuning_history_ws ON tuning_history(workspace_id, 
 CREATE TRIGGER IF NOT EXISTS trg_tuning_history_noupdate BEFORE UPDATE ON tuning_history
 BEGIN SELECT RAISE(ABORT, 'tuning history is append-only'); END;
 
+-- Infrastructure tools (2026-10-30, see infra.py): credentials for the services Iron may be given (encrypted JSON, never returned by anything),
+-- what each kind of CHANGE is allowed to do (ask / auto / deny; absent = ask), the changes waiting for the owner's approval, and a log of every use.
+CREATE TABLE IF NOT EXISTS infra_credentials (
+    workspace_id INTEGER NOT NULL,
+    service      TEXT NOT NULL,
+    data_enc     TEXT NOT NULL,
+    updated_ts   REAL NOT NULL,
+    updated_by   INTEGER,
+    PRIMARY KEY (workspace_id, service)
+);
+CREATE TABLE IF NOT EXISTS infra_policies (
+    workspace_id INTEGER NOT NULL,
+    permission   TEXT NOT NULL,
+    policy       TEXT NOT NULL,
+    updated_ts   REAL NOT NULL,
+    PRIMARY KEY (workspace_id, permission)
+);
+CREATE TABLE IF NOT EXISTS infra_pending (
+    id           INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    service      TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    permission   TEXT NOT NULL,
+    args_json    TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    message_id   INTEGER,
+    created_ts   REAL NOT NULL,
+    resolved_ts  REAL,
+    result_json  TEXT,
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_infra_pending_status ON infra_pending(status, id);
+CREATE TABLE IF NOT EXISTS infra_log (
+    id           INTEGER PRIMARY KEY,
+    ts           REAL NOT NULL,
+    workspace_id INTEGER,
+    user_id      INTEGER,
+    service      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    action       TEXT,
+    target       TEXT,
+    ok           INTEGER NOT NULL,
+    detail       TEXT
+);
+
 -- Every request to the debug endpoint (2026-10-30, see debug_api.py), answered or refused: when, from where, which path, and how it ended. The last 1000 kept.
 CREATE TABLE IF NOT EXISTS debug_access_log (
     id     INTEGER PRIMARY KEY,
