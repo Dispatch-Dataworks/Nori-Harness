@@ -603,6 +603,11 @@ def _maybe_check_updates() -> None:
         updates.maybe_check()
     except Exception as exc:  # noqa: BLE001
         print(f"update check raised: {exc}", flush=True)
+    try:
+        import app_fetch   # the Android app attached to the newest release, offered to paired phones (own switch)
+        app_fetch.maybe_fetch()
+    except Exception as exc:  # noqa: BLE001
+        print(f"app fetch raised: {exc}", flush=True)
 
 
 def _maybe_run_integration_health() -> None:

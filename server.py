@@ -133,6 +133,7 @@ def load_env(path: Path) -> None:
 load_env(ENV_PATH)
 
 import accounts
+import app_fetch
 import avatar_builder
 import capabilities
 import chat
@@ -5787,6 +5788,16 @@ class Handler(BaseHTTPRequestHandler):
             actions = ""
         if st["error"]:
             headline += f"<p class=err>The last check failed: {esc(st['error'])}</p>"
+        app = app_fetch.status(sess["workspace_id"])
+        last = app["last"]
+        app_line = (f"<p class=muted>Android app: this server offers <b>{esc(app['offered'])}</b>" if app["offered"]
+                    else "<p class=muted>Android app: this server has no app to offer yet")
+        app_line += f"; the newest release has <b>{esc(app['newest'])}</b>." if app["newest"] else "; no release has one attached."
+        if last and last.get("ts"):
+            when = usertime.fmt(sess["user_id"], last["ts"], "%b %d, %H:%M")
+            app_line += (f" Last fetch {esc(when)}: " + (f"got {esc(last.get('version', ''))}." if last.get("ok")
+                         else f"<span class=err>failed ({esc(last.get('error', ''))})</span> -- tries again later, or press fetch now."))
+        app_line += "</p>"
         controls = (
             "<div class=section><h2>checking for updates</h2>"
             "<p class=muted>Once a day Nori asks GitHub whether a newer <b>release</b> exists (a tagged version, never every code push). "
@@ -5798,8 +5809,16 @@ class Handler(BaseHTTPRequestHandler):
                    "<div class=field><label><input type=checkbox name=update_include_prereleases"
                    f"{' checked' if st['include_prereleases'] else ''}> include pre-releases (beta) "
                    + info_tip("Nori is in beta, so its releases are marked pre-release. Turn this off to hear only about final releases.")
+                   + "</label></div>"
+                   "<div class=field><label><input type=checkbox name=phone_app_auto_fetch"
+                   f"{' checked' if app['auto'] else ''}> also fetch the Android app from new releases "
+                   + info_tip("When a release has a newer Android app attached, this server downloads it from GitHub (only from this project's release, checked "
+                              "against GitHub's checksum) and offers it to paired phones. Phones still ask before installing, and Android only accepts an update "
+                              "signed with the same key as the installed app.")
                    + "</label></div><button class='btn btn-primary'>save</button></form> ")
-            + post("check", "<button class='btn'>check now</button></form> ") + actions + "</div>")
+            + post("check", "<button class='btn'>check now</button></form> ") + actions + "</div>"
+            + "<div class=section><h2>phone app</h2>" + app_line
+            + post("appfetch", "<button class='btn'>fetch the app now</button></form>") + "</div>")
         intro = "<div class=section><h2>updates</h2>" + headline + "</div>"
         self._settings_response(sess, "updates", e + i + intro + how + controls)
 
@@ -5811,7 +5830,11 @@ class Handler(BaseHTTPRequestHandler):
         if action == "settings":
             config.set("workspace", wsid, "update_check_enabled", "update_check_enabled" in form)
             config.set("workspace", wsid, "update_include_prereleases", "update_include_prereleases" in form)
+            config.set("workspace", wsid, "phone_app_auto_fetch", "phone_app_auto_fetch" in form)
             return self.updates_admin_form(sess, info="saved")
+        if action == "appfetch":
+            res = app_fetch.fetch_now(wsid)
+            return self.updates_admin_form(sess, info=res["message"]) if res["ok"] else self.updates_admin_form(sess, err=res["message"])
         if action == "check":
             res = updates.check()
             if not res["ok"]:
@@ -8579,7 +8602,8 @@ class Handler(BaseHTTPRequestHandler):
         apk = devices.app_info()
         apk_line = (f"<p class=muted>App version on this server: <b>{esc(apk['latest'])}</b> -- "
                     f"<a href='/settings/devices/app.apk?v={esc(apk['latest'])}'>download the APK</a> (open this page on the phone).</p>"
-                    if apk else "<p class=muted>No app has been uploaded to this server yet (<code>build.ps1 -Upload</code>).</p>")
+                    if apk else "<p class=muted>No app on this server yet: it is fetched from the next release check (Settings → Updates, <b>fetch the app now</b>), "
+                         "or put there with <code>build.ps1 -Upload</code>.</p>")
         phone_switches = (
             chk("phone_notifications_enabled", "send me notifications on my phone")
             + chk("phone_notify_replies", "…including ⟦n⟧'s chat replies", "Off: only reminders, pings, job results and approvals.")

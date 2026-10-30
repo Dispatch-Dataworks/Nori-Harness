@@ -234,7 +234,8 @@ tools below), `bridge.py` (commands now carry a `target` of browser or phone; th
   is screened first, and a flagged or un-screenable share says so in the message.
 - Ask-about-this-page: the page text goes to **that turn only**, as an untrusted extra message; the chat history keeps just
   the question (tagged `source: side_panel`) and her answer.
-- The APK: `data/phone_app/nori-companion.apk` + `version.txt` (`android_app/build.ps1 -Upload` puts them there). The phone
+- The APK: `data/phone_app/nori-companion.apk` + `version.txt`. The server fetches them itself from the newest GitHub release that has an app attached
+  (`app_fetch.py`, below); `android_app/build.ps1 -Upload` still puts a local build there by hand. The phone
   updates from `GET /device/app.apk` with its token; the first install is `GET /settings/devices/app.apk` from the phone's
   browser while logged in.
 - The app's widgets open the chat at `/?prefill=<text>`: the composer is filled in (capped at 500 characters), never sent.

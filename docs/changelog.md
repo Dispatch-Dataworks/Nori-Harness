@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-29 — servers fetch the Android app from the release themselves
+
+A phone updates its app from the server it is paired with, and a server only had an app to offer if someone copied one into it by hand, so a server updated to a release still had nothing to give the phone even though the release carried the APK. Now when the daily update check sees a release with a newer `nori-companion-<version>.apk`, the server downloads it (GitHub only, the size and SHA-256 GitHub published, and a structure check) and offers it to paired phones, with a switch and a *fetch the app now* button under Settings -> Updates. See [Updates](updates.md#the-android-app-comes-with-it).
+
 ## 2026-10-29 — the icon follows the avatars
 
 The browser-tab favicon, the home-screen / installed-app icon and the notification icon were fixed files made from the default Nori avatar, so an instance with its own avatars (Iron's) still showed Nori's icon. They are now drawn from the installed neutral avatar (the avatar builder's untouched original when there is one), cropped square and resized to each size, and revalidated on every use; the icon links and manifest carry a version that changes with the avatar, so a browser that cached the old favicon fetches the new one. With no usable neutral avatar the shipped icons are served as before. An installed PWA may keep its old home-screen icon until it is reinstalled, or until the OS refreshes it from the manifest.

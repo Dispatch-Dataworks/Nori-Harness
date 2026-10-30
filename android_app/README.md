@@ -26,7 +26,7 @@ Or by hand (after pointing `JAVA_HOME`, `ANDROID_HOME`, `GRADLE_USER_HOME` at th
 
 The release APK is signed with the **debug key** (`~/.android/debug.keystore`) on purpose: a personal sideload that updates in place without a keystore to look after. Keep that file; Android only updates in place when the signature matches and `versionCode` goes up. **Bump `version.properties` (`versionName`, `versionCode`) for every build you install.**
 
-Releases attach the APK automatically: `scriptselease.ps1` (see `docs/updates.md`) builds it and publishes it as `nori-companion-<versionName>.apk` on the GitHub release.
+Releases attach the APK automatically: `scripts\release.ps1` (see `docs/updates.md`) builds it and publishes it as `nori-companion-<versionName>.apk` on the GitHub release.
 
 `-Upload` copies the APK to `/app/data/phone_app/nori-companion.apk` and the version string to `/app/data/phone_app/version.txt` in the `nori` container. The server's `GET /device/app.apk` serves that file and `app.latest` in the poll answer carries `version.txt`.
 
@@ -53,7 +53,7 @@ One phone can be paired with up to four Nori servers at once. Each is a **connec
 
 **Notifications:** a notification opens the tab it came from, and Approve / Deny go to the server that asked. The notification channels are shared (their title already carries the assistant's name). Only the tab in front counts as "the chat is open" for that server; the other server keeps sending notifications.
 
-**Updates:** the app offers the newest version any connection has, downloaded from that server. `build.ps1 -Upload` copies the APK into the `nori` container only: put the same APK and `version.txt` on each server you want to update from.
+**Updates:** the app offers the newest version any connection has, downloaded from that server. A server gets the app by itself: when its daily update check sees a release with a newer `nori-companion-<version>.apk` attached, it downloads it (Settings -> Updates -> *phone app*; the switch is on by default, and *fetch the app now* does it on the spot). `build.ps1 -Upload` copies a local build into the `nori` container only, for testing a build that is not released.
 
 An existing pairing is the first connection and carries over with no steps (it keeps its old storage names). A phone that already has its connections keeps them across updates.
 

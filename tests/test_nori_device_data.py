@@ -804,7 +804,7 @@ class DevicesPage(unittest.TestCase):
         page = self._form()
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("recent device activity", page)
-        self.assertIn("No app has been uploaded", page)
+        self.assertIn("No app on this server yet", page)
 
     # ── one tab for everything (2026-10-21): Computer use is a SECTION of Devices, not a second tab ──────────────
     def test_computer_use_is_a_section_of_the_devices_page_for_admins_only(self):

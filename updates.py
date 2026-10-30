@@ -9,7 +9,8 @@
 """"A newer Nori is available" (2026-10-26).
 
 Anyone can self-host this, so a fix pushed to GitHub has to reach them: once a day Nori asks GitHub's releases API whether a release newer than the
-one running exists, and shows the admin a chip in the header and an Updates tab (release notes + the exact commands). That is ALL it does.
+one running exists, and shows the admin a chip in the header and an Updates tab (release notes + the exact commands). That is ALL it does to Nori itself; the one other thing
+it feeds is app_fetch.py, which downloads the Android app attached to a release so paired phones can update (a file for phones, never Nori's own code).
 
   * It never changes its own code, never restarts itself, never touches git or the Docker socket. Updating is a person running two commands
     (docs/updates.md). There is no remote-code path in this feature, by design.
@@ -44,6 +45,9 @@ HTTP_TIMEOUT_S = 10
 MAX_BODY_BYTES = 1_000_000
 NOTES_CAP = 4000
 KEEP_RELEASES = 10
+# The Android app is attached to a release as nori-companion-<versionName>.apk (scripts/release.ps1); app_fetch.py offers it to paired phones.
+APK_ASSET_RE = re.compile(r"^nori-companion-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.apk$")
+MAX_APK_BYTES = 60 * 1024 * 1024
 
 
 def repo() -> str:
@@ -124,8 +128,26 @@ def _clean_releases(raw) -> list[dict]:
         url = r.get("html_url") if isinstance(r.get("html_url"), str) else ""
         out.append({"tag": tag[:40], "name": str(r.get("name") or tag)[:120], "prerelease": bool(r.get("prerelease")),
                     "url": url if url.startswith(base) else "", "published": str(r.get("published_at") or "")[:20],
-                    "notes": str(r.get("body") or "")[:NOTES_CAP]})
+                    "notes": str(r.get("body") or "")[:NOTES_CAP], "assets": _clean_assets(r.get("assets"), tag)})
     return out[:KEEP_RELEASES]
+
+
+def _clean_assets(raw, tag: str) -> list[dict]:
+    """Only the app's APK, and only if it really is this release's own download on github.com/<repo> (the name, the URL and a sane size are all
+    checked here, so what is stored can be trusted to name a download app_fetch.py is willing to make)."""
+    out = []
+    prefix = f"https://github.com/{repo()}/releases/download/{tag}/"
+    for a in raw if isinstance(raw, list) else []:
+        if not isinstance(a, dict):
+            continue
+        name, url, size = a.get("name"), a.get("browser_download_url"), a.get("size")
+        if not (isinstance(name, str) and APK_ASSET_RE.match(name) and isinstance(url, str) and url == prefix + name):
+            continue
+        if not (isinstance(size, int) and 0 < size <= MAX_APK_BYTES):
+            continue
+        digest = a.get("digest") if isinstance(a.get("digest"), str) and re.fullmatch(r"sha256:[0-9a-f]{64}", a.get("digest")) else ""
+        out.append({"name": name, "url": url, "size": size, "digest": digest})
+    return out
 
 
 # ── asking GitHub ─────────────────────────────────────────────────────────
@@ -150,8 +172,10 @@ def check() -> dict:
     """Ask GitHub now. Never raises: the outcome (new list, unchanged, or the error) is recorded and returned as status fields."""
     now = time.time()
     cur = _row()
+    # A list stored before releases carried their assets has nothing for app_fetch to look at: ask again unconditionally, not for a 304.
+    stale = any("assets" not in r for r in cur["releases"])
     try:
-        status, etag, data = _fetch(cur.get("etag") or "")
+        status, etag, data = _fetch("" if stale else (cur.get("etag") or ""))
     except (OSError, ValueError) as exc:
         msg = (str(exc) or exc.__class__.__name__)[:200]
         _save(checked_ts=now, next_check_ts=now + RETRY_AFTER_ERROR_S, error=msg)
@@ -175,7 +199,8 @@ def maybe_check() -> bool:
     """The scheduler's hook: ask GitHub when it's due AND at least one workspace has the check on. True if a request was made."""
     if not any(enabled(w) for w in _workspace_ids()):
         return False
-    if time.time() < _row().get("next_check_ts", 0.0):
+    row = _row()
+    if time.time() < row.get("next_check_ts", 0.0) and not any("assets" not in r for r in row["releases"]):
         return False
     check()
     return True

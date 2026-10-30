@@ -256,6 +256,7 @@ _SPEC: dict[str, tuple] = {
     # project is in beta. update_dismissed_version remembers the release the admin chose to skip.
     "update_check_enabled": (True, bool, "workspace", False, "check GitHub once a day for a newer Nori release"),
     "update_include_prereleases": (True, bool, "workspace", False, "include pre-releases (beta) when checking for updates"),
+    "phone_app_auto_fetch": (True, bool, "workspace", False, "fetch the Android app from new releases so paired phones are offered it"),
     "update_dismissed_version": ("", str, "workspace", False, "the release the admin chose to skip"),
     # Which sites she may touch (2026-10-21): "deny_default" = only the sites on the allow list; "allow_default" =
     # any site except those on the block list. The operator's hidden hosts and private windows stay off limits in both.
