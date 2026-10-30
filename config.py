@@ -49,11 +49,21 @@ Each entry is (default, type, scope, secret, label):
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import store
 
 PRONOUNS = ("she/her", "he/him", "they/them", "it/its")
+
+def _env_int(name: str, default: int) -> int:
+    """An integer from the environment, or `default` if it is unset or not a whole number inside the bounds a reply limit can take."""
+    try:
+        v = int((os.environ.get(name) or "").strip())
+    except ValueError:
+        return default
+    return v if 256 <= v <= 32000 else default
+
 
 _SPEC: dict[str, tuple] = {
     # Single source of truth for "what timezone is he in" (2026-09-18,
@@ -103,6 +113,10 @@ _SPEC: dict[str, tuple] = {
     # (name only, never arguments or results). See conversation.py's
     # include_tool param and chat.py's run() for where this is read.
     "show_tool_calls": (True, bool, "user", False, "show tool-call lines in chat"),
+    # The most a single model reply may be (2026-10-30). It was a hard-coded 1024 that nothing reported hitting: a longer reply was stored cut off,
+    # mid-sentence, as if finished (and a thinking model's reasoning counts against it too). 4096 by default; NORI_MAX_TOKENS in the environment
+    # still sets that default for an instance that had one; the admin changes it in Settings -> Model config. It is a ceiling, not a target.
+    "max_reply_tokens": (_env_int("NORI_MAX_TOKENS", 4096), int, "workspace", False, "longest a model reply may be (tokens)"),
     # Off by default (2026-10-30, operator's own ask): the full-portrait avatar that used to cover the phone chat for a few seconds every time her
     # expression changed. Tapping the avatar in the header still opens it on demand; this only governs the automatic pop-up.
     "avatar_popup_enabled": (False, bool, "user", False, "pop the full-screen avatar up when her expression changes"),
@@ -449,6 +463,7 @@ def get(scope: str, scope_id: int, key: str):
 
 
 _CONTEXT_BOUNDS = {
+    "max_reply_tokens": (256, 32000),
     "context_window_msgs": (1, 200), "compaction_max_segments": (0, 30),
     "compaction_budget_tokens": (0, 3000), "compaction_session_gap_hours": (0.25, 24),
     "peer_recent_cap": (1, 20), "peer_recent_window_hours": (0, 72),

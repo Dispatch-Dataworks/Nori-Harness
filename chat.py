@@ -38,7 +38,7 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # later needs no other code change. Operator overrides via NORI_MODEL in
 # their own .env.
 DEFAULT_MODEL = os.environ.get("NORI_MODEL", "x-ai/grok-4.3")
-DEFAULT_MAX_TOKENS = int(os.environ.get("NORI_MAX_TOKENS", "1024"))
+DEFAULT_MAX_TOKENS = config.spec()["max_reply_tokens"][0]   # 4096, or NORI_MAX_TOKENS; the live value is the workspace setting (run() passes it)
 DEFAULT_TEMPERATURE = float(os.environ.get("NORI_TEMPERATURE", "0.8"))
 MAX_TOOL_ROUNDS = int(os.environ.get("NORI_MAX_TOOL_ROUNDS", "4"))
 # 300s, deliberately (2026-09-25, replacing the old 120 -- inherited, never chosen, and proven not to bind
@@ -1559,6 +1559,25 @@ def call_for_model(entry: dict, messages: list[dict], **kw) -> dict:
     return caller(entry, _settle_tool_results(messages), **kw)
 
 
+# The provider reports why it stopped; these mean "it ran into the reply limit", under each API's own name (OpenAI/OpenRouter "length", Anthropic
+# "max_tokens", the Responses API's status "incomplete").
+_CUT_OFF_REASONS = ("length", "max_tokens", "max_output_tokens", "incomplete")
+
+
+def cut_off(result: dict) -> bool:
+    """Did the model stop because it hit the reply limit, rather than because it finished?"""
+    return str((result or {}).get("finish_reason") or "").strip().lower() in _CUT_OFF_REASONS
+
+
+def cut_off_note(limit: int, text: str) -> str:
+    """What to say about a reply that was cut off: appended to what there is of it, or all there is when the limit was used up before any
+    visible words (a thinking model's reasoning counts toward the limit too)."""
+    advice = 'raise "max reply length" in Settings → Model config'
+    if text:
+        return f"{text}\n\n(reply cut off at the {limit}-token limit -- {advice} if this keeps happening)"
+    return f"(the model used its whole {limit}-token reply limit before saying anything -- {advice})"
+
+
 def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
     """The primary-then-fallback loop: try this workspace's primary model,
     then each fallback in order, on ModelError -- generalizes the old
@@ -1597,6 +1616,8 @@ def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
             "request_id": result.get("request_id"),
             "reasoning": result.get("reasoning"),
             "latency_ms": round((time.time() - started) * 1000),
+            "finish_reason": result.get("finish_reason"),
+            "cut_off": cut_off(result),
             "failed_attempts": failed,
         }
         return result
@@ -1710,7 +1731,9 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         elif not cost_unavailable:
             usage["cost"] += c
 
-    def _finish(text: str, *, hit_round_limit: bool = False) -> dict:
+    reply_limit = config.get("workspace", workspace_id, "max_reply_tokens")
+
+    def _finish(text: str, *, hit_round_limit: bool = False, was_cut_off: bool = False) -> dict:
         # hit_round_limit (2026-09-19, real gap found investigating why
         # a sibling application's peer-motivated turns sometimes produce no reply): a
         # turn that exhausts `rounds` without ever returning plain text
@@ -1722,26 +1745,33 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         # peers._run_prompted_turn's own new logging for where this is
         # read and made durable.
         # An app aside she copied into her reply (see own_output.strip_aside) never reaches the chat or the record.
-        text = own_output.strip_aside(text) or "(no reply — the model returned nothing)"
+        text = own_output.strip_aside(text) or ("" if was_cut_off else "(no reply — the model returned nothing)")
+        if was_cut_off:
+            # Said, not silent (2026-10-30): a reply that ran into the limit used to be stored cut off mid-sentence as if it were whole.
+            text = cut_off_note(reply_limit, "" if text.startswith("(no reply") else text)
         return {"text": text, "usage": {**usage, "cost": None if cost_unavailable else usage["cost"]},
                "hit_round_limit": hit_round_limit, "dispatch_meta": last_dispatch_meta,
-               "tool_calls": list(tool_call_log)}
+               "tool_calls": list(tool_call_log), "cut_off": was_cut_off}
 
     for rnd in range(1, rounds + 1):
         with t.stage("model_call", round=rnd):
-            result = call_via_chain(messages, workspace_id, tools=schemas or None)
+            result = call_via_chain(messages, workspace_id, tools=schemas or None, max_tokens=reply_limit)
         last_dispatch_meta = result.get("_dispatch_meta")
         _add_usage(result.get("usage") or {})
         calls = result.get("tool_calls") or []
+        if cut_off(result):
+            print(f"chat.run round {rnd}: REPLY CUT OFF at the {reply_limit}-token limit "
+                  f"(finish_reason={result.get('finish_reason')!r}, model={model_slug or DEFAULT_MODEL!r}, "
+                  f"{'a tool call was in progress' if calls else 'text'})", flush=True)
         if not calls:
             text = (result.get("content") or "").strip()
             leak = _detect_leaked_call(text, leak_re)
             if not leak:
-                return _finish(text or "(no reply — the model returned nothing)")
+                return _finish(text or "(no reply — the model returned nothing)", was_cut_off=cut_off(result))
             print(f"chat.run round {rnd}: LEAKED TOOL CALL detected -- matched={leak!r} -- retrying once",
                  flush=True)
             with t.stage("model_call", round=rnd, retry="leak"):
-                retry = call_via_chain(messages + [_LEAK_NUDGE], workspace_id, tools=schemas or None)
+                retry = call_via_chain(messages + [_LEAK_NUDGE], workspace_id, tools=schemas or None, max_tokens=reply_limit)
             last_dispatch_meta = retry.get("_dispatch_meta")
             _add_usage(retry.get("usage") or {})
             retry_calls = retry.get("tool_calls") or []
@@ -1758,7 +1788,7 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
                          f"failing loudly, not delivering the text", flush=True)
                     return _finish(_LEAK_FAILURE_TEXT)
                 print(f"chat.run round {rnd}: retry recovered with clean text", flush=True)
-                return _finish(retry_text or "(no reply — the model returned nothing)")
+                return _finish(retry_text or "(no reply — the model returned nothing)", was_cut_off=cut_off(retry))
         messages.append({"role": "assistant", "content": result["content"] or None, "tool_calls": calls})
         round_notes: list[str] = []          # a note must not land between two results of the same round (see _settle_tool_results)
         for tc in calls:

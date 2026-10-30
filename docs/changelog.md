@@ -2,6 +2,13 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-30 — replies were being cut off at 1024 tokens, silently
+
+Every reply was limited to a hard-coded 1024 tokens (about 700 words, less for a model that thinks first, since its thinking counts too), and a reply that ran into that was saved cut off, mid-sentence, as if it were finished. Nothing read the provider's "I stopped because of length". Now:
+
+- the default is **4096**, and it is a setting: Settings -> Model config -> **max reply length** (`max_reply_tokens`, 256-32000, per workspace, applied from the next turn). `NORI_MAX_TOKENS` in `.env` still sets the starting value for an instance that had one, but the saved setting wins;
+- a reply that hits the limit is **detected** (OpenAI/OpenRouter `length`, Anthropic `max_tokens`, the Responses API's `incomplete`), ends with *(reply cut off at the N-token limit -- raise "max reply length" in Settings -> Model config...)*, is logged (`REPLY CUT OFF at the N-token limit`, with the finish reason and model, also when it was a tool call that was cut), and is recorded in the message's debug details (`finish_reason`, `cut_off`). A thinking model that used the whole limit before saying anything gets its own message saying so, not "the model returned nothing".
+
 ## 2026-10-30 — the full-screen avatar pop-up is opt-in
 
 On a phone, a full-portrait avatar used to cover the chat for a few seconds every time the expression changed. That automatic pop-up is now a setting, **off by default**: Settings -> Chat & voice -> *pop the full-screen avatar up when her expression changes* (`avatar_popup_enabled`, per person). Tapping the avatar at the top of the chat still opens the portrait whenever you like, and the avatar in the header still changes live.

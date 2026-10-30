@@ -3372,6 +3372,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.models_create_post(sess, form)
         if path == "/admin/models/chain":
             return self.models_chain_post(sess, form)
+        if path == "/admin/models/reply-length":
+            return self.models_reply_length_post(sess, form)
         if path.startswith("/admin/models/"):
             parts = path.split("/")
             if len(parts) == 5 and parts[4] in ("toggle", "effort", "delete", "test"):
@@ -4817,7 +4819,35 @@ class Handler(BaseHTTPRequestHandler):
         e = f"<p class=err>{esc(err)}</p>" if err else ""
         i = f"<p class=info>{esc(info)}</p>" if info else ""
         sec = self._models_sections(sess, browse)
-        self._settings_response(sess, "models", f"{e}{i}{sec['providers']}{sec['browse']}{sec['models']}{sec['chain']}")
+        self._settings_response(sess, "models", f"{e}{i}{sec['providers']}{sec['browse']}{sec['models']}{sec['chain']}{self._reply_limit_section(sess)}")
+
+    def _reply_limit_section(self, sess: dict) -> str:
+        """Settings -> Model config: the longest a model's reply may be (max_reply_tokens)."""
+        lo, hi = config._CONTEXT_BOUNDS["max_reply_tokens"]
+        val = config.get("workspace", sess["workspace_id"], "max_reply_tokens")
+        return (
+            "<div class=section><h2>max reply length</h2>"
+            "<p class=muted>The most a single reply may run to, in tokens (about three-quarters of a word each, so 4096 is roughly 3000 words). "
+            "It is a ceiling, not a target: short answers stay short. A model that thinks before answering spends part of this on its thinking, so "
+            "give those more room. A reply that hits the limit is cut off, and now says so at its end; raise this if you see that.</p>"
+            "<form method=post action='/admin/models/reply-length'>"
+            f"<input type=hidden name=csrf value='{esc(sess['csrf'])}'>"
+            f"<div class=field><label>max reply length (tokens, {lo}-{hi})</label>"
+            f"<input type=number name=max_reply_tokens value='{val}' min='{lo}' max='{hi}' step=1></div>"
+            "<button class='btn btn-primary'>save</button></form></div>")
+
+    def models_reply_length_post(self, sess: dict, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        lo, hi = config._CONTEXT_BOUNDS["max_reply_tokens"]
+        try:
+            v = int((form.get("max_reply_tokens") or "").strip())
+        except ValueError:
+            return self.models_admin_form(sess, err="max reply length must be a whole number")
+        if not lo <= v <= hi:
+            return self.models_admin_form(sess, err=f"max reply length must be between {lo} and {hi}")
+        config.set("workspace", sess["workspace_id"], "max_reply_tokens", v)
+        return self.models_admin_form(sess, info="saved")
 
     def _models_sections(self, sess: dict, browse: dict | None = None) -> dict:
         """The four blocks of the model page as HTML -- providers, browse results, the model roster, the primary/fallback chain -- plus `catalogue`
