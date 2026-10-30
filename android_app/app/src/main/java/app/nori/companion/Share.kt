@@ -110,17 +110,17 @@ class ShareActivity : Activity() {
         val i = intent
         if (i?.action != Intent.ACTION_SEND) { finish(); return }
         val targets = ShareTarget.options(app)
-        if (targets.isEmpty()) { Toast.makeText(this, "Pair this phone with Nori first", Toast.LENGTH_LONG).show(); startActivity(Intent(this, SettingsActivity::class.java)); finish(); return }
-        if (Prefs.paused(app)) { Toast.makeText(this, "Nori is paused on this phone", Toast.LENGTH_LONG).show(); finish(); return }
-        if (!Prefs.ownerShare(app)) { Toast.makeText(this, "Sharing to Nori is switched off in the Nori app", Toast.LENGTH_LONG).show(); finish(); return }
+        if (targets.isEmpty()) { Toast.makeText(this, "Pair this phone with a Nori server first", Toast.LENGTH_LONG).show(); startActivity(Intent(this, SettingsActivity::class.java)); finish(); return }
+        if (Prefs.paused(app)) { Toast.makeText(this, "The app is paused on this phone", Toast.LENGTH_LONG).show(); finish(); return }
+        if (!Prefs.ownerShare(app)) { Toast.makeText(this, "Sharing is switched off in the app's settings", Toast.LENGTH_LONG).show(); finish(); return }
         val type = i.type ?: ""
         val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: ""
         val subject = i.getStringExtra(Intent.EXTRA_SUBJECT) ?: i.getStringExtra(Intent.EXTRA_TITLE) ?: ""
         val stream = IntentCompat.getParcelableExtra(i, Intent.EXTRA_STREAM, Uri::class.java)
         val isImage = type.startsWith("image/") && stream != null
-        if (!isImage && text.isBlank()) { Toast.makeText(this, "Nothing to send to Nori", Toast.LENGTH_SHORT).show(); finish(); return }
+        if (!isImage && text.isBlank()) { Toast.makeText(this, "Nothing to send", Toast.LENGTH_SHORT).show(); finish(); return }
 
-        val dests = listOf("chat" to "My chat with Nori", "note" to "A note", "task" to "A task")
+        val dests = listOf("chat" to "My chat", "note" to "A note", "task" to "A task")
         val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         dests.forEachIndexed { idx, d -> group.addView(RadioButton(this).apply { id = 1000 + idx; this.text = d.second; isChecked = idx == 0 }) }
         val note = EditText(this).apply { hint = "Add a note (optional)"; isSingleLine = false; maxLines = 3 }
@@ -132,13 +132,13 @@ class ShareActivity : Activity() {
             addView(preview); addView(group); addView(note, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
-        AlertDialog.Builder(this).setTitle("Send to Nori").setView(col)
+        AlertDialog.Builder(this).setTitle("Send to my assistant").setView(col)
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .setPositiveButton("Send") { _, _ ->
                 val dest = dests[(group.checkedRadioButtonId - 1000).coerceIn(0, dests.size - 1)].first
                 val noteText = note.text.toString()
                 val slot = ShareTarget.chosen(which, targets, targets.first())
-                val sentTo = if (which != null) " to ${Prefs.name(app, slot)}" else " to Nori"
+                val sentTo = if (which != null) " to ${Prefs.name(app, slot)}" else " to ${Prefs.agent(app, slot)}"
                 Thread {
                     val body = try {
                         if (isImage) PhotoShare.prepare(app, stream!!)?.let { ShareBody.image(it, text, dest, noteText) } else ShareBody.fromText(text, subject, dest, noteText)
@@ -160,8 +160,8 @@ class QuickTaskActivity : Activity() {
         super.onCreate(savedInstanceState)
         val app = applicationContext
         val targets = ShareTarget.options(app)
-        if (targets.isEmpty()) { Toast.makeText(this, "Pair this phone with Nori first", Toast.LENGTH_LONG).show(); startActivity(Intent(this, SettingsActivity::class.java)); finish(); return }
-        if (Prefs.paused(app)) { Toast.makeText(this, "Nori is paused on this phone", Toast.LENGTH_LONG).show(); finish(); return }
+        if (targets.isEmpty()) { Toast.makeText(this, "Pair this phone with a Nori server first", Toast.LENGTH_LONG).show(); startActivity(Intent(this, SettingsActivity::class.java)); finish(); return }
+        if (Prefs.paused(app)) { Toast.makeText(this, "The app is paused on this phone", Toast.LENGTH_LONG).show(); finish(); return }
         val input = EditText(this).apply { hint = "What needs doing?"; isSingleLine = true; setPadding(56, 32, 56, 16) }
         val which = ShareTarget.picker(this, targets)
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(56, 24, 56, 0); if (which != null) addView(which); addView(input) }

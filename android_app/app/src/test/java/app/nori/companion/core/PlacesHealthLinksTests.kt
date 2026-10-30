@@ -421,8 +421,8 @@ class ChannelsAndLogTest {
         assertNotEquals(Channels.notificationId(1), Channels.notificationId(2))
     }
 
-    @Test fun titleFallsBackToNori() {
-        assertEquals("Nori", Channels.titleFor(Message(1, "chat", "", "t", 0, null)))
+    @Test fun titleFallsBackToAGenericNameNotNori() {      // a server that sends no title: the app does not know the assistant's name here, and must not guess "Nori"
+        assertEquals("Assistant", Channels.titleFor(Message(1, "chat", "", "t", 0, null)))
         assertEquals("Hazel", Channels.titleFor(Message(1, "chat", "Hazel", "t", 0, null)))
     }
 

@@ -185,7 +185,7 @@ class SyncService : Service() {
                 }
                 PollAction.BACK_OFF_LONG -> Prefs.setStatus(c, slot, "Switched off on the server for now: trying again in a minute.")
                 PollAction.SLOW_DOWN -> Prefs.setStatus(c, slot, "The server asked to slow down.")
-                PollAction.RETRY -> Prefs.setStatus(c, slot, "Can't reach Nori: ${r.error}")
+                PollAction.RETRY -> Prefs.setStatus(c, slot, "Can't reach ${Prefs.agent(c, slot)}: ${r.error}")
             }
             return true
         }
@@ -235,10 +235,10 @@ class SyncService : Service() {
             }
             if (resp.messages.isNotEmpty()) {
                 Prefs.setInbox(c, slot, inbox.ackValue(), inbox.serializeSeen())      // remembered before anything else can go wrong
-                if (shown > 0) SentLog.add(c, "showed $shown notification${if (shown == 1) "" else "s"} from Nori${who(slot)}")
+                if (shown > 0) SentLog.add(c, "showed $shown notification${if (shown == 1) "" else "s"} from ${Prefs.agent(c, slot)}")
             }
             if (failed) {
-                Prefs.setStatus(c, slot, "Notifications are off for Nori: ${resp.messages.size} message(s) are waiting. Allow notifications in Android settings.")
+                Prefs.setStatus(c, slot, "Notifications are off for this app: ${resp.messages.size} message(s) are waiting. Allow notifications in Android settings.")
                 waitSignal(30_000)                                                  // not acknowledged, so the server will send them again once they can be shown
             }
             resp.command?.let { handleCommand(it) }
@@ -331,7 +331,7 @@ class SyncService : Service() {
             val r = Api.post(c, slot, "/device/events", outbox.body())
             if (!r.ok) { if (r.code != 403) SentLog.add(c, "place events not sent${who(slot)}: ${r.error}"); return }
             PlaceState.dropSent(c, slot, batch.size)
-            SentLog.add(c, "told Nori${who(slot)} about ${batch.size} place change${if (batch.size == 1) "" else "s"} (arrived/left only)")
+            SentLog.add(c, "told ${Prefs.agent(c, slot)} about ${batch.size} place change${if (batch.size == 1) "" else "s"} (arrived/left only)")
         }
     }
 

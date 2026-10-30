@@ -20,11 +20,12 @@ data class DeviceSettings(
     val healthMetrics: List<String> = emptyList(),
     val placesList: List<PlaceDef> = emptyList(),
     val actionsPerHour: Int = 30,
+    val assistantName: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("notifications", notifications).put("health", health).put("places", places).put("actions", actions).put("control", control).put("screen", screen)
         .put("quiet", quiet).put("hidden_apps", JSONArray(hiddenApps)).put("never_control_apps", JSONArray(neverControlApps))
-        .put("health_metrics", JSONArray(healthMetrics)).put("actions_per_hour", actionsPerHour)
+        .put("health_metrics", JSONArray(healthMetrics)).put("actions_per_hour", actionsPerHour).put("assistant_name", assistantName)
         .put("places_list", JSONArray(placesList.map { JSONObject().put("id", it.id).put("name", it.name).put("lat", it.lat).put("lon", it.lon).put("radius_m", it.radiusM).put("home", it.home) }))
 
     companion object {
@@ -58,6 +59,7 @@ data class DeviceSettings(
                 healthMetrics = strings("health_metrics").map { it.lowercase() },
                 placesList = places,
                 actionsPerHour = j.optInt("actions_per_hour", 30).coerceIn(0, 10_000),
+                assistantName = j.optString("assistant_name", "").trim().take(40),
             )
         }
 

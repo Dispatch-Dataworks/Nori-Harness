@@ -18,14 +18,14 @@ object Channels {
     class Spec(val id: String, val name: String, val description: String, val importance: Int)
 
     val ALL: List<Spec> = listOf(
-        Spec(CHAT, "Nori's replies", "Replies and messages from Nori when the app is not open", IMPORTANCE_HIGH),
-        Spec(REMINDER, "Reminders", "Reminders you asked Nori for", IMPORTANCE_HIGH),
-        Spec(APPROVAL, "Approvals", "When Nori needs your yes or no before doing something", IMPORTANCE_HIGH),
-        Spec(JOB, "Finished jobs", "When a background job Nori started is done", IMPORTANCE_DEFAULT),
+        Spec(CHAT, "Assistant replies", "Replies and messages from your assistant when the app is not open", IMPORTANCE_HIGH),
+        Spec(REMINDER, "Reminders", "Reminders you asked your assistant for", IMPORTANCE_HIGH),
+        Spec(APPROVAL, "Approvals", "When your assistant needs your yes or no before doing something", IMPORTANCE_HIGH),
+        Spec(JOB, "Finished jobs", "When a background job your assistant started is done", IMPORTANCE_DEFAULT),
         Spec(PEER, "Other assistants", "Messages from other household assistants", IMPORTANCE_LOW),
-        Spec(SYNC, "Connection", "The small ongoing notice that Nori is connected, with a pause button", IMPORTANCE_LOW),
+        Spec(SYNC, "Connection", "The small ongoing notice that your assistant is connected, with a pause button", IMPORTANCE_LOW),
         Spec(UPDATES, "App updates", "Tells you when a newer Nori app is ready to install", IMPORTANCE_DEFAULT),
-        Spec(WINDOWS, "Control and screen windows", "Counts down the time you opened for Nori to act on, or look at, this phone", IMPORTANCE_LOW),
+        Spec(WINDOWS, "Control and screen windows", "Counts down the time you opened for your assistant to act on, or look at, this phone", IMPORTANCE_LOW),
     )
 
     /** Category drives the channel: chat/ping -> replies, reminder, approval, job, peer. An unknown category is treated as a job-level notice, never as an interrupting one. */
@@ -40,7 +40,7 @@ object Channels {
 
     fun importanceOf(channelId: String): Int = ALL.firstOrNull { it.id == channelId }?.importance ?: IMPORTANCE_DEFAULT
 
-    fun titleFor(m: Message): String = m.title.ifBlank { "Nori" }
+    fun titleFor(m: Message): String = m.title.ifBlank { "Assistant" }
 
     /**
      * Stable notification id for a server message id (fits an Int, never collides with the app's fixed ids below 100). Two servers number their messages from 1 each, so the

@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import app.nori.companion.core.AgentName
 import app.nori.companion.core.Windows
 
 /** The two owner-opened windows (control, screen share) and the one-tap pause: the logic behind the tiles, notification buttons and settings screen. */
@@ -19,17 +20,17 @@ object WindowControl {
 
     /** Why the control window cannot be opened now, or null when it can. */
     fun interactBlocker(c: Context): String? {
-        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with Nori first."
-        if (Prefs.paused(c)) return "Nori is paused: resume it first."
-        if (!Prefs.ownerControl(c)) return "Switch on \"Let Nori control this phone\" in the Nori app first."
+        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with a Nori server first."
+        if (Prefs.paused(c)) return "The app is paused: resume it first."
+        if (!Prefs.ownerControl(c)) return "Switch on \"Control\" in the app's settings first."
         if (!NoriAccessibilityService.isEnabled(c)) return "Turn on the Nori accessibility service in Android's settings first."
         return null
     }
 
     fun shareBlocker(c: Context): String? {
-        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with Nori first."
-        if (Prefs.paused(c)) return "Nori is paused: resume it first."
-        if (!Prefs.ownerScreen(c)) return "Switch on \"Let Nori look at this screen\" in the Nori app first."
+        if (Prefs.usableSlots(c).isEmpty()) return "Pair this phone with a Nori server first."
+        if (Prefs.paused(c)) return "The app is paused: resume it first."
+        if (!Prefs.ownerScreen(c)) return "Switch on \"Screen sharing\" in the app's settings first."
         if (!NoriAccessibilityService.isEnabled(c)) return "Turn on the Nori accessibility service first: it is how the phone knows which app is in front, so private apps are never captured."
         return null
     }
@@ -167,7 +168,7 @@ class PauseTile : TileService() {
 
     private fun refresh() {
         val t = qsTile ?: return
-        t.label = "Nori"
+        t.label = AgentName.cap(Prefs.agent(this))
         if (!Prefs.anyPaired(this)) { t.state = Tile.STATE_UNAVAILABLE; t.subtitle = "Not paired" }
         else if (Prefs.paused(this)) { t.state = Tile.STATE_INACTIVE; t.subtitle = "Paused" }
         else { t.state = Tile.STATE_ACTIVE; t.subtitle = "On" }
@@ -189,7 +190,7 @@ class InteractTile : TileService() {
     private fun refresh() {
         val t = qsTile ?: return
         val open = Prefs.interactOpen(this)
-        t.label = "Nori may act"
+        t.label = AgentName.cap(Prefs.agent(this)) + " may act"
         t.state = if (open) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         t.subtitle = if (open) Windows.countdown(Windows.remainingMs(Prefs.interactUntil(this), System.currentTimeMillis())) else "Closed"
         t.updateTile()
@@ -207,7 +208,7 @@ class ShareTile : TileService() {
     private fun refresh() {
         val t = qsTile ?: return
         val open = Prefs.shareOpen(this) && ScreenShareService.active()
-        t.label = "Nori may look"
+        t.label = AgentName.cap(Prefs.agent(this)) + " may look"
         t.state = if (open) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         t.subtitle = if (open) Windows.countdown(Windows.remainingMs(Prefs.shareUntil(this), System.currentTimeMillis())) else "Closed"
         t.updateTile()

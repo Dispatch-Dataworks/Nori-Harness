@@ -2065,7 +2065,7 @@ CHAT_JS = (
     "var hcap=document.querySelector('.hero-cap');if(hcap)hcap.textContent=newState;"
     "var peek=document.getElementById('peek');"
     "if(peek){var pi=peek.querySelector('img'),pb=peek.querySelector('.peek-cap b');"
-    "if(pi){pi.src='/avatar/'+newState;pi.alt='Nori: '+newState;}if(pb)pb.textContent=newState;"
+    "if(pi){pi.src='/avatar/'+newState;pi.alt=((window.NORI_CHAT&&window.NORI_CHAT.assistant_name)||'')+': '+newState;}if(pb)pb.textContent=newState;"
     "nbShowPeek(false);}"
     "var va=document.getElementById('voiceAvatar');if(va){va.src='/avatar/'+newState;va.alt=newState;}"
     "var vsl=document.getElementById('voiceStateLabel');if(vsl)vsl.textContent=newState;}"
@@ -2354,9 +2354,10 @@ CHAT_JS = (
     "if(!('Notification' in window)||Notification.permission!=='default')return;"
     "if(localStorage.getItem('nori_notif_dismissed')==='1')return;"
     "var bar=document.createElement('div');bar.className='notif-bar';"
-    "bar.innerHTML='<span>get a notification when Nori messages</span>"
+    "bar.innerHTML='<span></span>"
     "<button id=notifOn type=button>turn on</button>"
     "<button id=notifNo type=button class=btn-ghost>not now</button>';"
+    "bar.firstChild.textContent='get a notification when '+((window.NORI_CHAT&&window.NORI_CHAT.assistant_name)||'your assistant')+' messages';"
     "var col=document.querySelector('.chat-col');"
     "if(col)col.prepend(bar);"
     "var onBtn=document.getElementById('notifOn');"
@@ -4577,7 +4578,7 @@ class Handler(BaseHTTPRequestHandler):
         problems_section = (
             "<div class=section><h2>recent job problems</h2>"
             "<p class=muted style='margin:0 0 .6rem'>The latest jobs that failed, timed out or came back "
-            "incomplete, with where each one stopped and where its time went. Nori sees the same detail "
+            "incomplete, with where each one stopped and where its time went. ⟦n⟧ sees the same detail "
             "in check_job.</p>"
             f"{''.join(_problem_row(j) for j in problems)}</div>") if problems else ""
 
@@ -4618,7 +4619,7 @@ class Handler(BaseHTTPRequestHandler):
             "Off, a job reads files as ~400-character gists -- fine for triage, useless for reviewing, "
             "editing or quoting a document. On, it reads the real text, a page at a time (one page "
             "per tool call, so a long chapter takes several calls -- raise the tool-call limit to "
-            "match). Nori can still override this for a single job either way; this is just what "
+            "match). ⟦n⟧ can still override this for a single job either way; this is just what "
             "happens when ⟦n⟧ doesn't say.")
         add_form = (
             "<form method=post action='/admin/subagents'>"
@@ -5433,7 +5434,7 @@ class Handler(BaseHTTPRequestHandler):
 
         intro = (
             "<div class=section id=computer-use><h2>computer use</h2>"
-            "<p class=muted>Lets Nori look at and use <b>your own browser</b> through the extension above, only "
+            "<p class=muted>Lets ⟦n⟧ look at and use <b>your own browser</b> through the extension above, only "
             "while you've started a session, only on the sites you permit below. Risky actions (send, submit, buy, "
             "delete, a link to another site) pause for your approval; password and payment fields are never "
             "typed into or read; every page ⟦n⟧ reads is screened as untrusted; every action is logged.</p>"
@@ -5457,7 +5458,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             opts = "".join(f"<option value={m}>{m} minutes</option>" for m in bridge.SESSION_CHOICES_MIN)
             ready = on and bridge.has_token(uid)
-            sess_body = ("<p><span class=chip>no session</span> <small class=muted>Nori has no acting browser tools "
+            sess_body = ("<p><span class=chip>no session</span> <small class=muted>⟦n⟧ has no acting browser tools "
                          "right now</small></p>"
                          + post("session", f"<select name=minutes>{opts}</select> "
                                 f"<button class='btn btn-primary'{'' if ready else ' disabled'}>start a session</button></form>")
@@ -5901,10 +5902,10 @@ class Handler(BaseHTTPRequestHandler):
             chip = f"<span class=chip>sandbox container not reachable</span> <small class=muted>{esc(st['detail'])}</small>"
         intro = (
             "<div class=section><h2>code sandbox</h2>"
-            "<p class=muted>Lets Nori (and any sub-agent with “can run code” ticked) run python3 in a "
+            "<p class=muted>Lets ⟦n⟧ (and any sub-agent with “can run code” ticked) run python3 in a "
             "separate container that has <b>no network</b>, no secrets, and no access to this instance's "
             "data. Each run works on a <b>copy</b> of one working-folder folder; files it creates are "
-            "saved back under the usual rules (a file Nori didn't create is never overwritten -- the "
+            "saved back under the usual rules (a file ⟦n⟧ didn't create is never overwritten -- the "
             "result is saved beside it as name.v2.ext) and a deletion is reported, never applied. "
             "Python standard library only; every run is logged below.</p>"
             f"<p>{chip}</p>"
@@ -6001,7 +6002,7 @@ class Handler(BaseHTTPRequestHandler):
         backend_form = (
             "<div class=section><h2>active backend</h2>"
             f"<p>{active}</p>"
-            "<p class=muted>Local keeps every memory in Nori's own database, same as today. "
+            "<p class=muted>Local keeps every memory in this instance's own database, same as today. "
             "Nodrya routes ⟦n⟧'s typed memory reads/writes through your Nodrya account instead, "
             "with a local write-through cache so recall still works instantly -- see "
             "memory.py's NodryaMemoryBackend. Switching to Nodrya is blocked here until a "
@@ -6055,7 +6056,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"<input type=number name=nodrya_memory_category_id value='{category_value}' min=0>")
             category_section = (
                 "<div class=section><h2>step 2 -- pick a category</h2>"
-                "<p class=muted>Every memory Nori writes to Nodrya lands in this one category.</p>"
+                "<p class=muted>Every memory ⟦n⟧ writes to Nodrya lands in this one category.</p>"
                 "<form method=post action='/admin/memorybackend/category'>"
                 f"<input type=hidden name=csrf value='{csrf}'>"
                 f"<div class=field><label>memory category</label>{category_field}</div>"
@@ -9427,15 +9428,15 @@ class Handler(BaseHTTPRequestHandler):
                 "<p class=muted style='line-height:1.5'>This is <b>not</b> a cloud service. "
                 "A notification is raised by the app on your own device when it polls the "
                 "server and finds something new -- including something ⟦n⟧ said unprompted. "
-                "That means it only arrives while <b>(a)</b> this machine is on and Nori's "
+                "That means it only arrives while <b>(a)</b> this machine is on and the "
                 "server is running, and <b>(b)</b> the app is open, or was open recently and "
                 "is just backgrounded. A fully closed tab or installed app won't wake up -- "
                 "you'll see what you missed, and the unread badge, next time you open it. "
-                "<b>iOS</b> only delivers these if you've added Nori to your home screen "
+                "<b>iOS</b> only delivers these if you've added ⟦n⟧ to your home screen "
                 "first (iOS 16.4+); a plain Safari tab gets nothing. iOS is also stricter than "
                 "\"recently backgrounded\" above suggests: Safari suspends an installed app's "
                 "background execution almost as soon as you leave it, well before the poll above "
-                "could complete -- in practice, expect these only while you actually have Nori open "
+                "could complete -- in practice, expect these only while you actually have ⟦n⟧ open "
                 "in front of you. Anything you missed still shows up, in chat and as the unread "
                 "badge, the moment you open it again. Turning notifications on "
                 "needs a tap on the chat screen's own prompt -- a settings toggle here can't "
@@ -10962,7 +10963,7 @@ class Handler(BaseHTTPRequestHandler):
         window.__noriStateChanged__ check)."""
         cur = current_state if current_state in emotion.STATES else emotion.DEFAULT_STATE
         return (f"<button type=button class=peek id=peek aria-label='Close avatar preview'>"
-                f"<img src='/avatar/{cur}' alt='Nori: {esc(cur)}'>"
+                f"<img src='/avatar/{cur}' alt='⟦n⟧: {esc(cur)}'>"
                 f"<span class=peek-cap><b>{esc(cur)}</b><span>tap anywhere to close</span></span></button>")
 
     def _voice_modal(self, current_state: str) -> str:
@@ -11276,7 +11277,7 @@ class Handler(BaseHTTPRequestHandler):
             "<button type=button id=attachBtn class=mic-btn aria-label='Attach a photo'>\U0001f4ce</button>"
             "<input type=file id=fileInput accept='image/jpeg,image/png,image/webp' style='display:none'>"
             "<button type=button id=emojiBtn class=emoji-btn aria-label='Insert emoji'>\U0001f642</button>"
-            "<textarea id=msgInput name=text placeholder='message nori' required rows=1 autocomplete=off></textarea>"
+            "<textarea id=msgInput name=text placeholder='message ⟦n⟧' required rows=1 autocomplete=off></textarea>"
             "<button id=sendBtn class=send-btn type=submit aria-label=Send>➤</button></form>"
             "<div class=emoji-panel id=emojiPanel>"
             "<div class=emoji-panel-head>"

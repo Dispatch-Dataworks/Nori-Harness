@@ -42,7 +42,7 @@ object ActionRunner {
      * invisible window is shown for a moment first. That is the ONLY reason this app asks for that permission (and for keeping the screen on during a window).
      */
     private fun launch(c: Context, intent: Intent): String? {
-        if (!AppState.appVisible && !Settings.canDrawOverlays(c)) return "Android blocks opening things from the background: allow \"Display over other apps\" for Nori (Nori app -> Battery & permissions)"
+        if (!AppState.appVisible && !Settings.canDrawOverlays(c)) return "Android blocks opening things from the background: allow \"Display over other apps\" for this app (in its settings: Battery & permissions)"
         val wm = c.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val v = View(c)
         val lp = WindowManager.LayoutParams(1, 1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -98,7 +98,7 @@ object ActionRunner {
                     if (r.error != null) return Outcome.Refused(r.error)
                     r.value!!
                 }
-                if (!AppGuard.listable(pkg, s.hiddenApps, s.neverControlApps)) return Outcome.Refused("that app is not available to Nori")
+                if (!AppGuard.listable(pkg, s.hiddenApps, s.neverControlApps)) return Outcome.Refused("that app is not available to the assistant")
                 val intent = c.packageManager.getLaunchIntentForPackage(pkg) ?: return Outcome.Refused("that app cannot be opened")
                 val label = try { c.packageManager.getApplicationLabel(c.packageManager.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
                 val err = launch(c, intent)

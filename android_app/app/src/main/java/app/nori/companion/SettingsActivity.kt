@@ -25,6 +25,7 @@ import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import app.nori.companion.core.AgentName
 import app.nori.companion.core.Connections
 import app.nori.companion.core.DeviceSettings
 import app.nori.companion.core.Geo
@@ -126,10 +127,11 @@ class SettingsActivity : Activity() {
         val several = slots.size > 1
         val paired = Prefs.anyPaired(this)
         val now = System.currentTimeMillis()
-        box.addView(title("Nori on this phone"))
+        val agent = Prefs.agent(this)                                  // what the paired server(s) call their assistant ("Iron", "Nori and Iron"), never a fixed "Nori"
+        box.addView(title(AgentName.cap(agent) + " on this phone"))
         if (slots.isEmpty()) box.addView(body(StatusLine.build(false, false, false, now, 0, 0, "", "")))
         else slots.forEachIndexed { n, slot ->
-            val text = StatusLine.build(Prefs.isPaired(this, slot), Prefs.needsRepair(this, slot), Prefs.paused(this), now, if (n == 0) Prefs.interactUntil(this) else 0L, if (n == 0) Prefs.shareUntil(this) else 0L, Prefs.status(this, slot), Prefs.host(this, slot))
+            val text = StatusLine.build(Prefs.isPaired(this, slot), Prefs.needsRepair(this, slot), Prefs.paused(this), now, if (n == 0) Prefs.interactUntil(this) else 0L, if (n == 0) Prefs.shareUntil(this) else 0L, Prefs.status(this, slot), Prefs.host(this, slot), Prefs.agent(this, slot))
             box.addView(body(if (several) Prefs.name(this, slot) + ": " + text else text))
         }
         AppUpdater.available(this)?.let { v ->
@@ -137,7 +139,7 @@ class SettingsActivity : Activity() {
             box.addView(button("Update now") { runUpdate() })
         }
         if (paired) {
-            box.addView(button("Open Nori (chat and everything else)") { startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)) })
+            box.addView(button("Open $agent (chat and everything else)") { startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)) })
             box.addView(toggle("Pause everything", Prefs.paused(this)) { Control.setPaused(this, it); render() })
             if (several) box.addView(body("Pause, the switches below and the windows are the phone's own: they apply to every connection."))
         }
@@ -148,7 +150,7 @@ class SettingsActivity : Activity() {
         if (slots.size < Connections.MAX) {
             if (slots.isNotEmpty()) {
                 box.addView(line("Add another connection", true))
-                box.addView(body("Another Nori server (for example a second assistant) can be paired alongside this one. It gets its own tab in the app. Make a pairing code in ITS Settings -> Devices and type its address and the code here, or open its pairing link on this phone."))
+                box.addView(body("Another server (for example a second assistant) can be paired alongside this one. It gets its own tab in the app. Make a pairing code in ITS Settings -> Devices and type its address and the code here, or open its pairing link on this phone."))
             }
             pairForm(newServer = true, initialServer = typedServer)
         }
@@ -158,9 +160,9 @@ class SettingsActivity : Activity() {
         box.addView(body("Every capability needs two keys: the server's switch and yours. Nothing but notifications is on until you turn it on here, and this phone re-checks every request itself." +
             if (several) " Your switch applies to every connection; each server has its own switch, shown below." else ""))
         box.addView(toggle("Notifications (replies, reminders, approvals)", Prefs.ownerNotifications(this)) { Prefs.setOwner(this, "notifications", it); SyncService.pollNow(this); render() })
-        box.addView(body(serverSays { yn(it.notifications) } + ". Quiet hours are set in Nori's settings." + if (!Notifier.canNotify(this)) " Android notifications are OFF for this app: see Battery & permissions." else ""))
-        box.addView(toggle("Share sheet (\"Send to Nori\")", Prefs.ownerShare(this)) { Prefs.setOwner(this, "share", it); SyncService.pollNow(this) })
-        box.addView(body("Text, links and photos you choose to share from any app go to your chat, a note or a task." + (if (several) " The share sheet asks which Nori." else "") + " Nothing is sent unless you share it."))
+        box.addView(body(serverSays { yn(it.notifications) } + ". Quiet hours are set in the server's settings." + if (!Notifier.canNotify(this)) " Android notifications are OFF for this app: see Battery & permissions." else ""))
+        box.addView(toggle("Share sheet (\"Send to my assistant\")", Prefs.ownerShare(this)) { Prefs.setOwner(this, "share", it); SyncService.pollNow(this) })
+        box.addView(body("Text, links and photos you choose to share from any app go to your chat, a note or a task." + (if (several) " The share sheet asks which assistant." else "") + " Nothing is sent unless you share it."))
 
         box.addView(toggle("Health data (Health Connect)", Prefs.ownerHealth(this)) { on ->
             Prefs.setOwner(this, "health", on)
@@ -187,7 +189,7 @@ class SettingsActivity : Activity() {
             if (on) askLocation()
             PlaceManager.sync(this); SyncService.pollNow(this); render()
         })
-        box.addView(body(serverSays { yn(it.places) } + ". This phone watches your saved places itself and tells Nori only \"arrived\" or \"left\" with the place's name" + (if (several) " (each server hears only about its own places)" else "") +
+        box.addView(body(serverSays { yn(it.places) } + ". This phone watches your saved places itself and tells $agent only \"arrived\" or \"left\" with the place's name" + (if (several) " (each server hears only about its own places)" else "") +
             ". No coordinates and no location trail are ever sent. It needs location access \"all the time\"."))
         if (Prefs.ownerPlaces(this)) {
             box.addView(line("Location: " + (if (PlaceManager.hasFineLocation(this)) "allowed" else "off") + ", all the time: " + (if (PlaceManager.hasBackgroundLocation(this)) "allowed" else "off"), true))
@@ -203,7 +205,7 @@ class SettingsActivity : Activity() {
         box.addView(button("Save where I am now as a place…") { startSavePlace() })
 
         box.addView(toggle("Phone actions (open links and apps, timers, alarms, directions)", Prefs.ownerActions(this)) { Prefs.setOwner(this, "actions", it); SyncService.pollNow(this); render() })
-        box.addView(body(serverSays { yn(it.actions) + ", at most ${it.actionsPerHour} per hour" } + ". Only public web addresses open; apps like Settings, the app store, wallets and password managers are never touched. Android needs \"Display over other apps\" to open things while Nori is closed: " + (if (Settings.canDrawOverlays(this)) "allowed." else "NOT allowed yet (see Battery & permissions).")))
+        box.addView(body(serverSays { yn(it.actions) + ", at most ${it.actionsPerHour} per hour" } + ". Only public web addresses open; apps like Settings, the app store, wallets and password managers are never touched. Android needs \"Display over other apps\" to open things while this app is closed: " + (if (Settings.canDrawOverlays(this)) "allowed." else "NOT allowed yet (see Battery & permissions).")))
 
         box.addView(toggle("Control (read the screen, tap, type, scroll)", Prefs.ownerControl(this)) { on ->
             Prefs.setOwner(this, "control", on)
@@ -217,7 +219,7 @@ class SettingsActivity : Activity() {
             if (!on) ScreenShareService.stop(this)
             SyncService.pollNow(this); render()
         })
-        box.addView(body(serverSays { yn(it.screen) } + ". Works only in the screen-share window you open below. A picture is taken only when Nori asks, is described by a vision model, and is thrown away. Android shows its own capture indicator and this app never hides it. Private and system apps are never captured. This also needs the accessibility service (only so the phone can tell which app is in front)."))
+        box.addView(body(serverSays { yn(it.screen) } + ". Works only in the screen-share window you open below. A picture is taken only when $agent asks, is described by a vision model, and is thrown away. Android shows its own capture indicator and this app never hides it. Private and system apps are never captured. This also needs the accessibility service (only so the phone can tell which app is in front)."))
 
         // ── 3. windows ──
         box.addView(head("3. Windows (you open them, they close themselves)"))
@@ -226,7 +228,7 @@ class SettingsActivity : Activity() {
         box.addView(line("Control window: " + if (iOpen) "OPEN, " + Windows.countdown(Windows.remainingMs(Prefs.interactUntil(this), now)) + " left" else "closed", true))
         if (iOpen) box.addView(button("Close the control window now") { WindowControl.closeInteract(this); render() })
         else box.addView(durations(null) { m -> WindowControl.openInteract(this, m)?.let { toast(it) }; render() })
-        box.addView(body("The Quick Settings tile \"Nori may act\" opens it for:"))
+        box.addView(body("The Quick Settings tile \"${AgentName.cap(agent)} may act\" opens it for:"))
         box.addView(durations(Prefs.interactMinutes(this)) { m -> Prefs.setInteractMinutes(this, m); render() })
         val sOpen = Prefs.shareOpen(this)
         box.addView(line("Screen-share window: " + if (sOpen) "OPEN, " + Windows.countdown(Windows.remainingMs(Prefs.shareUntil(this), now)) + " left" else "closed", true))
@@ -235,7 +237,7 @@ class SettingsActivity : Activity() {
             val problem = WindowControl.shareBlocker(this)
             if (problem != null) toast(problem) else startActivity(Intent(this, ScreenShareRequestActivity::class.java).putExtra(ScreenShareRequestActivity.EXTRA_MINUTES, m))
         })
-        box.addView(body("The Quick Settings tile \"Nori may look\" opens it for:"))
+        box.addView(body("The Quick Settings tile \"${AgentName.cap(agent)} may look\" opens it for:"))
         box.addView(durations(Prefs.shareMinutes(this)) { m -> Prefs.setShareMinutes(this, m); render() })
         box.addView(toggle("Keep the screen on while a window is open", Prefs.keepAwake(this)) { Prefs.setKeepAwake(this, it) })
 
@@ -264,14 +266,14 @@ class SettingsActivity : Activity() {
         box.addView(line("Notifications: " + if (canPost) "allowed" else "OFF", true))
         if (!canPost) {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) box.addView(button("Allow notifications") { requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF) })
-            box.addView(button("Open Android's notification settings for Nori") { startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) })
+            box.addView(button("Open Android's notification settings for this app") { startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) })
         }
         val batteryOk = (getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
         box.addView(line("Stay connected in the background: " + if (batteryOk) "allowed" else "off", true))
         box.addView(body("Without this Android may put the connection to sleep and replies and reminders arrive late."))
         if (!batteryOk) box.addView(button("Allow background activity") { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:$packageName"))) })
         box.addView(line("Display over other apps: " + if (Settings.canDrawOverlays(this)) "allowed" else "off", true))
-        box.addView(body("Used for two things only: letting Nori open a link or app while this app is closed (Android blocks that otherwise), and keeping the screen on while a window is open. Not needed if you do not use phone actions or windows."))
+        box.addView(body("Used for two things only: letting $agent open a link or app while this app is closed (Android blocks that otherwise), and keeping the screen on while a window is open. Not needed if you do not use phone actions or windows."))
         if (!Settings.canDrawOverlays(this)) box.addView(button("Allow \"Display over other apps\"") { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) })
         val a11y = NoriAccessibilityService.isEnabled(this)
         box.addView(line("Accessibility service: " + if (a11y) "on" else "off", true))
@@ -280,7 +282,7 @@ class SettingsActivity : Activity() {
         box.addView(line("If Android says \"Restricted setting\" (Android 13 and newer)", true))
         box.addView(body("Because this app was installed from a file, not a store, Android blocks its accessibility switch at first. To allow it:\n1. Press \"App info\" below (or: Settings -> Apps -> Nori).\n2. Tap the three-dot menu in the top right corner.\n3. Choose \"Allow restricted settings\" and confirm with your PIN or fingerprint.\n4. Go back and turn the Nori accessibility service on.\nIf the menu is missing, first try to turn the service on once (it will be refused), then look again."))
         box.addView(button("App info (for \"Allow restricted settings\")") { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) })
-        if (!packageManager.canRequestPackageInstalls()) box.addView(button("Allow Nori to install its own updates") { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) })
+        if (!packageManager.canRequestPackageInstalls()) box.addView(button("Allow this app to install its own updates") { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) })
 
         // ── 6. version & update ──
         box.addView(head("6. Version & update"))
@@ -301,7 +303,7 @@ class SettingsActivity : Activity() {
             if (!several) box.addView(body("The website's own login is used inside the app; the app never sees your password. A paired phone gets notifications and nothing else until you switch more on below."))
             if (several) box.addView(button("Rename \"$name\" (the tab's title)") { renameDialog(slot) })
             box.addView(button(if (several) "Unpair $name" else "Unpair this phone") {
-                AlertDialog.Builder(this).setTitle(if (several) "Unpair from $name?" else "Unpair this phone?").setMessage("Nori stops sending to it and it stops listening. You can pair again with a new code.")
+                AlertDialog.Builder(this).setTitle(if (several) "Unpair from $name?" else "Unpair this phone?").setMessage("The server stops sending to it and it stops listening. You can pair again with a new code.")
                     .setNegativeButton("Cancel", null).setPositiveButton("Unpair") { _, _ ->
                         Thread {
                             Api.post(this, slot, "/device/unregister", JSONObject(), 10_000)
@@ -332,7 +334,7 @@ class SettingsActivity : Activity() {
     private fun pairForm(newServer: Boolean, initialServer: String) {
         val server = field("Server address, e.g. https://nori.example.com", initialServer)
         box.addView(server)
-        box.addView(body("In Nori: Settings -> Devices -> \"Pair a phone\" shows a one-time code (valid 15 minutes) and a link that opens this app and pairs in one tap. Or type the code here. HTTPS only."))
+        box.addView(body("On your server: Settings -> Devices -> \"Pair a phone\" shows a one-time code (valid 15 minutes) and a link that opens this app and pairs in one tap. Or type the code here. HTTPS only."))
         val code = field("pairing code (XXXX-XXXX)", "", code = true)
         box.addView(code)
         box.addView(button("Pair") {
@@ -348,7 +350,7 @@ class SettingsActivity : Activity() {
     private fun renameDialog(slot: Int) {
         val input = EditText(this).apply { setText(Prefs.label(this@SettingsActivity, slot)); isSingleLine = true; setSelectAllOnFocus(true) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(input) }
-        AlertDialog.Builder(this).setTitle("Name this connection").setMessage("Shown on its tab and wherever the app says which Nori it means.").setView(col)
+        AlertDialog.Builder(this).setTitle("Name this connection").setMessage("Shown on its tab and wherever the app says which assistant it means.").setView(col)
             .setNegativeButton("Cancel", null).setPositiveButton("Save") { _, _ -> Prefs.setLabel(this, slot, input.text.toString()); render() }.show()
     }
 
@@ -369,9 +371,9 @@ class SettingsActivity : Activity() {
     private fun startSavePlace() {
         val usable = Prefs.usableSlots(this)
         when {
-            usable.isEmpty() -> toast("Pair with Nori first")
+            usable.isEmpty() -> toast("Pair this phone with a Nori server first")
             usable.size == 1 -> startSavePlace(usable[0])
-            else -> AlertDialog.Builder(this).setTitle("Save the place on which Nori?").setItems(usable.map { Prefs.name(this, it) }.toTypedArray()) { _, i -> startSavePlace(usable[i]) }.show()
+            else -> AlertDialog.Builder(this).setTitle("Save the place for which assistant?").setItems(usable.map { Prefs.name(this, it) }.toTypedArray()) { _, i -> startSavePlace(usable[i]) }.show()
         }
     }
 
@@ -383,7 +385,7 @@ class SettingsActivity : Activity() {
         val home = CheckBox(this).apply { text = "This is home" }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(name); addView(home) }
         val to = if (Prefs.slots(this).size > 1) " It is saved on ${Prefs.name(this, slot)} only." else ""
-        AlertDialog.Builder(this).setTitle("Save this place").setMessage("Your location is read once and sent to Nori with this name. After that only \"arrived\" and \"left\" are ever reported.$to").setView(col)
+        AlertDialog.Builder(this).setTitle("Save this place").setMessage("Your location is read once and sent to ${Prefs.agent(this, slot)} with this name. After that only \"arrived\" and \"left\" are ever reported.$to").setView(col)
             .setNegativeButton("Cancel", null).setPositiveButton("Save") { _, _ ->
                 val n = name.text.toString().trim()
                 if (n.isEmpty()) { toast("Give the place a name"); return@setPositiveButton }

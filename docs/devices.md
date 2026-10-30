@@ -84,8 +84,11 @@ Response:
  "quiet":false,"hidden_apps":["com.bank.app"],"never_control_apps":[],
  "health_metrics":["weight","bp","steps","sleep","resting_hr"],
  "places_list":[{"id":3,"name":"Home","lat":43.0,"lon":-76.1,"radius_m":120,"home":true}],
- "actions_per_hour":30}
+ "actions_per_hour":30, "assistant_name":"Iron"}
 ```
+`assistant_name` (added 2026-10-30, at most 40 characters): what this instance calls its assistant. The app uses it wherever it speaks of the
+assistant (its screens, notices, toasts and Quick Settings tiles, and as the default name of the connection's tab) instead of a fixed
+"Nori". A server that does not send it leaves the app falling back to the connection's name.
 `hidden_apps`: never described, read or controlled, replaced by "a private app". `never_control_apps`: extra deny list (the app
 also has a built-in list; see below). Switches are the **server** half; the app combines with its own.
 

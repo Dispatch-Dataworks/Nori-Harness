@@ -1,6 +1,7 @@
 package app.nori.companion
 
 import android.content.Context
+import app.nori.companion.core.AgentName
 import app.nori.companion.core.Connections
 import app.nori.companion.core.DeviceSettings
 import app.nori.companion.core.OwnerSwitches
@@ -37,7 +38,17 @@ object Prefs {
     fun host(c: Context, slot: Int) = ServerUrl.host(server(c, slot))
 
     /** What the owner calls this connection (tab title), or the first part of the server's host. */
-    fun label(c: Context, slot: Int): String = sp(c).getString(k(slot, "label"), "")?.trim().orEmpty().ifEmpty { Connections.defaultLabel(host(c, slot)) }
+    fun label(c: Context, slot: Int): String = sp(c).getString(k(slot, "label"), "")?.trim().orEmpty()
+        .ifEmpty { assistantName(c, slot) }.ifEmpty { Connections.defaultLabel(host(c, slot)) }
+
+    /** What the server says its assistant is called (empty from a server that does not say, or before the first poll). */
+    fun assistantName(c: Context, slot: Int): String = serverSettings(c, slot).assistantName
+
+    /** The assistant of one connection, by name: what the server calls it, else what this connection is called. */
+    fun agent(c: Context, slot: Int): String = assistantName(c, slot).ifEmpty { label(c, slot) }
+
+    /** The assistant(s) of the usable connections, for text that is not about one in particular ("Iron", "Nori and Iron", or "your assistant" when none). */
+    fun agent(c: Context): String = AgentName.join(usableSlots(c).map { agent(c, it) })
     fun setLabel(c: Context, slot: Int, v: String) = sp(c).edit().putString(k(slot, "label"), v.trim().take(20)).apply()
 
     /** Labels to show people: made distinct when two connections would otherwise read the same. */

@@ -13,6 +13,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import app.nori.companion.core.AgentName
 import app.nori.companion.core.Channels
 import app.nori.companion.core.Deeplink
 import app.nori.companion.core.Message
@@ -59,9 +60,10 @@ object Notifier {
         val needRepair = Prefs.pairedSlots(c).filter { Prefs.needsRepair(c, it) }
         val repair = needRepair.isNotEmpty()
         val several = Prefs.pairedSlots(c).size > 1
+        val agent = AgentName.cap(Prefs.agent(c))
         val b = NotificationCompat.Builder(c, Channels.SYNC)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle(if (paused) "Nori is paused" else if (repair) (if (several) needRepair.joinToString(", ") { Prefs.name(c, it) } + " needs pairing again" else "Nori needs pairing again") else "Nori is connected")
+            .setContentTitle(if (paused) "$agent is paused" else if (repair) (if (several) needRepair.joinToString(", ") { Prefs.name(c, it) } + " needs pairing again" else "$agent needs pairing again") else "$agent is connected")
             .setContentText(if (paused) "Nothing is sent except a heartbeat" else if (repair) "Tap to open the app settings" else "Replies and reminders arrive here. Tap to open.")
             .setOngoing(true).setOnlyAlertOnce(true).setShowWhen(false)
             .setContentIntent(if (repair) openSettings(c, 10) else openChat(c, 11))
@@ -77,12 +79,12 @@ object Notifier {
     }
 
     // ── window countdowns ────────────────────────────────────────────
-    /** "Nori may act on this phone", counting down to the minute the window closes by itself. */
+    /** "<assistant> may act on this phone", counting down to the minute the window closes by itself. */
     fun interactWindowNotification(c: Context, until: Long): Notification {
         val remaining = Windows.remainingMs(until, System.currentTimeMillis())
         return NotificationCompat.Builder(c, Channels.WINDOWS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Nori may act on this phone")
+            .setContentTitle(AgentName.cap(Prefs.agent(c)) + " may act on this phone")
             .setContentText("The control window closes by itself when the timer ends")
             .setOngoing(true).setOnlyAlertOnce(true)
             .setUsesChronometer(true).setChronometerCountDown(true).setWhen(until).setShowWhen(true)
@@ -103,7 +105,7 @@ object Notifier {
     fun shareNotification(c: Context, until: Long): Notification =
         NotificationCompat.Builder(c, Channels.WINDOWS)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Nori may take a screenshot when you ask it something")
+            .setContentTitle(AgentName.cap(Prefs.agent(c)) + " may take a screenshot when you ask it something")
             .setContentText("Screen-share window. Android also shows its own capture indicator.")
             .setOngoing(true).setOnlyAlertOnce(true)
             .setUsesChronometer(true).setChronometerCountDown(true).setWhen(until).setShowWhen(true)

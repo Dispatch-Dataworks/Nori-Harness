@@ -39,6 +39,8 @@ Releases attach the APK automatically: `scripts\release.ps1` (see `docs/updates.
 
 If the server ever answers 401 the app says "pair again" and stops until you do; 403 makes it wait a minute; 429 makes it slow down.
 
+The app names the assistant the way the server does: the server's settings carry `assistant_name`, and the app uses it in its screens, notices, toasts and Quick Settings tiles, and as a connection's default tab name (with two servers, "Nori and Iron" where a sentence is about both). "Nori" remains only where it means the app or the software. The static launcher labels (share sheet, shortcuts, widget) say "my assistant" because Android fixes those at install time.
+
 The app's own settings screen: the gear at the end of the tab bar (the bar appears once there are two connections), **App settings** in the "⋯" menu of any Nori page when viewed inside the app (the server adds it when the user agent says `NoriApp/`), or the launcher's long-press shortcut.
 
 Deep links: `nori-pair://pair?code=XXXX-XXXX&server=https://...` and `nori-app://settings` (opens the settings screen). Widgets, launcher shortcuts and notifications use the same app routes (`nori-app://talk`, `task`, `chat`, `prefill?text=`) through explicit intents only.

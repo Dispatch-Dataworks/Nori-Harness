@@ -130,7 +130,7 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Pair this phone with $host?")
-            .setMessage("Only continue if you made this pairing code yourself in Nori's Settings -> Devices. Pairing lets that server send you notifications; anything more is a separate switch you turn on here.$what")
+            .setMessage("Only continue if you made this pairing code yourself in your server's Settings -> Devices. Pairing lets that server send you notifications; anything more is a separate switch you turn on here.$what")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Pair") { _, _ ->
                 PairHelper.pair(this, server, link.code) { ok, msg, slot ->
@@ -197,7 +197,7 @@ class MainActivity : Activity() {
         }
         bar.addView(TextView(this).apply {
             text = "⚙"; textSize = 18f; gravity = Gravity.CENTER; setTextColor(dim)
-            contentDescription = "Nori app settings"
+            contentDescription = "App settings"
             setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
         }, LinearLayout.LayoutParams(dp(52), dp(44)))
     }
@@ -308,7 +308,7 @@ class MainActivity : Activity() {
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (!request.isForMainFrame) return
-                val html = "<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:2rem'><h2>Can't reach Nori</h2><p>${Prefs.server(this@MainActivity, slot)}</p>" +
+                val html = "<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:2rem'><h2>Can't reach ${Prefs.agent(this@MainActivity, slot)}</h2><p>${Prefs.server(this@MainActivity, slot)}</p>" +
                     "<p>${error.description}</p><p><a style='color:#9cf' href='nori-app://retry'>Try again</a> &nbsp; <a style='color:#9cf' href='nori-app://settings'>App settings</a></p></body></html>"
                 view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
             }
@@ -336,7 +336,7 @@ class MainActivity : Activity() {
         web.setDownloadListener { url, userAgent, contentDisposition, mime, _ ->
             try {
                 val u = Uri.parse(url)
-                if (u.scheme != "https" || u.host?.lowercase() != serverHost()) { Toast.makeText(this, "Downloads are only allowed from your Nori server", Toast.LENGTH_SHORT).show(); return@setDownloadListener }
+                if (u.scheme != "https" || u.host?.lowercase() != serverHost()) { Toast.makeText(this, "Downloads are only allowed from your server", Toast.LENGTH_SHORT).show(); return@setDownloadListener }
                 val req = DownloadManager.Request(u)
                 req.setMimeType(mime)
                 req.addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url) ?: "")

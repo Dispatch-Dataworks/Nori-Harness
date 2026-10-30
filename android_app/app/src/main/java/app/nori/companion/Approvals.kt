@@ -21,7 +21,7 @@ object Approvals {
     /** Blocking: call off the main thread. The decision goes to the server of connection [slot] (the one the approval came from). Returns an error text, or null when the server took it. */
     fun send(c: Context, slot: Int, id: Long, approve: Boolean, notifId: Int): String? {
         if (!Prefs.isPaired(c, slot) || Prefs.needsRepair(c, slot)) return "this phone is not paired"
-        if (Prefs.paused(c)) return "Nori is paused on this phone: resume it first"
+        if (Prefs.paused(c)) return "The app is paused on this phone: resume it first"
         val r = Api.post(c, slot, "/device/approval", Protocol.approval(id, approve))
         val who = if (Prefs.slots(c).size > 1) " (${Prefs.name(c, slot)})" else ""
         SentLog.add(c, if (r.ok) "approval #$id$who: ${if (approve) "approved" else "denied"}" else "approval #$id$who could not be sent: ${r.error}")
@@ -65,7 +65,7 @@ class ApprovalActivity : Activity() {
         if (id < 0) { finish(); return }
         AlertDialog.Builder(this)
             .setTitle(if (approve) "Approve this?" else "Deny this?")
-            .setMessage(if (approve) "Nori will go ahead with the action it asked about." else "Nori will not do it.")
+            .setMessage(if (approve) "${Prefs.agent(this, slot)} will go ahead with the action it asked about." else "${Prefs.agent(this, slot)} will not do it.")
             .setPositiveButton(if (approve) "Approve" else "Deny") { _, _ ->
                 val app = applicationContext
                 Thread {

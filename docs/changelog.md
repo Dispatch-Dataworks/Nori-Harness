@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-30 — "Nori" no longer sneaks into an instance with its own assistant name
+
+On an instance whose assistant is called something else (Iron), some text still said "Nori" where it meant the assistant: the chat box ("message nori"), the notification prompt, the avatar's alt text, several Settings paragraphs (browser control, the code sandbox, memory backends, job problems, how notifications work), and in the Android app its settings screen, notices, share sheet, shortcuts, tiles, toasts and notification channels ("Open Android's notification settings for Nori"). The pages now use the assistant's name. The server tells the phone the name (`assistant_name` in its settings) and the app (**0.2.1**) uses it, also as a connection's default tab name; static launcher labels say "my assistant". "Nori" remains where it is the product or the software (About, Updates, the app's own name). The browser extension's menu items still say "Send to Nori": its text is fixed in the extension.
+
 ## 2026-10-30 — replies were being cut off at 1024 tokens, silently
 
 Every reply was limited to a hard-coded 1024 tokens (about 700 words, less for a model that thinks first, since its thinking counts too), and a reply that ran into that was saved cut off, mid-sentence, as if it were finished. Nothing read the provider's "I stopped because of length". Now:

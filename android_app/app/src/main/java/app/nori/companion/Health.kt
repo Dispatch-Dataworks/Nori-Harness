@@ -177,8 +177,8 @@ class HealthRationaleActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val t = TextView(this).apply {
-            text = "Nori reads the health data you switch on in the Nori app (weight, blood pressure, steps, sleep, resting heart rate) from Health Connect, and sends it to your own Nori server, " +
-                "where it is added to your trackers. It is only ever read, never changed, and it goes nowhere else. Each kind is a separate switch in the Nori app, and you can also stop it in Health Connect at any time."
+            text = "This app reads the health data you switch on in its settings (weight, blood pressure, steps, sleep, resting heart rate) from Health Connect, and sends it to your own server, " +
+                "where it is added to your trackers. It is only ever read, never changed, and it goes nowhere else. Each kind is a separate switch in the app, and you can also stop it in Health Connect at any time."
             textSize = 16f
             setPadding(48, 96, 48, 48)
         }

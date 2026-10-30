@@ -49,7 +49,7 @@ object AppUpdater {
         if (err != null) { SentLog.add(app, "update download failed: $err"); return "Download failed: $err" }
         if (!app.packageManager.canRequestPackageInstalls()) {
             app.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + app.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            return "Allow Nori to install updates, then press Update again (the file is already downloaded)."
+            return "Allow this app to install updates, then press Update again (the file is already downloaded)."
         }
         val uri = FileProvider.getUriForFile(app, app.packageName + ".files", file)
         app.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))

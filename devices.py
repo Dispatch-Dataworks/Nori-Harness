@@ -369,7 +369,11 @@ def _csv(s: str) -> list[str]:
 def phone_settings(user_id: int) -> dict:
     from device_data import list_places   # local: device_data imports this module
     g = lambda k: config.get("user", user_id, k)  # noqa: E731
+    row = store.read(lambda c: c.execute("SELECT workspace_id FROM users WHERE id=?", (user_id,)).fetchone())
+    name = config.get("workspace", row["workspace_id"], "assistant_name") if row else ""
     return {
+        # What this instance calls its assistant (2026-10-30): the app names it in its own screens and notices instead of saying "Nori".
+        "assistant_name": str(name or "").strip()[:40],
         "notifications": bool(g("phone_notifications_enabled")),
         "health": bool(g("phone_health_enabled")),
         "places": bool(g("phone_places_enabled")),
