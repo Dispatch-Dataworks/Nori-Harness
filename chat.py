@@ -1624,6 +1624,21 @@ def call_via_chain(messages: list[dict], workspace_id: int, **kw) -> dict:
     raise ModelError("every configured model failed for this turn -- " + "; ".join(attempts))
 
 
+def call_default(messages: list[dict], **kw) -> dict:
+    """The background utility calls that name no model and no provider: screening untrusted text (ingest.py), summarising old conversation
+    (compaction.py), memory reflection, the out-of-band agent channel. They used to go straight to call(), which can only use the
+    OPENROUTER_API_KEY environment variable -- so on an instance set up through the first-run wizard, whose model lives in the provider chain
+    with no such key, every one of them failed, and screening treats a failed call as "suspicious" (2026-10-30: every PACI message to such an
+    instance was flagged). Now: with the key in the environment, exactly as before; without it, the workspace's own model chain, the one chat
+    uses; with neither, call()'s usual "key not set" error."""
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        import accounts
+        wsid = accounts.the_workspace_id()
+        if wsid is not None and _resolve_model_chain(wsid):
+            return call_via_chain(messages, wsid, **kw)
+    return call(messages, **kw)
+
+
 def run(session: dict, user_id: int, display_name: str, *, extra_message: dict | None = None,
        max_rounds: int | None = None, peer_pending: str | None = None,
        timing_turn: timing.Turn | None = None) -> dict:

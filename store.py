@@ -1744,6 +1744,15 @@ CREATE TABLE IF NOT EXISTS tuning_history (
 CREATE INDEX IF NOT EXISTS ix_tuning_history_ws ON tuning_history(workspace_id, id);
 CREATE TRIGGER IF NOT EXISTS trg_tuning_history_noupdate BEFORE UPDATE ON tuning_history
 BEGIN SELECT RAISE(ABORT, 'tuning history is append-only'); END;
+
+-- Every request to the debug endpoint (2026-10-30, see debug_api.py), answered or refused: when, from where, which path, and how it ended. The last 1000 kept.
+CREATE TABLE IF NOT EXISTS debug_access_log (
+    id     INTEGER PRIMARY KEY,
+    ts     REAL NOT NULL,
+    ip     TEXT,
+    path   TEXT,
+    status INTEGER NOT NULL
+);
 """
 
 # Empty for now -- first real migration lands with the first schema change

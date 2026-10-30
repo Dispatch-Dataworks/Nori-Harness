@@ -1093,7 +1093,7 @@ def reflect(user_id: int) -> dict:
     user_msg = f"CURRENT MEMORY:\n{json.dumps(mem, ensure_ascii=False)}\n\nRECENT CONVERSATION:\n{convo}"
 
     try:
-        out = chat.call([{"role": "system", "content": _REFLECT_SYS},
+        out = chat.call_default([{"role": "system", "content": _REFLECT_SYS},
                          {"role": "user", "content": user_msg}],
                         want_json=True, max_tokens=1200, temperature=0.2)
         delta = json.loads(out["content"] or "{}")

@@ -139,6 +139,7 @@ import capabilities
 import chat
 import config
 import crypto
+import debug_api
 import diagnostics
 import connected_accounts
 import contacts
@@ -153,6 +154,7 @@ import homeassistant
 import imagegen
 import integration_health
 import jobs
+import logbuf
 import mcp_servers
 import models
 import meals
@@ -3023,6 +3025,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(503, b'{"status":"degraded"}', ctype="application/json")
         if path == "/device/app.apk":     # the paired phone fetches updates with its own token, no cookie
             return self.device_apk_get()
+        if (path == "/debug" or path.startswith("/debug/")) and debug_api.is_enabled(accounts.the_workspace_id()):
+            return self.debug_get(path, qs)       # its own bearer token, never a cookie. While it is off this line does not match at all, so /debug is
+                                                  # handled exactly as any other path that does not exist (debug_api.py)
 
         if path.startswith("/avatar/"):
             return self.serve_avatar(path.rsplit("/", 1)[1])
@@ -3478,6 +3483,8 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split("/")
             if len(parts) == 5 and parts[4] in ("sync", "toggle", "delete", "tool", "purpose"):
                 return self.mcp_action_post(sess, parts[3], parts[4], form)
+        if path.startswith("/admin/debug/"):
+            return self.debug_admin_post(sess, path, form)
         if path == "/admin/peers":
             return self.peers_admin_post(sess, form)
         if path == "/admin/peers/recent-context":
@@ -3492,7 +3499,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.peers_invite_action_post(sess, parts[4], parts[5], form)
         if path.startswith("/admin/peers/"):
             parts = path.split("/")
-            if len(parts) == 5 and parts[4] in ("toggle", "delete", "purpose", "limits", "pingnow", "trust", "resync"):
+            if len(parts) == 5 and parts[4] in ("toggle", "delete", "purpose", "limits", "pingnow", "trust", "receipts", "screening", "resync"):
                 return self.peers_action_post(sess, parts[3], parts[4], form)
         if path.startswith("/peers/approvals/"):
             parts = path.split("/")
@@ -3710,9 +3717,12 @@ class Handler(BaseHTTPRequestHandler):
                      f"🗂{badge}</button>")
         chip = ""
         if sess.get("role") == "admin":
+            if debug_api.is_enabled(sess["workspace_id"]):
+                chip += ("<a class=update-chip style='background:var(--danger);color:#fff' href='/settings?tab=debug' "
+                         "title='The debug endpoint is on: conversations are readable with the token'>debug on</a>")
             rel = updates.banner_for(sess["workspace_id"])
             if rel:
-                chip = (f"<a class=update-chip href='/settings?tab=updates' title='Nori {esc(rel['tag'])} is available'>"
+                chip += (f"<a class=update-chip href='/settings?tab=updates' title='Nori {esc(rel['tag'])} is available'>"
                         f"↑ Update</a>")
         return f"{left_html}<div class=hdr-spacer></div>{chip}{board}{self._hdr_menu(sess)}"
 
@@ -7034,6 +7044,93 @@ class Handler(BaseHTTPRequestHandler):
             config.set("user", sess["user_id"], f["config_key"], f["config_key"] in form)
         return self.settings_page(sess, "features", info="saved")
 
+    # -- the debug endpoint (debug_api.py) --
+    def debug_get(self, path: str, qs: str):
+        """GET /debug[/<section>]: read-only diagnostics for the developer, behind a bearer token. While it is off it is indistinguishable from a path
+        that does not exist."""
+        ip = self.ip()
+        ws = accounts.the_workspace_id()
+        if accounts.rate_limited(ip):
+            debug_api.audit(ip, path, 429)
+            return self.send_json({"ok": False, "error": "too many attempts"}, 429)
+        if not debug_api.check_token(ws, debug_api.bearer(self.headers)):
+            accounts.record_fail(ip)
+            debug_api.audit(ip, path, 401)
+            return self.send_json({"ok": False, "error": "unauthorized"}, 401)
+        params = {k: v[0] for k, v in urllib.parse.parse_qs(qs).items()}
+        status, body = debug_api.handle(path[len("/debug"):].strip("/"), params)
+        debug_api.audit(ip, path + (("?" + qs) if qs else ""), status)
+        raw = json.dumps(body, default=str).encode("utf-8")
+        return self.send(status, raw, {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}, ctype="application/json")
+
+    def debug_admin_form(self, sess: dict, err: str = "", info: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        csrf = esc(sess["csrf"])
+        ws = sess["workspace_id"]
+        on = debug_api.is_enabled(ws)
+        fp = debug_api.fingerprint(ws)
+        until = config.get("workspace", ws, "debug_until_ts") or 0
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        host = self.headers.get("Host", "this-server") if getattr(self, "headers", None) else "this-server"
+        status = (f"<p><span class='chip active'>ON</span> "
+                  + (f"switches itself off {esc(usertime.fmt(sess['user_id'], until, '%b %d, %H:%M'))}" if until else "stays on until you turn it off") + "</p>"
+                  if on else "<p><span class=chip>off</span> /debug is treated exactly like a page that does not exist.</p>")
+        access = "".join(
+            f"<div class=list-row><div class=list-meta><b>{esc(r['status'])}</b> {esc(r['path'])}"
+            f"<small>{esc(usertime.fmt(sess['user_id'], r['ts'], '%b %d, %H:%M:%S'))} · {esc(r['ip'])}</small></div></div>"
+            for r in debug_api.recent_access(15)) or "<p class=muted>no requests yet</p>"
+        body = (
+            e + i +
+            "<div class=section><h2>debug endpoint</h2>"
+            "<p class=muted>A read-only door for whoever is developing this agent: its health, recent errors and logs, conversations, memory and settings, as "
+            "JSON, to anyone holding the token. <b>That includes private conversations</b>, so it is off unless you turn it on, needs a long token, and can switch "
+            "itself off. Secrets (keys, tokens, passwords, pairing strings) are never included. ⟦n⟧ cannot see or change any of this. Every request is recorded below. "
+            "The token travels with every request, so use it only over https.</p>"
+            + status +
+            f"<p class=muted>token: {'set, fingerprint <b>' + esc(fp) + '</b> (the same token on every agent shows the same fingerprint)' if fp else 'not set'}</p>"
+            "</div>"
+            "<div class=section><h2>token</h2>"
+            f"<form method=post action='/admin/debug/token'><input type=hidden name=csrf value='{csrf}'>"
+            f"<div class=field><label>token ({debug_api.MIN_TOKEN_LEN}+ characters; use the same one on each agent)</label>"
+            "<input type=password name=token autocomplete=off required minlength=24 spellcheck=false></div>"
+            "<button class='btn btn-primary'>save token</button></form>"
+            + (f"<form method=post action='/admin/debug/clear' style='margin-top:.5rem' data-confirm='Remove the token and switch the endpoint off?'>"
+               f"<input type=hidden name=csrf value='{csrf}'><button class='btn btn-danger'>remove token</button></form>" if fp else "") +
+            "</div>"
+            "<div class=section><h2>switch</h2>"
+            f"<form method=post action='/admin/debug/switch'><input type=hidden name=csrf value='{csrf}'>"
+            "<div class=field><label>keep it on</label><select name=hours>"
+            "<option value=0>until I turn it off</option><option value=1>for 1 hour</option><option value=8>for 8 hours</option>"
+            "<option value=24>for 24 hours</option><option value=168>for 7 days</option></select></div>"
+            + ("<button class='btn btn-primary' name=on value=1>turn on</button> " if not on else "<button class='btn btn-primary' name=on value=1>restart the timer</button> ")
+            + ("<button class='btn' name=on value=0>turn off</button>" if on else "") +
+            "</form>"
+            f"<p class=muted>Ask with <code>curl -H \"Authorization: Bearer &lt;token&gt;\" https://{esc(host)}/debug</code>. Sections are listed there.</p></div>"
+            "<div class=section><h2>recent requests</h2>" + access + "</div>")
+        return self._settings_response(sess, "debug", body)
+
+    def debug_admin_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        ws = sess["workspace_id"]
+        action = path[len("/admin/debug/"):].strip("/")
+        if action == "token":
+            ok, msg = debug_api.set_token(ws, form.get("token") or "")
+            return self.debug_admin_form(sess, info=msg) if ok else self.debug_admin_form(sess, err=msg)
+        if action == "clear":
+            debug_api.clear_token(ws)
+            return self.debug_admin_form(sess, info="token removed and the endpoint is off")
+        if action == "switch":
+            try:
+                hours = float(form.get("hours") or 0)
+            except ValueError:
+                hours = 0
+            ok, msg = debug_api.set_enabled(ws, form.get("on") == "1", hours)
+            return self.debug_admin_form(sess, info=msg) if ok else self.debug_admin_form(sess, err=msg)
+        return self.not_found()
+
     def categories_admin_form(self, sess: dict, err: str = "", info: str = ""):
         csrf = esc(sess["csrf"])
         e = f"<p class=err>{esc(err)}</p>" if err else ""
@@ -9109,7 +9206,8 @@ class Handler(BaseHTTPRequestHandler):
                                                ("homeassistant", "Home Assistant"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
-                                               ("backups", "Backups"), ("health", "Integration health"))))
+                                               ("backups", "Backups"), ("health", "Integration health"),
+                                               ("debug", "Debug endpoint"))))
         else:
             groups.append(("Connections", (("peers", "Peer connections"),)))
         return groups
@@ -9284,7 +9382,7 @@ class Handler(BaseHTTPRequestHandler):
             # state, one page covering every domain (task/note/reminder)
             # rather than a separate admin page per item type.
             return self.categories_admin_form(sess, err=err, info=info)
-        admin_pages = {"subagents": self.subagents_admin_form, "mcp": self.mcp_admin_form,
+        admin_pages = {"debug": self.debug_admin_form, "subagents": self.subagents_admin_form, "mcp": self.mcp_admin_form,
                        "tools": self.tools_admin_form, "models": self.models_admin_form,
                        "avatars": self.avatars_admin_page, "webtools": self.webtools_admin_form,
                        "homeassistant": self.homeassistant_admin_form,
@@ -11917,6 +12015,7 @@ def _device_turn_runner(user_id: int, extra_message: dict | None = None) -> dict
 
 def main() -> int:
     _redirect_logs()
+    logbuf.install()          # keep a copy of recent log lines for the debug endpoint (off by default; see debug_api.py)
     load_env(ENV_PATH)
     store.init()
     # Providers/Models rework (2026-09-30, see providers.py) -- there is

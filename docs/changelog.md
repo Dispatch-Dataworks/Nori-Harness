@@ -2,6 +2,17 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-10-30 — a debug endpoint, so a developer can ask a running agent how it is doing
+
+`GET /debug/<section>` returns an agent's health, recent errors and logs, conversations, memory, peers (with each message's screening result), jobs, schedules, pings, tools and settings as JSON. It is **off by default** (until an admin turns it on at Settings -> Debug endpoint, it is treated exactly like a page that does not exist), needs a **token** the admin enters (24+ characters, only its SHA-256 stored; the same token can be used on every agent, with a fingerprint to compare), can switch **itself off** after 1 hour to 7 days, is **read-only**, **scrubs secrets** by field name and by what a string looks like, cannot be read or changed by the agent's own tools, shows a **debug on** chip in the header while on, and **records every request**. `scripts/debug_query.py` asks several agents at once. Also: the scheduler's cycle used to swallow any exception silently; it now records and prints it. See [Debug endpoint](debug.md).
+
+## 2026-10-30 — every PACI message flagged suspicious; two save buttons "not found"
+
+Found on an instance (Sage) that two other agents were messaging:
+
+- **Everything was flagged suspicious.** Screening an incoming message (and screening email, MCP results and files) called the model directly through `chat.call()`, which can only use the `OPENROUTER_API_KEY` environment variable. An instance set up through the first-run wizard keeps its model in the provider chain and has no such key, so every screen failed, and a screen that fails is deliberately recorded as "suspicious" ("could not be read safely"). The same direct call fed conversation summaries, memory reflection and the out-of-band agent channel, which therefore never ran there. These now go through `chat.call_default()`: the environment key when there is one (unchanged), otherwise the workspace's own model chain, the one chat uses. A screen that cannot run still counts as suspicious, but now logs `ingest: SCREENING FAILED ... : <reason>` so it cannot hide again. Messages already flagged stay flagged; new ones are screened properly.
+- **Saving a peer's read-receipt or screening setting gave "not found".** The handler implemented both actions but the route table did not list them. Fixed, and a test now compares the two so a handled action can never lack a route.
+
 ## 2026-10-30 — "Nori" no longer sneaks into an instance with its own assistant name
 
 On an instance whose assistant is called something else (Iron), some text still said "Nori" where it meant the assistant: the chat box ("message nori"), the notification prompt, the avatar's alt text, several Settings paragraphs (browser control, the code sandbox, memory backends, job problems, how notifications work), and in the Android app its settings screen, notices, share sheet, shortcuts, tiles, toasts and notification channels ("Open Android's notification settings for Nori"). The pages now use the assistant's name. The server tells the phone the name (`assistant_name` in its settings) and the app (**0.2.1**) uses it, also as a connection's default tab name; static launcher labels say "my assistant". "Nori" remains where it is the product or the software (About, Updates, the app's own name). The browser extension's menu items still say "Send to Nori": its text is fixed in the extension.

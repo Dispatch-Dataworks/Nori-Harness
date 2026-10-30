@@ -179,13 +179,16 @@ def summarize_untrusted(content: str, *, kind: str = "email", preserve_content: 
     timed = timing.enabled_anywhere()
     t0 = time.perf_counter() if timed else None
     try:
-        result = chat.call(messages, tools=None, want_json=True, temperature=0.0)
+        result = chat.call_default(messages, tools=None, want_json=True, temperature=0.0)
         data = json.loads(result["content"])
         if not isinstance(data, dict):
             raise ValueError("not a JSON object")
-    except (chat.ModelError, json.JSONDecodeError, ValueError, TypeError):
+    except (chat.ModelError, json.JSONDecodeError, ValueError, TypeError) as exc:
         if timed:
             timing.log_screening(kind, (time.perf_counter() - t0) * 1000)
+        # Said out loud (2026-10-30): a failed screen is recorded as "suspicious", which on a model that is simply unreachable made EVERY message look
+        # hostile with nothing in the logs to say why.
+        print(f"ingest: SCREENING FAILED for a {kind} -- recorded as suspicious, not judged: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
         return _fallback(preserve_content)
     if timed:
         timing.log_screening(kind, (time.perf_counter() - t0) * 1000)

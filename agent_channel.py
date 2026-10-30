@@ -160,7 +160,7 @@ def ask(question: str, *, user_id: int | None = None) -> dict:
         {"role": "user", "content": FRAMING.format(question=question)},
     ]
     try:
-        res = chat.call(messages, tools=None)
+        res = chat.call_default(messages, tools=None)
     except chat.ModelError as exc:
         return {"ok": False, "reason": f"model call failed: {exc}"}
     reply = (res.get("content") or "").strip()

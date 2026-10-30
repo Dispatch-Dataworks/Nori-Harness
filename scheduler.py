@@ -668,6 +668,10 @@ def run_cycle_once() -> int:
     return sent
 
 
+# What the last proactive cycle did (shown by the debug endpoint): when it started and finished, how many messages it sent, and the error if it broke.
+LAST_CYCLE: dict = {"cycles": 0, "started_ts": 0.0, "finished_ts": 0.0, "sent": 0, "error": "", "error_ts": 0.0}
+
+
 def start() -> None:
     """Idempotent -- safe to call more than once (e.g. accidentally from
     two import paths); only the first call actually starts the thread."""
@@ -678,10 +682,18 @@ def start() -> None:
         _started = True
     def _loop():
         while True:
+            LAST_CYCLE["started_ts"] = time.time()
             try:
-                run_cycle_once()
-            except Exception:  # noqa: BLE001 -- the cycle must never kill the thread
-                pass
+                LAST_CYCLE["sent"] = run_cycle_once()
+                LAST_CYCLE["error"] = ""
+            except Exception as exc:  # noqa: BLE001 -- the cycle must never kill the thread
+                # Recorded and printed (2026-10-30): this used to be a bare `pass`, so a cycle that broke every time looked exactly like a quiet one.
+                import traceback
+                LAST_CYCLE["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                LAST_CYCLE["error_ts"] = time.time()
+                print("scheduler cycle raised:\n" + traceback.format_exc(), flush=True)
+            LAST_CYCLE["finished_ts"] = time.time()
+            LAST_CYCLE["cycles"] = LAST_CYCLE.get("cycles", 0) + 1
             time.sleep(INTERVAL_S)
     threading.Thread(target=_loop, daemon=True).start()
 

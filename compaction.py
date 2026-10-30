@@ -199,7 +199,7 @@ def _summarize_span(user_id: int, display_name: str, lo_id: int, hi_id: int) -> 
     raw_tokens = _est_tokens(convo)
     words = _target_tokens(raw_tokens) * 3 // 4
     try:
-        out = chat.call(
+        out = chat.call_default(
             [{"role": "system", "content": _SUMMARIZE_SYS.format(name=display_name, n=words)},
              {"role": "user", "content": convo}],
             max_tokens=_target_tokens(raw_tokens) + 120, temperature=0.3)
