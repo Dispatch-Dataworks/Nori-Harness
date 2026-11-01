@@ -48,6 +48,17 @@ def log_image_gen(*, workspace_id: int, user_id: int, purpose: str, prompt: str 
          (caption or None) and str(caption)[:500])))
 
 
+def log_vision_read(*, workspace_id: int, user_id: int, purpose: str, model: str | None, ok: bool, error: str | None = None,
+                    cost_usd: float | None = None) -> None:
+    """A vision model reading a picture (the avatar builder describing an uploaded reference): kind 'vision_read', so it is not mistaken for an image
+    generation. cost_usd is the provider's reported cost, or NULL when it reported none (an honest gap, not a guessed zero); spend_status() leaves the
+    avatar_builder purpose out of today's cap and counts it in the lifetime total."""
+    store.write(lambda c: c.execute(
+        "INSERT INTO media_log(workspace_id, user_id, ts, kind, purpose, model, ok, error, cost_usd, cost_is_actual) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (workspace_id, user_id, time.time(), "vision_read", purpose, model, 1 if ok else 0, (error or None) and str(error)[:500], cost_usd,
+         None if cost_usd is None else 1)))
+
+
 def log_chat_upload(*, workspace_id: int, user_id: int, file_id: str) -> None:
     """A casual chat photo the user sent, NOT a generation (2026-09-15) --
     a distinct kind/purpose so it's honestly distinguishable from

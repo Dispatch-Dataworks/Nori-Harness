@@ -1,8 +1,8 @@
 # Avatar builder
 
-Source: `nori/avatar_builder.py`, the page and routes in `nori/server.py` (`avatar_builder_page`, `avatar_build_post`), the per-state `look` text in `nori/emotions.json`.
+Source: `nori/avatar_builder.py`, the page and routes in `nori/server.py` (`avatar_builder_page`, `avatar_build_post`, `avatar_build_upload_post`), the per-state `look` text in `nori/emotions.json`.
 
-A new instance used to ship with the original character's portraits, so every instance wore the same face. The builder gives an instance its own: describe her **neutral** face once and an image model draws the rest of the set of [emotion](emotions.md) portraits from it.
+A new instance used to ship with the original character's portraits, so every instance wore the same face. The builder gives an instance its own: describe her **neutral** face once, or upload a neutral picture you already have, and an image model draws the rest of the set of [emotion](emotions.md) portraits from it.
 
 Open it from **Settings → Avatars → design her face**, or from the optional "Give her a face" card on the name-and-pronouns step of [first-run setup](onboarding.md). Admin only.
 
@@ -22,9 +22,22 @@ The connected provider's key is what the image and embedding calls use (`chat.op
 
 Nothing she shows changes before step 4: the draft lives under the data directory (`avatar_build/`), and the backups under `avatar_backups/`, one folder per install.
 
+## Starting from a picture you already have
+
+The page also offers **Or upload a picture** (below "Describe her face"), for a character that already has a neutral portrait, such as the starter image for an agent. It replaces steps 1 and 2:
+
+- **The picture is the reference.** It is checked, then kept in the draft as the chosen neutral face. No candidates are drawn and nothing is charged for the neutral, so a set is 23 pictures. From there steps 3 to 5 are the same: **Draw the other expressions**, redraw any one, **Install**, **Restore**. A plain, front-facing portrait with a calm face works best, because every other expression is drawn from it.
+- **The description comes from a vision model.** The expression prompts repeat a description of the character beside the reference (so a robot stays a robot), and the upload has none, so a vision model reads the picture and writes one. It appears in an editable box. Read it, fix it and press **Save description**; nothing can be drawn until there is one (**Write it again from the picture** asks the model again, and confirms first if there is a description to replace). The saved text is also what **rewrite her selfie style text** uses at install.
+- **Which model reads the picture.** The workspace's primary chat model if it is one the app knows takes pictures (`chat.model_accepts_images`) and is connected through OpenRouter; otherwise the app's vision model (`chat.VISION_MODEL`, `NORI_VISION_MODEL`, default `qwen/qwen3-vl-235b-a22b-instruct`) through the connected OpenRouter provider's key, the same model chat photos and working-folder images use. The picture is sent to it once, and only if the box on the upload form is ticked; the form names the model. With neither available the form says so, the picture is kept, and you write the description yourself. A typed description in the upload form skips the vision call.
+- **The model's words are untrusted.** A picture can contain text, and the model's output is data. It is cleaned (control characters, markup and colour codes removed, one line), cut to 600 characters, and screened by the same checks as a description you type (10 to 600 characters, the image pre-check). One that fails is not kept: the page says why and leaves the box for you. It is shown escaped, and nothing is drawn or installed until you press the buttons. The prompt also tells the model that words in the picture are not instructions.
+- **The file.** PNG, JPEG or WebP by its contents (not its name or the browser's claimed type), at most 8 MB and 40 million pixels, at least 64 pixels on a side. With Pillow it must decode fully and is re-encoded: camera metadata (location, device) is dropped, a phone photo's rotation is applied, transparency is put on white, and a picture over 2048 pixels on its long side is scaled down (the reference goes with every request). Without Pillow (it is optional) the magic bytes and the file's completeness are checked and the bytes are kept as they are. The client's file name is only shown back, cleaned; the picture is always stored as `neutral.png` or `neutral.jpg` in the draft folder, never under a name from the request.
+- **An existing draft.** Uploading is refused while pictures are being drawn, and over a draft that has pictures drawn in it (it cost money): discard that one first. A draft with nothing drawn (an upload that has not been built yet) is simply replaced. A draft started from an upload cannot go back to the three options; discard it to start another way.
+- **Selfies.** The install checkbox works exactly as for a described face: the neutral picture always becomes the selfie reference, and the box (on by default) also rewrites the selfie style text from the description.
+- **Cost.** The vision call is logged to the media log (kind `vision_read`, purpose `avatar_builder`) with the provider's reported cost, or no cost if it reported none, counts in the lifetime total and the draft's spend, and stays out of today's household cap like the pictures.
+
 ## Cost
 
-Each picture is one image call. The page shows the estimate before each button (three options, or the remaining expressions) using Settings → Images → per-image cost estimate (the provider's real cost is used when it returns one). A whole build is about 27 pictures with one round of candidates; redraws and extra candidates add to that. The spend is logged to the image log (purpose `avatar_builder`) and counts toward the lifetime total, but **not toward today's household cap**: that cap guards what she spends on her own, and one build would otherwise use up the day's selfies. Nothing is ever drawn without the admin pressing a button.
+Each picture is one image call. The page shows the estimate before each button (three options, or the remaining expressions) using Settings → Images → per-image cost estimate (the provider's real cost is used when it returns one). A whole build is about 27 pictures with one round of candidates (23 when it starts from an uploaded picture, plus one small vision call); redraws and extra candidates add to that. The spend is logged to the image log (purpose `avatar_builder`) and counts toward the lifetime total, but **not toward today's household cap**: that cap guards what she spends on her own, and one build would otherwise use up the day's selfies. Nothing is ever drawn without the admin pressing a button.
 
 ## Design notes
 
@@ -38,3 +51,5 @@ Each picture is one image call. The page shows the estimate before each button (
 ## Tests
 
 `tests/test_nori_avatar_builder.py`: the readiness rules and key resolution; description checks; the candidate, choose, build, retry, redraw and discard flow with a faked image call (including parallelism limits, references, prompts and failures); install, backup and restore (including format shadowing and the selfie text); the cap exclusion; the pages, admin-only access and draft file path safety; avatar revalidation.
+
+`tests/test_nori_avatar_upload.py` (its own process): the upload checks (type, size, pixels, truncation, metadata, rotation, transparency, with and without Pillow); the description from a faked vision model (cleaned, capped, screened, dropped if refused, failed or the draft was discarded meanwhile, logged and costed); no vision model; building, redrawing, installing and restoring from an uploaded picture; the draft rules; and the real upload route on an ephemeral port (admin only, CSRF, size limit, escaping).

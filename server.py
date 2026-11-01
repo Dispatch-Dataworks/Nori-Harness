@@ -3241,6 +3241,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/chat-photo":
             return self.chat_photo_post()
 
+        # An uploaded reference picture for the avatar builder (admin) -- multipart, so ahead of form() for the same reason.
+        if path == "/admin/avatars/build/upload":
+            return self.avatar_build_upload_post()
+
         # PACI inbound (see the PACI specification) -- a peer authenticates itself via
         # HMAC over its own shared secret (peers.verify_inbound), not a
         # session cookie, so this has to sit ahead of both the login gate
@@ -10817,7 +10821,7 @@ class Handler(BaseHTTPRequestHandler):
                                 extra_js=FILES_UPLOAD_JS.replace("__CFG__", upload_cfg)))
 
     # -- avatar builder (2026-10-28): describe her face, get the whole set. See avatar_builder.py / docs/avatar-builder.md --
-    _BUILD_ACTIONS = ("describe", "pick", "more", "back", "build", "redrawall", "redo", "install", "restore", "discard", "model")
+    _BUILD_ACTIONS = ("describe", "pick", "more", "back", "build", "redrawall", "redo", "install", "restore", "discard", "model", "setdesc", "describeagain")
 
     def _avatar_build_url(self, origin: str, msg: str = "", err: str = "") -> str:
         params = (["from=firstrun"] if origin == "firstrun" else []) + ([f"msg={urllib.parse.quote(msg[:300])}"] if msg else []) \
@@ -10901,12 +10905,54 @@ class Handler(BaseHTTPRequestHandler):
                     "placeholder='A woman in her early thirties with short silver hair, green eyes and light olive skin, a charcoal cardigan over a white shirt, "
                     "warm and composed. Photographic.'></textarea></div>"
                     f"<button class='btn btn-primary'>Draw three options (about ${3 * est:.2f})</button></form></div>")
+                route = avatar_builder.vision_route(wsid)
+                vision_line = (f"<label><input type=checkbox name=vision value=1 checked> Let a vision model read the picture and write the description for you to check "
+                               f"(the picture is sent once to {esc(route['label'])})</label>" if route else
+                               "<span class=muted>No vision model is available (it needs an OpenRouter connection), so write the description yourself.</span>")
+                parts.append(
+                    "<div class=section><h2>Or upload a picture of ⟦n⟧</h2>"
+                    "<p class=muted>If you already have ⟦n⟧'s neutral portrait, use it as it is: it becomes the reference every other expression is drawn from, so a plain "
+                    "front-facing portrait with a calm face works best. PNG, JPEG or WebP, up to "
+                    f"{avatar_builder.UPLOAD_MAX_BYTES // (1024 * 1024)} MB. Nothing is drawn for the neutral face, so only the other {n_other} expressions cost anything "
+                    f"(about ${n_other * est:.2f}). The picture is stored only in the draft until you install.</p>"
+                    f"<form method=post action='/admin/avatars/build/upload' enctype='multipart/form-data'>{csrf}"
+                    "<div class=field><input type=file name=file accept='image/png,image/jpeg,image/webp' required></div>"
+                    f"<div class=field>{vision_line}</div>"
+                    "<div class=field><label>Description, if you would rather write it (optional)</label>"
+                    "<textarea name=description rows=3 maxlength=600 placeholder='A silver service robot with a round faceplate and two glowing blue eyes. Illustrated.'></textarea></div>"
+                    "<button class='btn btn-primary'>Use this picture</button></form></div>")
         else:
             busy = st["busy"]
             c = avatar_builder.counts(st)
-            parts.append(f"<div class=section><h2>⟦n⟧'s description</h2><p>{esc(st['description'])}</p>"
-                         f"<p class=muted>Pictures drawn so far: {st['images']}, about ${st['cost_usd']:.2f} spent.</p>"
-                         f"<p>{post('discard', 'Discard this draft and start over', confirm='Throw away the draft and every picture in it?')}</p></div>")
+            uploaded = st.get("origin") == "upload"
+            if uploaded:
+                vis = st.get("vision") or {}
+                src = {"vision": f"Written by {esc(vis.get('model') or 'a vision model')} from the picture: read it and fix anything wrong.",
+                       "typed": "Written by you."}.get(st.get("description_source"), "")
+                warn = (f"<p class=err>{esc(vis['note'])}</p>" if vis.get("note") else "")
+                if not st["description"].strip():
+                    warn += "<p class=err>The other expressions are drawn from the picture and this description. Write it before drawing.</p>"
+                edit = ""
+                if not busy:
+                    edit = (f"<form method=post action='/admin/avatars/build/setdesc'>{csrf}"
+                            "<div class=field><textarea name=description rows=4 maxlength=600 required "
+                            f"placeholder='What kind of being ⟦n⟧ is, apparent age, hair or surface, eyes, skin or material, colours, clothing, the style'>{esc(st['description'])}</textarea></div>"
+                            "<button class=btn>Save description</button></form>")
+                    if avatar_builder.vision_route(wsid):
+                        edit += "<p>" + post("describeagain", "Write it again from the picture", cls="btn",
+                                             confirm="Replace the description with a new one written from the picture?" if st["description"].strip() else "") + "</p>"
+                parts.append(f"<div class=section><h2>⟦n⟧'s uploaded picture</h2>"
+                             f"<div class=bld-card>{img(st['states'][emotion.DEFAULT_STATE]['file'], 'md')}</div>"
+                             f"<p class=muted>{esc(st.get('upload_name') or 'uploaded image')}</p>"
+                             f"<h2>Description</h2><p class=muted>{src} It is sent with the picture for every expression, so it keeps ⟦n⟧ the same kind of being "
+                             f"(a robot stays a robot), and it is used to rewrite the selfie style text if you choose that when installing. Changes apply to pictures drawn from now on.</p>"
+                             f"{warn}{edit}"
+                             f"<p class=muted>Pictures drawn so far: {st['images']}, about ${st['cost_usd']:.2f} spent.</p>"
+                             f"<p>{post('discard', 'Discard this draft and start over', confirm='Throw away the draft and every picture in it?')}</p></div>")
+            else:
+                parts.append(f"<div class=section><h2>⟦n⟧'s description</h2><p>{esc(st['description'])}</p>"
+                             f"<p class=muted>Pictures drawn so far: {st['images']}, about ${st['cost_usd']:.2f} spent.</p>"
+                             f"<p>{post('discard', 'Discard this draft and start over', confirm='Throw away the draft and every picture in it?')}</p></div>")
             if busy:
                 parts.append("<p class=info>Drawing in the background. This page refreshes by itself; you can leave and come back, the pictures keep coming.</p>"
                              + ("<p class=muted>Stopping after the pictures already in flight.</p>" if st.get("cancel") else ""))
@@ -10925,14 +10971,15 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 neutral = st["states"][emotion.DEFAULT_STATE]
                 todo = sum(1 for n in avatar_builder.other_states() if st["states"][n]["status"] != "done")
-                head = f"<div class=bld-card>{img(neutral['file'], 'md')}<p class=muted>neutral: ⟦n⟧'s reference face</p></div>"
+                head_note = "neutral: your uploaded picture, the reference" if uploaded else "neutral: ⟦n⟧'s reference face"
+                head = f"<div class=bld-card>{img(neutral['file'], 'md')}<p class=muted>{head_note}</p></div>"
                 any_started = any(st["states"][n]["status"] != "pending" for n in avatar_builder.other_states())
                 actions = ""
-                if not busy and can_draw and todo:
+                if not busy and can_draw and todo and st["description"].strip():
                     label = (f"Draw the other {n_other} expressions (about ${n_other * est:.2f})" if not any_started
                              else f"Draw the {todo} that are missing (about ${todo * est:.2f})")
                     actions += post("build", label, cls="btn btn-primary")
-                if not busy and not any_started:
+                if not busy and not any_started and not uploaded:
                     actions += " " + post("back", "Choose a different face")
                 if not busy and can_draw and c["done"] > 1:
                     actions += " " + post("redrawall", f"Redraw all {n_other} (about ${n_other * est:.2f})",
@@ -10970,6 +11017,36 @@ class Handler(BaseHTTPRequestHandler):
             body = f"<p class=muted>{'drawing...' if s['status'] == 'running' else 'waiting'}</p>"
         return f"<div class=bld-card>{body}<p class=muted>{esc(name)}</p></div>"
 
+    def avatar_build_upload_post(self):
+        """Start a build from an uploaded neutral picture (admin). Multipart, read here with its own size cap (the picture limit plus room for the other
+        fields) because form() only takes small urlencoded bodies. The file name is never used as a path; avatar_builder checks the contents."""
+        sess = self._load_session()
+        if sess is None:
+            return self.send(303, b"", {"Location": "/login"})
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        cap = avatar_builder.UPLOAD_MAX_BYTES + 65536
+        if n <= 0 or n > cap:
+            left = min(max(n, 0), 4 * cap)        # read and throw away a bounded amount, so the client gets the answer instead of a reset connection
+            while left > 0:
+                left -= len(self.rfile.read(min(65536, left)) or b"\0" * left)
+            if sess["role"] != "admin":
+                return self.forbidden()
+            return self.send(303, b"", {"Location": self._avatar_build_url("", err=f"that file is over the {avatar_builder.UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit")})
+        body = self.rfile.read(n)
+        if sess["role"] != "admin":
+            return self.forbidden()
+        fields = self._parse_multipart(body, self.headers.get("Content-Type", ""))
+        if not self.csrf_ok(sess, {"csrf": fields.get("csrf", "")}):
+            return self.send(403, page_simple("blocked", "<p>bad CSRF token — reload and try again</p>"))
+        origin = "firstrun" if fields.get("from") == "firstrun" else ""
+        upload = fields.get("file")
+        if not isinstance(upload, tuple) or not upload[1]:
+            return self.send(303, b"", {"Location": self._avatar_build_url(origin, err="choose a picture first")})
+        description = fields.get("description")
+        ok, msg = avatar_builder.start_from_upload(sess["workspace_id"], sess["user_id"], upload[0], upload[1],
+                                                   description if isinstance(description, str) else "", fields.get("vision") == "1")
+        return self.send(303, b"", {"Location": self._avatar_build_url(origin, msg if ok else "", "" if ok else msg)})
+
     def avatar_build_post(self, sess: dict, path: str, form: dict):
         if sess["role"] != "admin":
             return self.forbidden()
@@ -10999,6 +11076,10 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = avatar_builder.restore(wsid)
         elif action == "discard":
             ok, msg = avatar_builder.discard()
+        elif action == "setdesc":
+            ok, msg = avatar_builder.set_description(wsid, form.get("description") or "")
+        elif action == "describeagain":
+            ok, msg = avatar_builder.describe_again(wsid, uid)
         else:  # model: which provider draws pictures, and with what
             try:
                 provider_id = int(form.get("image_provider") or 0)
