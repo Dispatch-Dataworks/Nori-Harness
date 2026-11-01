@@ -157,6 +157,8 @@ import infra
 import infra_proxmox  # noqa: F401  (registers the proxmox_* tools; off until an admin switches them on)
 import infra_proxmox_write  # noqa: F401  (the changes: every one asks the owner first unless its permission says otherwise)
 import infra_ssh  # noqa: F401  (a shell on the nodes and inside guests; off until switched on)
+import infra_cloudflare  # noqa: F401  (registers the cloudflare_* reads; off until an admin switches them on)
+import infra_cloudflare_write  # noqa: F401  (the changes: every one asks the owner first unless its permission says otherwise)
 import integration_health
 import jobs
 import logbuf

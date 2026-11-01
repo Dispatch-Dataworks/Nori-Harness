@@ -17,11 +17,13 @@ database row or a plaintext secret on disk. Run it INSIDE the container, which i
     docker compose exec nori python scripts/infra_provision.py ssh-genkey          # prints the PUBLIC key to put in authorized_keys
     docker compose exec nori python scripts/infra_provision.py ssh-pin --expect pve1=SHA256:abc... --expect pve2=SHA256:def...
     docker compose exec nori python scripts/infra_provision.py ssh-test
-    docker compose exec nori python scripts/infra_provision.py enable proxmox   # and: enable ssh / disable <service>
+    docker compose exec -e CLOUDFLARE_API_TOKEN=... nori python scripts/infra_provision.py cloudflare-set [--account-id <32 hex>]
+    docker compose exec nori python scripts/infra_provision.py cloudflare-test
+    docker compose exec nori python scripts/infra_provision.py enable proxmox   # and: enable ssh / enable cloudflare / disable <service>
     docker compose exec nori python scripts/infra_provision.py policy proxmox.power ask
 
-Secrets: the Proxmox token secret is read from the PROXMOX_TOKEN_SECRET environment variable or, with --secret-stdin, from standard input; never from the command
-line (it would show in process lists and shell history). The CA certificate comes from --ca-file or --ca-stdin. Nothing secret is ever printed: not the token
+Secrets: the Proxmox token secret is read from the PROXMOX_TOKEN_SECRET environment variable and the Cloudflare API token from CLOUDFLARE_API_TOKEN or, with
+--secret-stdin, from standard input; never from the command line (it would show in process lists and shell history). The CA certificate comes from --ca-file or --ca-stdin. Nothing secret is ever printed: not the token
 secret, not the SSH private key. Every command prints one JSON object and exits 0 on success, 1 on failure.
 
 ssh-pin pins a host's key ONLY where the server presents a key whose fingerprint equals the one given with --expect for it (read from the server itself:
@@ -44,6 +46,8 @@ import config  # noqa: E402
 import infra  # noqa: E402
 import infra_proxmox  # noqa: E402,F401
 import infra_proxmox_write  # noqa: E402,F401
+import infra_cloudflare  # noqa: E402
+import infra_cloudflare_write  # noqa: E402,F401
 import infra_ssh  # noqa: E402
 import store  # noqa: E402
 
@@ -136,6 +140,24 @@ def cmd_ssh_pin(a, ws) -> int:
     return _out(ok, message=msg, fingerprints=infra.credentials(ws, "ssh").get("fingerprints", "").splitlines() if ok else [], verified=ok)
 
 
+def cmd_cloudflare_set(a, ws) -> int:
+    values = {"api_token": sys.stdin.readline().strip() if a.secret_stdin else os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()}     # blank keeps the stored one
+    if a.account_id is not None:
+        values["account_id"] = a.account_id
+    else:
+        values["account_id"] = infra.credentials(ws, "cloudflare").get("account_id", "")
+    ok, msg = infra.save_credentials(ws, "cloudflare", values, None)
+    return _out(ok, message=msg, api_token="set" if infra.credentials(ws, "cloudflare").get("api_token") else "NOT set")
+
+
+def cmd_cloudflare_test(a, ws) -> int:
+    if not infra.configured(ws, "cloudflare"):
+        return _out(False, error="Cloudflare is not configured yet (an API token)")
+    res = infra_cloudflare.test(ws)
+    infra.log(ws, None, "cloudflare", "test", "connection", "operator script", res["ok"], res["detail"])
+    return _out(res["ok"], detail=res["detail"])
+
+
 def cmd_ssh_test(a, ws) -> int:
     if not infra.configured(ws, "ssh"):
         return _out(False, error="SSH is not configured yet (hosts and a key)")
@@ -168,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--ca-stdin", action="store_true", help="read the CA certificate from standard input (not with --secret-stdin)")
     s.set_defaults(fn=cmd_proxmox_set)
     sub.add_parser("proxmox-test").set_defaults(fn=cmd_proxmox_test)
+    s = sub.add_parser("cloudflare-set")
+    s.add_argument("--account-id", help="the 32-character account id (only needed if the token can see more than one account)")
+    s.add_argument("--secret-stdin", action="store_true", help="read the API token from the first line of standard input (else the CLOUDFLARE_API_TOKEN variable)")
+    s.set_defaults(fn=cmd_cloudflare_set)
+    sub.add_parser("cloudflare-test").set_defaults(fn=cmd_cloudflare_test)
     s = sub.add_parser("ssh-set-hosts")
     s.add_argument("--hosts", required=True, help="comma-separated name=user@address[:port], e.g. pve1=root@10.0.0.7 (use the Proxmox node names)")
     s.set_defaults(fn=cmd_ssh_set_hosts)

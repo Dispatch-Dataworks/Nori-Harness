@@ -1,10 +1,11 @@
 # Infrastructure tools
 
-Tools that let an agent (built for Iron) work with the servers it lives beside: Proxmox first, then SSH, with Cloudflare and GitHub planned through MCP.
+Tools that let an agent (built for Iron) work with the servers it lives beside: Proxmox first, then SSH, then Cloudflare, with GitHub planned.
 They are the part of Nori most able to cause real damage, so the design is mostly about refusing. (`infra.py`, `infra_proxmox.py`; added 2026-10-30.)
 
-**Status:** the framework, **Proxmox reads and changes**, and **SSH shell access** (on the nodes and inside guests) are built. Cloudflare and GitHub (as MCP
-connections) are next. Changes and the shell are the part most able to cause damage, so each one is a permission with a policy; see below.
+**Status:** the framework, **Proxmox reads and changes**, **SSH shell access** (on the nodes and inside guests) and **Cloudflare** (reads, and changes to DNS, cache,
+zone settings, tunnels and rules, plus a free-form change) are built. GitHub is next. Changes and the shell are the part most able to cause damage, so each one is a
+permission with a policy; see below.
 
 ## The rules
 
@@ -98,9 +99,60 @@ and never prints a secret or the private key. `ssh-pin --expect` keeps only host
 and pins nothing at all if any host does not match; `--trust-scan` pins unchecked. It only sets up access and policies; every change still asks the owner in the chat.
 `tests/test_nori_infra_provision.py` covers it.
 
+## Cloudflare (`infra_cloudflare.py` reads, `infra_cloudflare_write.py` changes)
+
+Native rather than MCP, for the reason Proxmox is: the switch, the policy, the approval card and the audit log have to sit around every call. Settings → Infrastructure →
+Cloudflare has the setup steps (open until credentials are saved). In short: make an **API token** (My Profile → API Tokens → Create Custom Token; never the Global API
+Key), start with read permissions, and lock it to this server's IP address in the dashboard. Paste it; the account id is only needed if the token sees several accounts.
+**Test the connection**, then **switch on**. The token's own permissions are the second lock: a read-only token cannot change anything whatever Nori is told, and
+adding Edit permissions to it (never to Nori) is how you widen what it may do. Going back to read-only is removing them from the token. The address is fixed
+(`api.cloudflare.com`), TLS is always verified, and nothing the model says can point a call elsewhere. `scripts/infra_provision.py cloudflare-set` / `cloudflare-test`
+does the same from the command line (the token from `CLOUDFLARE_API_TOKEN` or `--secret-stdin`).
+
+Reads (free once on; each logged; GET only; every result labelled as data, free text cut and stripped, secret-looking keys dropped):
+
+| tool | what it shows |
+|---|---|
+| `cloudflare_overview` | whether the token is active, the accounts, every zone with status and plan. Start here. |
+| `cloudflare_zone` | one zone: status, plan, name servers, DNSSEC and its settings (SSL mode, always-HTTPS, minimum TLS, security level ...) |
+| `cloudflare_dns` | a zone's records (id, type, name, content, proxied, TTL), filtered by type, name or content |
+| `cloudflare_tunnels` | tunnels with connector counts; one tunnel's ingress rules (hostname → internal service) and connectors |
+| `cloudflare_access` | Zero Trust Access applications and, for one, its policies |
+| `cloudflare_rules` | a zone's rulesets; for a phase (firewall, redirect, rate_limit, waf_managed, transform, cache, config) its rules |
+| `cloudflare_account` | Workers, Pages, R2, KV or D1 inventories |
+| `cloudflare_audit` | the account audit log: who changed what, when, from where |
+| `cloudflare_api_get` | any other read under `/zones/<id>` or `/accounts/<id>`; tokens, secrets, billing, members, keys, Access service tokens and log destinations are refused |
+
+Changes (six tools that only ever *ask*; what happens next is the permission's policy):
+
+| permission | what | policy |
+|---|---|---|
+| `cloudflare.dns` | create or edit an A, AAAA, CNAME, TXT, MX or NS record | ask; may be set to auto |
+| `cloudflare.cache` | purge everything, or up to 30 named URLs on the zone | ask; may be set to auto |
+| `cloudflare.settings` | one of a short list of zone settings (SSL flexible/full/strict, always-HTTPS, minimum TLS, security level, development mode, cache level ...) | ask; may be set to auto |
+| `cloudflare.tunnel` | create an empty tunnel (its connector token is never shown to the agent) | ask; may be set to auto |
+| `cloudflare.dns.delete` | delete a record | **always asks** |
+| `cloudflare.tunnel.config` | add or remove a tunnel route (puts an internal service on the internet under a hostname) | **always asks** |
+| `cloudflare.tunnel.delete` | delete a tunnel | **always asks** |
+| `cloudflare.rules` | add, enable, disable or delete a custom WAF rule or a single redirect | **always asks** |
+| `cloudflare.api` | any other POST/PUT/PATCH/DELETE under `/zones/<id>` or `/accounts/<id>`, shown in full on the card | **always asks** |
+
+How a change is kept honest: the zone, record, tunnel and rule are always the ones Cloudflare itself reports (the model gives a domain name or an id, never a path);
+the card says exactly what changes (for a record: its old and new content; for a route: the hostname, the service and whether a DNS record is made); at run time the
+thing is **read again and compared with what the card showed**: a record, rule or tunnel route list that changed in the meantime, a zone that was renamed, a DNS name
+that appeared since, all stop it with nothing done. A route addition changes the tunnel and then makes the proxied CNAME; a record that is already taken is refused
+*before* the tunnel is touched. Deleting a tunnel is refused while a connector is attached. A timed-out change is never re-sent. A 403 is explained in plain words
+(the token's permissions do not allow it). One chokepoint (`_call`) accepts only an allowlist of (method, path) pairs, or for the free-form tool a path under a zone or
+account outside the denied areas, never the deletion of a whole zone or account, with a JSON body of bounded size.
+
+Tunnel routes need a tunnel managed from Cloudflare (created from the dashboard or by `cloudflare_tunnel_change create`); a tunnel configured by a `config.yml` on its host
+is reported as such and is edited over SSH instead. The permissions to give the token for each change are listed in step 5 of the setup guide.
+
 ## What is not here yet
 
-* **Cloudflare and GitHub.** Planned as MCP connections (Settings -> MCP) rather than native tools, behind the same off-by-default switch.
+* **GitHub.** Planned, behind the same off-by-default switch.
+* Cloudflare: analytics (GraphQL), Access policy edits, Workers/Pages deploys and R2/KV/D1 data have no named tool. Access, Workers, Pages and the rest can be read,
+  and changed one request at a time through the free-form change (which always asks and shows the whole request).
 * Creating or cloning guests, migrating, editing network or storage definitions.
 * Per-host rules for the shell (for example "always ask on pve1, never on the NAS"); today the policy is per permission.
 
@@ -121,3 +173,9 @@ auto and deny policies, concurrent clicks); the admin page and chat card endpoin
 and body checks; renamed-guest refusal; snapshots, backups, config, destroy, restore, node power; failed tasks, role errors, failover, timeouts; SSH hosts parsing,
 strict argv, key file lifetime, pinning, parameter quoting, guests via the node, output cleaning, error explanations, ad-hoc commands (always ask, shown in full), the
 key never in a page, log or debug output.
+
+`tests/test_nori_infra_cloudflare.py` (57): off by default and invisible; admin-only, never peer-requestable; the agent cannot switch it on; the token encrypted and never
+shown (page, log, debug, command line); every read a GET to the one fixed address through the allowlist, the free-form read outside the denied areas and shaped; each
+read tool and its filters, paging, text cleaning, plain-English errors; the never-auto permissions; every change asks, shows exactly what, and runs once; records, rules,
+routes and tunnels re-read at run time and refused if changed; the chokepoint's allowlist; the connector token never reaching the model; the free-form change refused
+in the denied areas; failures and timeouts; and the operator script's `cloudflare-set` / `cloudflare-test`.

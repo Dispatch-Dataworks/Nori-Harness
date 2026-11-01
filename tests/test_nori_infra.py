@@ -595,11 +595,11 @@ class TheAdminPage(unittest.TestCase):
         self.assertIn("pveum user token add", page)
         self.assertIn("PVEAuditor", page)
         self.assertIn("pve-root-ca.pem", page)
-        self.assertEqual(page.count("<details open"), 2, "one per service that has no credentials yet")
+        self.assertEqual(page.count("<details open"), len(infra.SERVICES), "one per service that has no credentials yet")
         web("/admin/infra/proxmox/credentials", CREDS)
         status, page = web("/settings?tab=infra")
         self.assertIn("how to set this up", page)
-        self.assertEqual(page.count("<details open"), 1, "Proxmox collapsed once its credentials are in; SSH still open")
+        self.assertEqual(page.count("<details open"), len(infra.SERVICES) - 1, "Proxmox collapsed once its credentials are in; the others still open")
         self.assertNotIn(SECRET, page)
 
     def test_the_forms_need_the_csrf_token(self):
