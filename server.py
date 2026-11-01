@@ -137,6 +137,7 @@ import app_fetch
 import avatar_builder
 import capabilities
 import chat
+from chat_markdown import MARKDOWN_JS
 import config
 import crypto
 import debug_api
@@ -1039,6 +1040,20 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 #scrollbtn:not([hidden]){display:flex}
 .msg{max-width:82%;padding:.6rem .8rem;border-radius:16px;font-size:.92rem;line-height:1.45;
   white-space:pre-wrap;word-wrap:break-word}
+.md.md-done{white-space:normal;overflow-wrap:anywhere}
+.md > :first-child{margin-top:0}.md > :last-child{margin-bottom:0}
+.md p{margin:.45em 0}
+.md ul,.md ol{margin:.4em 0;padding-left:1.4em}.md li{margin:.15em 0}.md li > ul,.md li > ol{margin:.15em 0}
+.md h3,.md h4,.md h5,.md h6{margin:.7em 0 .3em;line-height:1.25;font-weight:650}
+.md h3{font-size:1.12em}.md h4{font-size:1.04em}.md h5,.md h6{font-size:.96em}
+.md code{font:.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:rgba(127,127,127,.2);padding:.08em .35em;border-radius:5px}
+.md pre{margin:.5em 0;padding:.6em .75em;background:rgba(0,0,0,.28);border-radius:9px;overflow-x:auto;white-space:pre;max-width:100%}
+.md pre code{background:none;padding:0;font-size:.84em;display:block}
+.md blockquote{margin:.5em 0;padding:.05em .75em;border-left:3px solid rgba(127,127,127,.5);opacity:.92}
+.md hr{border:0;border-top:1px solid rgba(127,127,127,.4);margin:.7em 0}
+.md a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.md .md-table{overflow-x:auto;margin:.5em 0}.md table{border-collapse:collapse;font-size:.92em}
+.md th,.md td{border:1px solid rgba(127,127,127,.4);padding:.25em .6em;text-align:left;vertical-align:top}.md th{background:rgba(127,127,127,.15)}
 .msg.user{align-self:flex-end;background:var(--accent);color:var(--on-accent);border-bottom-right-radius:5px}
 .msg.assistant{align-self:flex-start;background:var(--surface-2);border-bottom-left-radius:5px}
 .msg-meta{display:flex;align-items:center;gap:5px;font-size:.7rem;color:var(--text-mute);align-self:flex-start;
@@ -1946,7 +1961,9 @@ CHAT_JS = (
     "return b;}"
     "var b=document.createElement('div');b.className='msg '+m.role;"
     "if(m.id!=null)b.id='message-'+m.id;"
-    "b.textContent=m.content;"
+    # Her messages are drawn as markdown (chat_markdown.py); a draft card and anything a person typed stay plain.
+    "if(m.role==='assistant'&&m.kind!=='persona_draft'&&window.NoriMd){var mdx=document.createElement('div');mdx.className='md';b.appendChild(mdx);window.NoriMd.render(mdx,m.content);}"
+    "else b.textContent=m.content;"
     "if(m.meta&&m.meta.approval)b.appendChild(approvalBox(m.meta.approval));"
     "var acts=msgActions(m);if(acts)b.appendChild(acts);"
     # A persona draft that arrives live: the same card the page draws on load (Apply / Discard post to /onboarding/persona).
@@ -11396,8 +11413,9 @@ class Handler(BaseHTTPRequestHandler):
             hid = int(m.get("pruned") or 0)
             hid_cls = " msg-hidden" if hid else ""
             hid_title = " title='Hidden from ⟦n⟧ -- ⟦n⟧ can no longer see this message'" if hid else ""
+            text_html = f"<div class=md>{esc(m['content'])}</div>" if m["role"] == "assistant" else esc(m["content"])
             return (f"{marker}<div id='message-{m['id']}' class='msg {esc(m['role'])}{hid_cls}'{hid_title}>"
-                   f"{esc(m['content'])}{card}{actions}{_time_el(m.get('ts'))}</div>")
+                   f"{text_html}{card}{actions}{_time_el(m.get('ts'))}</div>")
 
         # the state shown on the LAST page load, before whatever just
         # happened (a new reply, or nothing if this is a plain reload) --
@@ -11512,7 +11530,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         with pt.stage("render"):
             self.send(200, page_app("nori", header, main, footer, split_main=True,
-                                    extra_js=CHAT_JS + IMAGE_VIEWER_JS + IMAGE_GALLERY_JS + NOTE_VIEWER_JS, chat_header=True))
+                                    extra_js=MARKDOWN_JS + CHAT_JS + IMAGE_VIEWER_JS + IMAGE_GALLERY_JS + NOTE_VIEWER_JS, chat_header=True))
 
     # -- full history (2026-09-14, operator's own ask): everything a
     # message actually carries all day -- timestamps, kind, emotion,
