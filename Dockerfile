@@ -13,6 +13,7 @@ FROM python:3.12-slim
 # braces cheaply -- both are tiny.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tzdata \
+      openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -155,6 +155,8 @@ import homeassistant
 import imagegen
 import infra
 import infra_proxmox  # noqa: F401  (registers the proxmox_* tools; off until an admin switches them on)
+import infra_proxmox_write  # noqa: F401  (the changes: every one asks the owner first unless its permission says otherwise)
+import infra_ssh  # noqa: F401  (a shell on the nodes and inside guests; off until switched on)
 import integration_health
 import jobs
 import logbuf
@@ -1097,7 +1099,7 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 .toolline{align-self:center;color:var(--text-mute);font-size:.72rem;opacity:.8;margin:.2rem 0}
 .msg-image{padding:.35rem;background:var(--surface-2)}
 .approval-card{margin-top:.55rem;padding:.55rem .65rem;border:1px solid var(--border,#8884);border-radius:.6rem;background:var(--surface-2)}
-.approval-q{font-weight:600;margin-bottom:.4rem}
+.approval-q{font-weight:600;margin-bottom:.4rem;white-space:pre-wrap;overflow-wrap:anywhere}
 .approval-btns{display:flex;gap:.5rem;flex-wrap:wrap}
 .approval-why,.approval-done{font-size:.8rem;margin-top:.35rem}
 .approval-btns button:disabled{opacity:.55}
@@ -7097,7 +7099,9 @@ class Handler(BaseHTTPRequestHandler):
             fields = []
             for f in infra.credential_status(ws, key):
                 label = esc(spec["fields"][[x["key"] for x in spec["fields"]].index(f["key"])]["label"])
-                if f["secret"]:
+                if spec["fields"][[x["key"] for x in spec["fields"]].index(f["key"])].get("kind") == "generated":
+                    inp = f"<span class=muted>{'made and saved (never shown)' if f['set'] else 'not made yet'}</span>"
+                elif f["secret"]:
                     inp = (f"<input type=password name='{esc(f['key'])}' autocomplete=off spellcheck=false "
                            f"placeholder='{'saved: leave blank to keep it' if f['set'] else 'not set'}'>")
                 elif spec["fields"][[x["key"] for x in spec["fields"]].index(f["key"])].get("kind") == "textarea":
@@ -7109,9 +7113,10 @@ class Handler(BaseHTTPRequestHandler):
             perm_rows = "".join(
                 f"<form method=post action='/admin/infra/{esc(key)}/policy' style='display:flex;gap:.5rem;align-items:center;margin:.3rem 0'>"
                 f"<input type=hidden name=csrf value='{csrf}'><input type=hidden name=permission value='{esc(p['name'])}'>"
-                f"<span style='flex:1'><b>{esc(p['label'])}</b><br><small class=muted>{esc(p['description'])}</small></span>"
+                f"<span style='flex:1'><b>{esc(p['label'])}</b>{' <span class=chip>always asks</span>' if p.get('never_auto') else ''}<br><small class=muted>{esc(p['description'])}</small></span>"
                 "<select name=policy>" + "".join(f"<option value={o}{' selected' if pols[p['name']] == o else ''}>{lbl}</option>" for o, lbl in
-                                                  (("ask", "ask me first"), ("auto", "do it without asking"), ("deny", "never"))) + "</select>"
+                                                  (("ask", "ask me first"), ("auto", "do it without asking"), ("deny", "never"))
+                                                  if not (o == "auto" and p.get("never_auto"))) + "</select>"
                 "<button class=btn>save</button></form>" for p in perms)
             log = "".join(
                 f"<div class=list-row><div class=list-meta><b>{esc(r['kind'])}</b> {esc(r['action'] or '')} {esc(r['target'] or '')}"
@@ -7123,20 +7128,25 @@ class Handler(BaseHTTPRequestHandler):
                 for s in spec.get("setup", []))
             guide = (f"<details{'' if infra.configured(ws, key) else ' open'} style='margin:.6rem 0'><summary><b>how to set this up</b></summary>{steps}</details>"
                      if steps else "")
+            facts = "".join(f"<div style='margin:.5rem 0'><small class=muted>{esc(r['label'])}</small><pre style='white-space:pre-wrap;user-select:all;overflow-x:auto;margin:.2rem 0'>{esc(r['text'])}</pre></div>"
+                            for r in (spec["info"](ws) if spec.get("info") and any(x["set"] for x in infra.credential_status(ws, key)) else []))
+            extra = "".join(
+                f"<form method=post action='/admin/infra/{esc(key)}/do-{esc(b['key'])}' style='display:inline'"
+                + (f" data-confirm='{esc(b['confirm'])}'" if b.get("confirm") else "") + f"><input type=hidden name=csrf value='{csrf}'><button class=btn>{esc(b['label'])}</button></form> "
+                for b in spec.get("buttons", []))
             sections.append(
                 f"<div class=section><h2>{esc(spec['label'])} <span class='chip{' active' if on else ''}'>{'ON' if on else 'off'}</span></h2>"
-                f"<p class=muted>{esc(spec['help'])}</p>" + guide +
+                f"<p class=muted>{esc(spec['help'])}</p>" + guide + facts +
                 f"<form method=post action='/admin/infra/{esc(key)}/credentials'><input type=hidden name=csrf value='{csrf}'>" + "".join(fields) +
                 "<button class='btn btn-primary'>save credentials</button></form>"
                 f"<form method=post action='/admin/infra/{esc(key)}/test' style='display:inline'><input type=hidden name=csrf value='{csrf}'>"
-                "<button class=btn>test the connection</button></form> "
+                "<button class=btn>test the connection</button></form> " + extra +
                 f"<form method=post action='/admin/infra/{esc(key)}/switch' style='display:inline'><input type=hidden name=csrf value='{csrf}'>"
                 + (f"<button class=btn name=on value=0>switch off</button>" if on else "<button class='btn btn-primary' name=on value=1>switch on</button>") + "</form> "
                 + (f"<form method=post action='/admin/infra/{esc(key)}/clear' style='display:inline' data-confirm='Delete the saved credentials and switch it off?'>"
                    f"<input type=hidden name=csrf value='{csrf}'><button class='btn btn-danger'>remove credentials</button></form>" if any(f['set'] for f in infra.credential_status(ws, key)) else "")
                 + "<h3 style='margin-top:1rem'>changes</h3>"
-                + (perm_rows or "<p class=muted>Read-only for now: there is nothing here that can change anything yet. When change actions are added, each one appears here, set to "
-                                "<b>ask me first</b>, and you can later let a trusted one run without asking.</p>")
+                + (perm_rows or "<p class=muted>Nothing here can change anything. Reading only.</p>")
                 + "<h3 style='margin-top:1rem'>recent use</h3>" + log + "</div>")
         waiting = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(p['summary'])}</b><small>{esc(usertime.fmt(sess['user_id'], p['created_ts'], '%b %d, %H:%M'))} · {esc(p['service'])}</small></div></div>"
@@ -7173,6 +7183,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.infra_admin_form(sess, info=res["detail"]) if res["ok"] else self.infra_admin_form(sess, err=res["detail"])
         if action == "policy":
             ok, msg = infra.set_policy(ws, form.get("permission", ""), form.get("policy", ""), uid)
+            return self.infra_admin_form(sess, info=msg) if ok else self.infra_admin_form(sess, err=msg)
+        if action.startswith("do-"):
+            btn = next((b for b in spec.get("buttons", []) if "do-" + b["key"] == action), None)
+            if btn is None:
+                return self.not_found()
+            ok, msg = btn["run"](ws, uid)
+            infra.log(ws, uid, svc, "button", btn["key"], None, ok, msg[:200])
             return self.infra_admin_form(sess, info=msg) if ok else self.infra_admin_form(sess, err=msg)
         if action == "clear":
             infra.clear_credentials(ws, svc, uid)

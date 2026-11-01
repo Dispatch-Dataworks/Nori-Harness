@@ -50,7 +50,8 @@ _PATH_OK = re.compile(
     rf"|nodes/{_NODE}/(status|apt/update|storage)"
     rf"|nodes/{_NODE}/(qemu|lxc)/\d{{1,9}}/(status/current|config|snapshot)"
     rf"|nodes/{_NODE}/storage/{_STORAGE}/(status|content)"
-    rf"|nodes/{_NODE}/tasks/UPID:[A-Za-z0-9:@!._-]{{10,200}}/(status|log))$")
+    rf"|nodes/{_NODE}/tasks/UPID:[A-Za-z0-9:@!._-]{{10,200}}/(status|log)"
+    r"|access/permissions)$")
 _QUERY_KEYS = {"type", "content", "limit", "start", "errors", "vmid", "source"}
 _UPID = re.compile(r"^UPID:([A-Za-z0-9][A-Za-z0-9-]{0,62}):[A-Za-z0-9:@!._-]{10,200}$")
 _SECRETISH_KEY = re.compile(r"(?i)pass|secret|token|ssh|keys?\b|fingerprint|private")
@@ -335,14 +336,23 @@ def test(ws: int) -> dict:
         c = cluster(ws)
     except ProxmoxError as exc:
         return {"ok": False, "detail": str(exc)}
-    return {"ok": True, "detail": f"Proxmox VE {c['version']}: {c['nodes_online']} nodes online, {'quorate' if c['quorate'] else 'NOT quorate'}, "
-                                  f"{c['guests']['running']} of {c['guests']['total']} guests running"}
+    detail = (f"Proxmox VE {c['version']}: {c['nodes_online']} nodes online, {'quorate' if c['quorate'] else 'NOT quorate'}, "
+              f"{c['guests']['running']} of {c['guests']['total']} guests running")
+    try:
+        perms = (_get(ws, "/access/permissions") or {}).get("/") or {}
+        can = any(perms.get(p) for p in ("VM.PowerMgmt", "VM.Snapshot", "VM.Allocate", "VM.Backup"))
+        detail += ("; the token's role CAN change guests (every change still asks you first, unless you allow it)" if can
+                   else "; the token is read-only: changes will fail until you give it a role such as PVEVMAdmin")
+    except ProxmoxError:
+        pass
+    return {"ok": True, "detail": detail}
 
 
 # ── registration ─────────────────────────────────────────────────────────
 infra.register_service(SERVICE, "Proxmox", FIELDS, test=test, validate=validate,
-                       help_text="Read-only for now: the agent can look at the cluster, guests, storage, backups and tasks. Create a dedicated API token with a read-only "
-                                 "role (for example PVEAuditor) and paste it here; it is stored encrypted and never shown again.",
+                       help_text="The agent can look at the cluster, guests, storage, backups and tasks. Changes (power, snapshots, backups, settings, and the destructive ones) "
+                                 "also need the token's role to allow them, and each one asks you first unless you have allowed that kind to run by itself. "
+                                 "Paste a dedicated API token; it is stored encrypted and never shown again.",
                        setup=[
                            {"title": "1. Make a user and token just for this",
                             "text": "On any Proxmox node, open a shell (Datacenter > the node > Shell) and run these. A separate user means you can revoke the agent's access "
@@ -359,9 +369,22 @@ infra.register_service(SERVICE, "Proxmox", FIELDS, test=test, validate=validate,
                                     "Token id: nori@pve!agent. Token secret: the value from step 1. CA: the text from step 2. Then press save credentials."},
                            {"title": "4. Test, then switch on",
                             "text": "Press test the connection; it should report the Proxmox version and how many nodes are online. Then press switch on. "
-                                    "Nothing here can change anything yet; the agent can only look. To stop it at any time, switch it off here, or delete the token "
+                                    "Until you do step 5 the agent can only look. To stop it at any time, switch it off here, or delete the token "
                                     "on the node with the command below.",
                             "code": "pveum user token remove nori@pve agent"},
+                           {"title": "5. Let it make changes (optional)",
+                            "text": "Reading needs only PVEAuditor. For the agent to start, stop, snapshot, back up, change or restore guests, give the same token a bigger role. "
+                                    "The roles are the second lock: every change still asks you first, whatever the role. PVEDatastoreAdmin lets it back up to and delete backups from "
+                                    "storages. Rebooting or shutting down a whole node needs the Sys.PowerMgmt privilege, which only the Administrator role has, so give it that one "
+                                    "privilege on its own (the commented lines). Press test the connection afterwards: it says whether the token can change things.",
+                            "code": "pveum acl modify / --tokens 'nori@pve!agent' --roles PVEVMAdmin,PVEDatastoreAdmin\n"
+                                    "# if Proxmox still refuses, the user needs the same roles (a token cannot exceed its user):\n"
+                                    "# pveum acl modify / --users nori@pve --roles PVEVMAdmin,PVEDatastoreAdmin\n"
+                                    "# only if it should be able to reboot/shut down nodes:\n"
+                                    "# pveum role add NoriNodePower --privs Sys.PowerMgmt\n"
+                                    "# pveum acl modify /nodes --tokens 'nori@pve!agent' --roles NoriNodePower\n"
+                                    "# back to read-only (removes the extra roles, keeps PVEAuditor):\n"
+                                    "# pveum acl delete / --tokens 'nori@pve!agent' --roles PVEVMAdmin,PVEDatastoreAdmin"},
                        ])
 
 

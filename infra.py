@@ -54,17 +54,23 @@ def switch_key(service: str) -> str:
     return f"infra_{service}_enabled"
 
 
-def register_service(key: str, label: str, fields: list[dict], test=None, help_text: str = "", validate=None, setup: list[dict] | None = None) -> None:
+def register_service(key: str, label: str, fields: list[dict], test=None, help_text: str = "", validate=None, setup: list[dict] | None = None,
+                     info=None, buttons: list[dict] | None = None) -> None:
     """fields: [{"key","label","secret":bool,"kind":"text"|"textarea","help":str,"required":bool}]. test(ws) -> {"ok": bool, "detail": str};
     validate(values) -> "" or a plain-English problem with what was submitted. setup: the steps shown on the settings page for getting the
-    credentials, [{"title": str, "text": str, "code": str (optional, shown copyable)}]."""
-    SERVICES[key] = {"key": key, "label": label, "fields": fields, "test": test, "help": help_text, "validate": validate, "setup": setup or []}
+    credentials, [{"title": str, "text": str, "code": str (optional, shown copyable)}]. info(ws) -> [{"label": str, "text": str}]: non-secret facts the page
+    shows (a public key to authorise, the fingerprints that were pinned). buttons: [{"key", "label", "run": fn(ws, user_id) -> (ok, message), "confirm": str}], extra
+    actions the page offers beside save/test (posted to /admin/infra/<service>/do-<key>)."""
+    SERVICES[key] = {"key": key, "label": label, "fields": fields, "test": test, "help": help_text, "validate": validate, "setup": setup or [],
+                     "info": info, "buttons": buttons or []}
     # Workspace-wide, off, readable by the agent's get_settings (so it can say whether it has the tools) but NOT writable by it.
     config._SPEC[switch_key(key)] = (False, bool, "workspace", False, f"{label} infrastructure tools are switched on")
 
 
-def register_permission(name: str, service: str, label: str, description: str) -> None:
-    PERMISSIONS[name] = {"name": name, "service": service, "label": label, "description": description}
+def register_permission(name: str, service: str, label: str, description: str, never_auto: bool = False) -> None:
+    """never_auto: the kind of change that can do real, hard-to-undo damage (destroying things, arbitrary shell commands). It is only ever "ask" or "deny":
+    "do it without asking" is not offered for it, set_policy refuses it, and a stored "auto" is read as "ask"."""
+    PERMISSIONS[name] = {"name": name, "service": service, "label": label, "description": description, "never_auto": bool(never_auto)}
 
 
 def register_action(name: str, service: str, permission: str, run, summary) -> None:
@@ -147,6 +153,17 @@ def save_credentials(ws: int, service: str, values: dict, user_id: int | None = 
     return True, "saved"
 
 
+def set_credential_values(ws: int, service: str, values: dict, user_id: int | None = None) -> None:
+    """Store values the service itself produced (a generated key, pinned host keys): no form, no validation, merged into what is already saved."""
+    cur = credentials(ws, service)
+    cur.update({k: v for k, v in values.items() if isinstance(v, str)})
+    store.write(lambda c: c.execute(
+        "INSERT INTO infra_credentials(workspace_id, service, data_enc, updated_ts, updated_by) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(workspace_id, service) DO UPDATE SET data_enc=excluded.data_enc, updated_ts=excluded.updated_ts, updated_by=excluded.updated_by",
+        (ws, service, crypto.encrypt(json.dumps(cur)), time.time(), user_id)))
+    log(ws, user_id, service, "credentials", "generated", None, True, "")
+
+
 def clear_credentials(ws: int, service: str, user_id: int | None = None) -> None:
     store.write(lambda c: c.execute("DELETE FROM infra_credentials WHERE workspace_id=? AND service=?", (ws, service)))
     if service in SERVICES:
@@ -165,7 +182,10 @@ def credential_status(ws: int, service: str) -> list[dict]:
 def policy(ws: int, permission: str) -> str:
     """ask unless an admin said otherwise. A permission nobody has configured is ask; so is one added in a later version."""
     row = store.read(lambda c: c.execute("SELECT policy FROM infra_policies WHERE workspace_id=? AND permission=?", (ws, permission)).fetchone())
-    return row["policy"] if row and row["policy"] in POLICIES else "ask"
+    pol = row["policy"] if row and row["policy"] in POLICIES else "ask"
+    if pol == "auto" and PERMISSIONS.get(permission, {}).get("never_auto"):
+        return "ask"
+    return pol
 
 
 def set_policy(ws: int, permission: str, value: str, user_id: int | None = None) -> tuple[bool, str]:
@@ -173,6 +193,8 @@ def set_policy(ws: int, permission: str, value: str, user_id: int | None = None)
         return False, "no such permission"
     if value not in POLICIES:
         return False, "policy must be ask, auto or deny"
+    if value == "auto" and PERMISSIONS[permission].get("never_auto"):
+        return False, f"{PERMISSIONS[permission]['label']} always asks you first: it can do damage that is hard to undo, so 'do it without asking' is not offered for it"
     store.write(lambda c: c.execute(
         "INSERT INTO infra_policies(workspace_id, permission, policy, updated_ts) VALUES (?,?,?,?) "
         "ON CONFLICT(workspace_id, permission) DO UPDATE SET policy=excluded.policy, updated_ts=excluded.updated_ts", (ws, permission, value, time.time())))
@@ -271,7 +293,8 @@ def perform(session: dict, action: str, args: dict) -> dict:
     pid = store.write(lambda c: c.execute(
         "INSERT INTO infra_pending(workspace_id, user_id, service, action, permission, args_json, summary, created_ts) VALUES (?,?,?,?,?,?,?,?)",
         (ws, uid, act["service"], action, act["permission"], json.dumps(args), summary, time.time())).lastrowid)
-    mid = _post_card(uid, f"I'd like to: {summary}", pid, summary, act["service"])
+    # In a code block so the chat shows the text exactly as it is (the chat draws markdown, and a command's * or _ must not be restyled).
+    mid = _post_card(uid, "I'd like to:" + chr(10) + "```" + chr(10) + summary.replace("```", "`" + chr(0x200b) + "``") + chr(10) + "```", pid, summary, act["service"])
     store.write(lambda c: c.execute("UPDATE infra_pending SET message_id=? WHERE id=?", (mid, pid)))
     log(ws, uid, act["service"], "approval_requested", action, summary, True, "")
     return {"status": "awaiting_approval", "approval_id": pid, "summary": summary,

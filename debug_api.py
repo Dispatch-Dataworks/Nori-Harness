@@ -480,6 +480,8 @@ def infra_section(params: dict) -> dict:
     approval, and the audit log."""
     import infra
     import infra_proxmox  # noqa: F401
+    import infra_proxmox_write  # noqa: F401
+    import infra_ssh  # noqa: F401
     ws = _ws()
     return {"services": {k: {"label": s["label"], "switch_on": bool(config.get("workspace", ws, infra.switch_key(k))), "enabled": infra.enabled(k, ws),
                              "fields_set": [{"field": f["key"], "set": f["set"]} for f in infra.credential_status(ws, k)]} for k, s in infra.SERVICES.items()},
