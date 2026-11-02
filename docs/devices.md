@@ -207,8 +207,9 @@ any of these keys (`settings_tool` is an enumerated whitelist; none of them is o
 the apps on the owner's hidden list (`phone_hidden_apps`) and a built-in never list (password managers, authenticators, wallets, system settings, Play
 Store), applied on the phone and again on the server. *SMS* (separate, deeper): **incoming texts only, as they arrive** (`RECEIVE_SMS`); no history is read
 (`READ_SMS` is not requested), the app cannot send texts, no contacts are read (the sender is the number as received). Short-code and alphanumeric senders (banks,
-one-time-code services) are skipped unless `phone_capture_sms_short`. Chat-app (RCS) messages still arrive only as notifications. If both are on and the same
-text arrives twice, the second is dropped.
+one-time-code services) are skipped unless `phone_capture_sms_short`. Chat (RCS) messages never arrive as SMS: they reach the assistant only as the messaging app's notification, so that app must be chosen under *apps* (Google Messages is
+`com.google.android.apps.messaging`) or the level be *all*. The phone does not hide the messaging app's notifications when SMS is on; if the same text arrives both ways
+the server keeps the first copy (`phone_capture.record`, same first 30 characters within 10 minutes).
 
 **Wire.** The phone's poll `settings` gains `capture` (`off|apps|all`), `capture_apps`, `hide_codes`, `capture_sms`, `capture_sms_short`; its poll `caps` gains
 `capture` and `sms` (per connection). `POST /device/notifications` (Bearer `npn_`, body <= 256 KB):

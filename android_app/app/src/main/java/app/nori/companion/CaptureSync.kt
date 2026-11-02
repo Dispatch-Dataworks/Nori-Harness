@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.Settings
-import android.provider.Telephony
 import app.nori.companion.core.Caps
 import app.nori.companion.core.Capture
 import app.nori.companion.core.CaptureLevel
@@ -36,14 +35,12 @@ object CaptureSync {
     }
 
     /** One connection's two keys (and the text switch), read from what the phone remembers. */
-    fun slotState(c: Context, slot: Int, smsGranted: Boolean = smsGranted(c)): SlotCapture {
+    fun slotState(c: Context, slot: Int): SlotCapture {
         val s = Prefs.serverSettings(c, slot)
-        val smsOn = s.captureSms && Prefs.captureSms(c, slot) && smsGranted
-        val dedupe = if (smsOn) try { Telephony.Sms.getDefaultSmsPackage(c) ?: "" } catch (e: Exception) { "" } else ""
-        return SlotCapture(slot, Prefs.active(c, slot), s.capture, Prefs.captureLevel(c, slot), s.captureApps, s.hiddenApps, s.hideCodes, s.captureSms, Prefs.captureSms(c, slot), s.captureSmsShort, dedupe)
+        return SlotCapture(slot, Prefs.active(c, slot), s.capture, Prefs.captureLevel(c, slot), s.captureApps, s.hiddenApps, s.hideCodes, s.captureSms, Prefs.captureSms(c, slot), s.captureSmsShort)
     }
 
-    fun slotStates(c: Context): List<SlotCapture> { val g = smsGranted(c); return Prefs.slots(c).map { slotState(c, it, g) } }
+    fun slotStates(c: Context): List<SlotCapture> = Prefs.slots(c).map { slotState(c, it) }
 
     /** The caps one connection reports: the shared device caps plus its own `capture` and `sms` flags. */
     fun capsFor(c: Context, slot: Int, base: Caps): Caps =
@@ -101,7 +98,7 @@ object CaptureSync {
         val granted = smsGranted(c)
         for (slot in Prefs.slots(c)) {
             if (Prefs.captureOutbox(c, slot).size() == 0) continue
-            val s = slotState(c, slot, granted)
+            val s = slotState(c, slot)
             synchronized(lock) {
                 val o = Prefs.captureOutbox(c, slot)
                 if (!s.active) o.clear()

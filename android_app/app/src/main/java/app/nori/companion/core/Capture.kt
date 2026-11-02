@@ -58,8 +58,6 @@ class SlotCapture(
     val sms: Boolean = false,
     val smsPhone: Boolean = false,
     val smsShort: Boolean = false,
-    /** The default SMS app's package while text capture is on for this connection, so the same text is not shared twice (once as a text, once as that app's notification). */
-    val smsDedupePkg: String = "",
 ) {
     val effective: CaptureLevel get() = Capture.effective(server, phone)
 }
@@ -165,7 +163,6 @@ object Capture {
     /** What this connection receives for [n], or null when it receives nothing for it (level, chosen apps, hidden list, the global filters). */
     fun forSlot(n: RawNotification, s: SlotCapture): Notif? {
         if (!s.active || skipReason(n) != null) return null
-        if (s.smsDedupePkg.isNotEmpty() && AppGuard.normalize(n.pkg) == AppGuard.normalize(s.smsDedupePkg)) return null
         if (!mayShare(s.effective, n.pkg, s.serverApps)) return null
         if (AppGuard.isHidden(n.pkg, s.hidden)) return null
         var title = plain(n.title, TITLE_MAX)

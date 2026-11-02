@@ -270,6 +270,15 @@ class Receiving(unittest.TestCase):
         _post_items(self.raw, [_sms()])
         self.assertEqual(len(_rows()), 1)
 
+    def test_it_does_not_matter_which_copy_arrives_first_and_a_chat_only_message_is_kept(self):
+        # the phone no longer hides the messaging app's notifications when texts are on (chat/RCS messages exist only as notifications), so both copies of a plain SMS arrive
+        _allow(level="all", sms=True, consent=True)
+        _post_items(self.raw, [_sms(text="running late, start without me")])
+        _post_items(self.raw, [_n(pkg="com.google.android.apps.messaging", app="Messages", title="Mom", text="running late, start without me")])
+        self.assertEqual(len(_rows()), 1, "the SMS came first; the messaging app's copy is dropped")
+        _post_items(self.raw, [_n(pkg="com.google.android.apps.messaging", app="Messages", title="Dad", text="dinner is at six, bring the pie")])
+        self.assertEqual(len(_rows()), 2, "a chat message has no SMS twin, so it is kept")
+
     def test_a_held_phone_keeps_nothing(self):
         _allow()
         devices.set_hold(UID, self.token["id"], True)

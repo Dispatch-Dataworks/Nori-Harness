@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-02 — fixed: chat (RCS) messages were lost when text sharing was on
+
+Android app 0.3.1. Most phones now carry two-person conversations as chat (RCS) rather than SMS, and chat messages never arrive as SMS: they reach the assistant only as the messaging app's notification. App 0.3.0 hid that app's notifications whenever text sharing was on, so a person with Google Messages could receive plain texts but lose every chat message. The app no longer hides them; a text that arrives both ways is kept once (the server compares the first 30 characters within 10 minutes, whichever copy came first). To receive chat messages the messaging app must be among the chosen apps (Google Messages is `com.google.android.apps.messaging`) or the level must be *everything*; a muted conversation shows no notification and so is not seen.
+
 ## 2026-11-02 — fixed: a long message was reported as a CSRF error
 
 Sending a long message to an assistant failed with "bad csrf token -- reload and try again", and retrying could never work. Cause: every form was capped at 64 KB, and a larger one was silently turned into an *empty* form, which the CSRF check that follows then took for a missing token. A message of roughly 50,000 characters or more (less if it has accented letters or emoji, which take up more when sent) hit it. Now a chat message may be up to 100,000 characters; a longer one is refused with the real reason and its length (and is not stored), the page checks before it clears the box so a too-long draft is not lost, and any other form that is genuinely too big says "too large" instead of blaming the token. A really wrong token is still a 403. The limit is `MAX_MESSAGE_CHARS` in `server.py`.

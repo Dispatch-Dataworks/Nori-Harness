@@ -12,8 +12,8 @@ private fun raw(pkg: String = "com.chat.app", title: String = "Sam", text: Strin
     RawNotification(pkg, "Chat", title, text, "", category, "k-$pkg", ts, ongoing, group, secret)
 
 private fun slot(server: CaptureLevel = CaptureLevel.ALL, phone: CaptureLevel = CaptureLevel.ALL, apps: List<String> = emptyList(), hidden: List<String> = emptyList(), active: Boolean = true,
-                 hideCodes: Boolean = true, sms: Boolean = false, smsPhone: Boolean = false, smsShort: Boolean = false, dedupe: String = "") =
-    SlotCapture(0, active, server, phone, apps, hidden, hideCodes, sms, smsPhone, smsShort, dedupe)
+                 hideCodes: Boolean = true, sms: Boolean = false, smsPhone: Boolean = false, smsShort: Boolean = false) =
+    SlotCapture(0, active, server, phone, apps, hidden, hideCodes, sms, smsPhone, smsShort)
 
 class CaptureLevelTests {
     @Test fun defaultsAndTolerantParsing() {
@@ -265,10 +265,17 @@ class SmsCaptureTests {
         assertEquals("see you at 7:30", Capture.smsFor("+15551234567", "see you at 7:30", 1L, on(), true)!!.text)
     }
 
-    @Test fun theHiddenAppListDoesNotApplyToTextsAndTheDefaultSmsAppIsNotDoubled() {
-        val s = SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.ALL, emptyList(), listOf("sms", "*"), true, true, true, false, "com.google.android.apps.messaging")
+    @Test fun theHiddenAppListDoesNotApplyToTexts() {
+        val s = SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.ALL, emptyList(), listOf("sms", "*"), true, true, true, false)
         assertNotNull(Capture.smsFor("+15551234567", "hi", 1L, s, true))
-        assertNull("the messaging app's own notification would show the same text twice", Capture.forSlot(raw(pkg = "com.google.android.apps.messaging"), s.let { SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.ALL, emptyList(), emptyList(), true, true, true, false, "com.google.android.apps.messaging") }))
-        assertNotNull(Capture.forSlot(raw(pkg = "com.chat.app"), SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.ALL, emptyList(), emptyList(), true, true, true, false, "com.google.android.apps.messaging")))
+    }
+
+    @Test fun theMessagingAppsOwnNotificationIsStillSharedWhenTextsAreOn() {
+        // RCS chats reach the phone only as the messaging app's notification, so it must not be suppressed when SMS is on; the server drops the second copy of a plain SMS.
+        val s = SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.ALL, emptyList(), emptyList(), true, true, true, false)
+        val n = Capture.forSlot(raw(pkg = "com.google.android.apps.messaging", title = "Mom", text = "dinner at 6?"), s)
+        assertNotNull(n); assertEquals("com.google.android.apps.messaging", n!!.pkg)
+        val chosen = SlotCapture(0, true, CaptureLevel.APPS, CaptureLevel.APPS, listOf("com.google.android.apps.messaging"), emptyList(), true, true, true, false)
+        assertNotNull(Capture.forSlot(raw(pkg = "com.google.android.apps.messaging"), chosen))
     }
 }
