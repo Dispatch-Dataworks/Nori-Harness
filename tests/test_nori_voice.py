@@ -75,6 +75,7 @@ class VoiceTurnMetaTests(unittest.TestCase):
         env = dict(
             json=json,
             time=time,
+            MAX_MESSAGE_CHARS=100_000,      # a module-level constant send_msg reads (the longest chat message); this harness runs the method outside its module
             onboarding=SimpleNamespace(guide_message=lambda user, **kw: None, DRAFT_KIND="persona_draft"),
             persona_admin=SimpleNamespace(is_customised=lambda: False),
             _persona_customised_for=lambda sess: False,
