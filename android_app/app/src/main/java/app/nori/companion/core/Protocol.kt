@@ -21,11 +21,19 @@ data class DeviceSettings(
     val placesList: List<PlaceDef> = emptyList(),
     val actionsPerHour: Int = 30,
     val assistantName: String = "",
+    /** Sharing the phone's notifications: what the server allows for this connection ("off" unless it says otherwise), the packages "apps" may share, and whether codes are hidden. */
+    val capture: CaptureLevel = CaptureLevel.OFF,
+    val captureApps: List<String> = emptyList(),
+    val hideCodes: Boolean = true,
+    /** Sharing new incoming texts (a separate option), and whether short-code senders may be shared. */
+    val captureSms: Boolean = false,
+    val captureSmsShort: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("notifications", notifications).put("health", health).put("places", places).put("actions", actions).put("control", control).put("screen", screen)
         .put("quiet", quiet).put("hidden_apps", JSONArray(hiddenApps)).put("never_control_apps", JSONArray(neverControlApps))
         .put("health_metrics", JSONArray(healthMetrics)).put("actions_per_hour", actionsPerHour).put("assistant_name", assistantName)
+        .put("capture", capture.wire).put("capture_apps", JSONArray(captureApps)).put("hide_codes", hideCodes).put("capture_sms", captureSms).put("capture_sms_short", captureSmsShort)
         .put("places_list", JSONArray(placesList.map { JSONObject().put("id", it.id).put("name", it.name).put("lat", it.lat).put("lon", it.lon).put("radius_m", it.radiusM).put("home", it.home) }))
 
     companion object {
@@ -60,6 +68,11 @@ data class DeviceSettings(
                 placesList = places,
                 actionsPerHour = j.optInt("actions_per_hour", 30).coerceIn(0, 10_000),
                 assistantName = j.optString("assistant_name", "").trim().take(40),
+                capture = CaptureLevel.parse(j.optString("capture", "off")),
+                captureApps = Capture.cleanAppList(strings("capture_apps")),
+                hideCodes = j.optBoolean("hide_codes", true),
+                captureSms = j.optBoolean("capture_sms", false),
+                captureSmsShort = j.optBoolean("capture_sms_short", false),
             )
         }
 
@@ -76,9 +89,15 @@ data class AppInfo(val latest: String, val apkUrl: String)
 data class PollResponse(val active: Boolean, val messages: List<Message>, val command: Command?, val settings: DeviceSettings?, val app: AppInfo?)
 
 /** What the device itself allows, as reported in `caps` (its own half; the server combines it with its half). */
-data class Caps(val notifications: Boolean, val share: Boolean, val health: Boolean, val places: Boolean, val actions: Boolean, val screen: Boolean, val control: Boolean) {
+data class Caps(
+    val notifications: Boolean, val share: Boolean, val health: Boolean, val places: Boolean, val actions: Boolean, val screen: Boolean, val control: Boolean,
+    /** Per connection: the owner turned notification sharing on for it AND Android's notification access is granted. */
+    val capture: Boolean = false,
+    /** Per connection: the owner turned text sharing on for it AND RECEIVE_SMS is granted. */
+    val sms: Boolean = false,
+) {
     fun toJson(): JSONObject = JSONObject().put("notifications", notifications).put("share", share).put("health", health).put("places", places)
-        .put("actions", actions).put("screen", screen).put("control", control)
+        .put("actions", actions).put("screen", screen).put("control", control).put("capture", capture).put("sms", sms)
 }
 
 class Snapshot(

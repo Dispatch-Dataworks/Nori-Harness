@@ -75,6 +75,7 @@ An existing pairing is the first connection and carries over with no steps (it k
 | Phone actions: `open_url`, `open_app`, `set_timer`, `set_alarm`, `navigate`, `list_apps` | `Commands.kt`, `core/UrlGuard.kt`, `core/ActionArgs.kt` |
 | Screen reading / control with approvals | `NoriAccessibilityService`, `core/Approval.kt`, `core/Sensitive.kt`, `core/AppGuard.kt` |
 | Screenshot (one picture per request, never stored) | `ScreenShare.kt` |
+| Sharing the phone's notifications (Off / Chosen apps / Everything, per connection) and, separately, new incoming texts | `NoriNotificationListener`, `SmsReceiver`, `CaptureSync.kt`, `core/Capture.kt` |
 | Everything-sent log (last 120), crash log, status line | `SentLog`, `NoriApp`, `core/Status.kt` |
 | Updates via `GET /device/app.apk` (Bearer token) | `Updates.kt` |
 
@@ -89,7 +90,10 @@ Control and screen sharing work only inside a **window you open on the phone** (
 
 ## Permissions, and why
 
-See the comment block at the top of `AndroidManifest.xml`. Notably **absent**: `QUERY_ALL_PACKAGES` (a launcher-intent `<queries>` entry is used instead), `PACKAGE_USAGE_STATS`, camera, notification-listener access, contacts, SMS, call log.
+See the comment block at the top of `AndroidManifest.xml`. Notably **absent**: `QUERY_ALL_PACKAGES` (a launcher-intent `<queries>` entry is used instead), `PACKAGE_USAGE_STATS`, camera, `READ_SMS`, `SEND_SMS`, contacts, call log. A test (`ManifestTest`) fails if any of them appears.
+
+* **Notification access** (`NoriNotificationListener`) is not a manifest permission: it is a switch you flip in Android's settings, and the app never turns it on for you. It does nothing unless a connection's **Notifications** level is above Off.
+* `RECEIVE_SMS` (`SmsReceiver`, locked to the system with `BROADCAST_SMS`): only to be told when a **new** text arrives, and only after you switch **Texts** on for a connection. It is a runtime permission asked for at that moment, never at startup. The app cannot read texts already on the phone, cannot send any, and does not touch contacts or the call log.
 
 * `SYSTEM_ALERT_WINDOW` ("Display over other apps"): Android blocks starting an app or link from the background; an app with a visible overlay window may. It is used for exactly that (phone actions while Nori is closed) and to keep the screen on while a window is open. Not needed if you use neither.
 * `ACCESS_BACKGROUND_LOCATION`: Android requires "Allow all the time" for place fences to fire while the app is closed. The fences are evaluated by Google Play services; this app does not collect a location trail, and coordinates are sent only once, by you, with "Save where I am now as a place".
@@ -106,9 +110,20 @@ Android blocks the accessibility switch for apps installed from a file ("Restric
 
 If the menu is missing, try to turn the service on once (it is refused), then look again.
 
+## Sharing notifications and texts (off by default, per connection)
+
+Nothing here is on until you turn it on, **for each assistant separately** (Settings -> What I allow -> "Notifications and texts from other apps and people"). Both keys are needed, as for everything else: the connection's server must allow it (`settings.capture`, `capture_apps`, `capture_sms`, `capture_sms_short`, `hide_codes`) **and** your own setting for that connection must. What is shared is the lower of the two.
+
+* **Notifications**: Off (default) / Chosen apps / Everything. "Chosen apps" shares only the packages the server lists (exact names; a wildcard never widens it). Moving up from Off asks first; Everything asks a second, stronger time. Always excluded: this app, Settings, permission and install screens, the app store, wallets, password managers and authenticators, system UI, the server's `hidden_apps`, ongoing and status notifications (progress, transport, alarm), group summaries and anything an app marked secret. One-time codes are hidden on the phone before anything is queued (unless the server turned that off). A chat notification contributes its last three lines.
+* **Texts**: a separate switch, independent of the notification level, with its own consent before Android's permission prompt. Only **new** incoming texts are shared (sender as received, body, parts joined). Senders that are short codes (digits only, six or fewer) or sender names ("MYBANK") are skipped unless the server also allows them. `hidden_apps` does not apply (a text is not an app). While texts are on for a connection, that connection no longer also gets the default messaging app's notifications, so one text is not shared twice.
+* **Wire**: `POST /device/notifications` with `{"items":[{"pkg","app","title","text","sub","category","key","ts"}]}`, at most 60 per call, to the connection's own server only (a text has `pkg:"sms"`, `app:"Text message"`, `category:"sms"`, `title` = the sender, `ts` in epoch ms). 200 = accepted; 403 = the server does not take it, the waiting items are dropped; 401 = the usual pair-again handling; 429 or no network = they wait. The poll's `caps` gains `capture` and `sms`, per connection.
+* **Queue**: a small per-connection outbox on the phone (200 items; anything older than six hours is dropped, never sent late). It is emptied when you switch the connection off, pause the phone, unpair, or the server stops accepting.
+* **Visible**: "Everything this app has sent" gets counts and app names only ("shared 3 notifications with Iron (Ring, Messages)", "shared 1 text message with Iron"), never any text or sender. The settings screen also lists the apps that notified lately (name and package only, kept on the phone) so you can find a package name for the server's list.
+* Nothing runs while all of it is off: the listener and the receiver return before reading anything.
+
 ## What the app relies on from the server
 
-* `/device/register`, `/device/poll`, `/device/ack`, `/device/result`, `/device/approval`, `/device/events`, `/device/place`, `/device/health`, `/device/share`, `/device/unregister`, `GET /device/app.apk` exactly as in `docs/devices.md`.
+* `/device/register`, `/device/poll`, `/device/ack`, `/device/result`, `/device/approval`, `/device/events`, `/device/place`, `/device/health`, `/device/share`, `/device/unregister`, `POST /device/notifications` (new: see above), `GET /device/app.apk` exactly as in `docs/devices.md`.
 * `GET /?prefill=<url-encoded text>` puts that text in the chat box (used by the "Log water" / "Log weight" widget buttons and the `nori-app://prefill` link). **Not in the contract**: the server's chat page must read it.
 * `GET /?talk=1` opens the chat ready for push-to-talk (used by the "Talk to Nori" widget button and shortcut). **Not in the contract** either; without server support it simply opens the chat.
 * The chat page lives at `/` and the website's own session cookie keeps the web view signed in.

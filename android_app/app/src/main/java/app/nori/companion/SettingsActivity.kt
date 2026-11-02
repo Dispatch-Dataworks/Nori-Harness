@@ -26,6 +26,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import app.nori.companion.core.AgentName
+import app.nori.companion.core.CaptureLevel
+import app.nori.companion.core.CaptureWords
 import app.nori.companion.core.Connections
 import app.nori.companion.core.DeviceSettings
 import app.nori.companion.core.Geo
@@ -49,6 +51,8 @@ class SettingsActivity : Activity() {
     private val REQ_BGLOC = 84
     private val REQ_HEALTH = 87
     private val REQ_LOC_SAVE = 88
+    private val REQ_SMS = 89
+    private var smsSlot = 0
 
     private val bg = Color.parseColor("#111111")
     private val fg = Color.parseColor("#EEEEEE")
@@ -163,6 +167,8 @@ class SettingsActivity : Activity() {
         box.addView(body(serverSays { yn(it.notifications) } + ". Quiet hours are set in the server's settings." + if (!Notifier.canNotify(this)) " Android notifications are OFF for this app: see Battery & permissions." else ""))
         box.addView(toggle("Share sheet (\"Send to my assistant\")", Prefs.ownerShare(this)) { Prefs.setOwner(this, "share", it); SyncService.pollNow(this) })
         box.addView(body("Text, links and photos you choose to share from any app go to your chat, a note or a task." + (if (several) " The share sheet asks which assistant." else "") + " Nothing is sent unless you share it."))
+
+        captureSection(several)
 
         box.addView(toggle("Health data (Health Connect)", Prefs.ownerHealth(this)) { on ->
             Prefs.setOwner(this, "health", on)
@@ -291,6 +297,91 @@ class SettingsActivity : Activity() {
         box.addView(body(if (latest.isEmpty()) "The server has not told this phone about a newer version." else if (AppUpdater.available(this) != null) "Version $latest is ready on your server." else "You have the newest version ($latest)."))
         box.addView(button("Check now") { SyncService.pollNow(this); later(1500) { render() } })
         if (AppUpdater.available(this) != null) box.addView(button("Download and install $latest") { runUpdate() })
+    }
+
+    // ── sharing notifications and incoming texts (per connection, off by default, deeper levels need their own consent) ──
+    private fun captureSection(several: Boolean) {
+        val slots = Prefs.pairedSlots(this)
+        box.addView(line("Notifications and texts from other apps and people", true))
+        box.addView(body("OFF by default, and set separately for each assistant this phone is paired with: one assistant seeing them says nothing about another. Both the server's switch and yours must allow it, and it stops the moment you pause the phone."))
+        if (slots.isEmpty()) { box.addView(body("Pair this phone with a Nori server first.")); return }
+        val access = CaptureSync.accessGranted(this)
+        box.addView(line("Android's Notification access: " + if (access) "granted" else "not granted", true))
+        box.addView(body("Android only lets an app read other apps' notifications after you turn this on yourself in system settings; this app never turns it on for you. Because the app was installed from a file, Android 13 and newer may first need \"Allow restricted settings\" (see Battery & permissions below)."))
+        box.addView(button(if (access) "Notification access settings" else "Open Android's Notification access settings") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
+        for (slot in slots) {
+            val agent = Prefs.agent(this, slot)
+            val prefix = if (several) Prefs.name(this, slot) + ": " else ""
+            val server = Prefs.serverSettings(this, slot)
+            val phone = Prefs.captureLevel(this, slot)
+
+            box.addView(line(prefix + "Notifications shared with $agent: " + CaptureWords.level(phone), true))
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                for (l in CaptureLevel.values()) addView(Button(this@SettingsActivity).apply {
+                    text = CaptureWords.level(l); isAllCaps = false; alpha = if (l == phone) 1f else 0.5f
+                    setOnClickListener { pickLevel(slot, l) }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            })
+            val chosen = server.captureApps.joinToString(", ") { p -> CaptureSync.labelFor(this, p).let { if (it == p) p else "$it ($p)" } }
+            box.addView(body("The server allows: " + CaptureWords.level(server.capture).lowercase() + (if (server.capture == CaptureLevel.APPS) (if (chosen.isEmpty()) " (it has not listed any apps)" else " - " + chosen) else "") +
+                ". " + CaptureWords.effective(agent, server.capture, phone, access, server.captureApps.size) + " Private apps (password managers, wallets, Settings, this app) and anything on the server's hidden list are never shared, and one-time codes are hidden" + (if (server.hideCodes) "." else " unless the server turned that off.")))
+
+            val smsOn = Prefs.captureSms(this, slot)
+            box.addView(toggle(prefix + "Texts (SMS): share new incoming texts with $agent", smsOn) { on ->
+                if (on) startSmsConsent(slot) else {
+                    Prefs.setCaptureSms(this, slot, false); CaptureSync.reconcile(this); SyncService.pollNow(this)
+                    SentLog.add(this, "text sharing with $agent turned off"); render()
+                }
+            })
+            box.addView(body("The server allows texts: " + yn(server.captureSms) + (if (server.captureSms) ", short-code and sender-name senders: " + yn(server.captureSmsShort) else "") +
+                ". Receive-texts permission: " + (if (CaptureSync.smsGranted(this)) "granted" else "not granted") + ". " + CaptureWords.sms(agent, server.captureSms, smsOn, CaptureSync.smsGranted(this))))
+        }
+        val recent = Prefs.recentNotifApps(this).all()
+        box.addView(line("Apps that notified lately", true))
+        box.addView(body("Only the app's name and package, never what it said; kept on this phone, never sent. Use it to find the package names to put on your server's list for \"Chosen apps\". It fills in while a connection's level is above Off."))
+        box.addView(TextView(this).apply {
+            text = if (recent.isEmpty()) "None yet." else recent.joinToString("\n") { it.second + "  -  " + it.first }
+            textSize = 12f; setTextColor(dim); typeface = Typeface.MONOSPACE
+        })
+    }
+
+    /** Moving a connection up from Off asks first; Everything asks a second, stronger time. Moving down never asks. */
+    private fun pickLevel(slot: Int, target: CaptureLevel) {
+        val cur = Prefs.captureLevel(this, slot)
+        if (target == cur) return
+        val agent = Prefs.agent(this, slot)
+        val host = Prefs.host(this, slot)
+        fun apply() {
+            Prefs.setCaptureLevel(this, slot, target); CaptureSync.reconcile(this); SyncService.pollNow(this)
+            SentLog.add(this, "notification sharing with $agent set to " + CaptureWords.level(target).lowercase()); render()
+        }
+        fun strong() = AlertDialog.Builder(this).setTitle("Share EVERYTHING with $agent?")
+            .setMessage("Other people's messages (texts, chats, emails) and alerts from every app on this phone will be read by $agent and sent to $host. That includes things said to you in confidence, bank and delivery messages, and codes you did not hide.\n\nThe built-in private-app list (password managers, wallets, Settings, this app) and your server's hidden list still apply, and one-time codes are hidden unless your server turned that off.\n\nYou can turn this off here at any time, and it stops when you pause the phone.")
+            .setNegativeButton("Not now") { _, _ -> render() }.setPositiveButton("Yes, share everything") { _, _ -> apply() }.setOnCancelListener { render() }.show()
+        if (target == CaptureLevel.OFF || (target == CaptureLevel.APPS && cur == CaptureLevel.ALL)) { apply(); return }
+        if (cur != CaptureLevel.OFF) { strong(); return }
+        AlertDialog.Builder(this).setTitle("Share notifications with $agent?")
+            .setMessage("While this is on, and only if $host also allows it, the title and text of notifications that arrive on this phone are sent to $host, where $agent can read them" +
+                (if (target == CaptureLevel.APPS) ", but only for the apps your server lists." else ".") +
+                "\n\nPrivate apps (password managers, wallets, Settings, this app) are never shared, and one-time codes are hidden. Nothing is shared until you also turn on Notification access in Android's settings.\n\nYou can turn this off here at any time.")
+            .setNegativeButton("Not now") { _, _ -> render() }.setOnCancelListener { render() }
+            .setPositiveButton("Continue") { _, _ -> if (target == CaptureLevel.ALL) strong() else apply() }.show()
+    }
+
+    /** Text sharing is a deeper, separate choice: its own strong explanation first, and only then Android's permission prompt (never at startup). */
+    private fun startSmsConsent(slot: Int) {
+        val agent = Prefs.agent(this, slot)
+        val host = Prefs.host(this, slot)
+        AlertDialog.Builder(this).setTitle("Share new texts with $agent?")
+            .setMessage("Texts include bank messages, one-time codes from services, and anything anyone sends you by SMS. While this is on, and only if $host also allows it, each NEW incoming text (sender and message) is sent to $host, where $agent can read it.\n\nOnly texts that arrive from now on are shared: nothing already on the phone is read. This app never sends texts and never reads your contacts or call log. One-time codes are hidden unless your server turned that off, and senders that are short codes or names (banks, services) are skipped unless your server allows them.\n\nAndroid will now ask for the permission to receive texts.")
+            .setNegativeButton("Not now") { _, _ -> render() }.setOnCancelListener { render() }
+            .setPositiveButton("Allow texts") { _, _ ->
+                if (CaptureSync.smsGranted(this)) {
+                    Prefs.setCaptureSms(this, slot, true); SyncService.pollNow(this)
+                    SentLog.add(this, "text sharing with $agent turned on"); render()
+                } else { smsSlot = slot; requestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS), REQ_SMS) }
+            }.show()
     }
 
     /** One connection: who it is, and what can be done with it (rename, unpair; or pair again, remove). */
@@ -425,6 +516,13 @@ class SettingsActivity : Activity() {
             REQ_LOC -> { if (ok && !PlaceManager.hasBackgroundLocation(this)) requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_BGLOC); PlaceManager.sync(this); render() }
             REQ_BGLOC -> { PlaceManager.sync(this); render() }
             REQ_LOC_SAVE -> if (ok) startSavePlace(saveSlot)
+            REQ_SMS -> {
+                if (ok && Prefs.slots(this).contains(smsSlot)) {
+                    Prefs.setCaptureSms(this, smsSlot, true); SyncService.pollNow(this)
+                    SentLog.add(this, "text sharing with ${Prefs.agent(this, smsSlot)} turned on")
+                } else toast("Android did not allow receiving texts, so nothing is shared. (If Android blocks it for an app installed from a file: App info -> three-dot menu -> Allow restricted settings.)")
+                render()
+            }
         }
     }
 }

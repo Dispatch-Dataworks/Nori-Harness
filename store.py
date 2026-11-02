@@ -566,6 +566,28 @@ CREATE TABLE IF NOT EXISTS device_activity (
     detail    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_device_activity_user ON device_activity(user_id, id);
+-- Phone notifications the owner chose to share with their assistant (docs/devices.md, "Notifications she can see"). Other people's words: kept only
+-- for the owner, only for the days they set, and shown to a model only once a screening pass has called them clean ('screen').
+CREATE TABLE IF NOT EXISTS phone_notifications (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    device_id   INTEGER,
+    ts          REAL NOT NULL,
+    received_ts REAL NOT NULL,
+    pkg         TEXT NOT NULL,
+    app         TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL DEFAULT '',
+    sub         TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    nkey        TEXT NOT NULL DEFAULT '',
+    screen      TEXT NOT NULL DEFAULT 'pending',
+    triage      TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    screened_ts REAL
+);
+CREATE INDEX IF NOT EXISTS ix_phone_notifications_user ON phone_notifications(user_id, ts);
+CREATE INDEX IF NOT EXISTS ix_phone_notifications_screen ON phone_notifications(screen, id);
 
 -- Connected third-party accounts (2026-09-12) -- see connected_accounts.py
 -- (storage) and oauth.py (the actual flow). Tokens encrypted at rest via

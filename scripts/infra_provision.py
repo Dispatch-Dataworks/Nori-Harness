@@ -19,12 +19,15 @@ database row or a plaintext secret on disk. Run it INSIDE the container, which i
     docker compose exec nori python scripts/infra_provision.py ssh-test
     docker compose exec -e CLOUDFLARE_API_TOKEN=... nori python scripts/infra_provision.py cloudflare-set [--account-id <32 hex>]
     docker compose exec nori python scripts/infra_provision.py cloudflare-test
-    docker compose exec nori python scripts/infra_provision.py enable proxmox   # and: enable ssh / enable cloudflare / disable <service>
+    docker compose exec -e GITHUB_API_TOKEN=... nori python scripts/infra_provision.py github-set [--owner <user or organisation>]
+    docker compose exec nori python scripts/infra_provision.py github-test
+    docker compose exec nori python scripts/infra_provision.py enable proxmox   # and: enable ssh / cloudflare / github, disable <service>
     docker compose exec nori python scripts/infra_provision.py policy proxmox.power ask
 
-Secrets: the Proxmox token secret is read from the PROXMOX_TOKEN_SECRET environment variable and the Cloudflare API token from CLOUDFLARE_API_TOKEN or, with
---secret-stdin, from standard input; never from the command line (it would show in process lists and shell history). The CA certificate comes from --ca-file or --ca-stdin. Nothing secret is ever printed: not the token
-secret, not the SSH private key. Every command prints one JSON object and exits 0 on success, 1 on failure.
+Secrets: the Proxmox token secret is read from the PROXMOX_TOKEN_SECRET environment variable, the Cloudflare API token from CLOUDFLARE_API_TOKEN and the GitHub
+token from GITHUB_API_TOKEN (the Cloudflare and GitHub ones, with --secret-stdin, from standard input instead); never from the command line (it would show in process
+lists and shell history). The CA certificate comes from --ca-file or --ca-stdin. Nothing secret is ever printed: not a token, not the SSH private key. Every command
+prints one JSON object and exits 0 on success, 1 on failure.
 
 ssh-pin pins a host's key ONLY where the server presents a key whose fingerprint equals the one given with --expect for it (read from the server itself:
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`); on any mismatch nothing is pinned. --trust-scan pins whatever the servers offer without checking, which is only as
@@ -48,6 +51,8 @@ import infra_proxmox  # noqa: E402,F401
 import infra_proxmox_write  # noqa: E402,F401
 import infra_cloudflare  # noqa: E402
 import infra_cloudflare_write  # noqa: E402,F401
+import infra_github  # noqa: E402
+import infra_github_write  # noqa: E402,F401
 import infra_ssh  # noqa: E402
 import store  # noqa: E402
 
@@ -158,6 +163,21 @@ def cmd_cloudflare_test(a, ws) -> int:
     return _out(res["ok"], detail=res["detail"])
 
 
+def cmd_github_set(a, ws) -> int:
+    values = {"token": sys.stdin.readline().strip() if a.secret_stdin else os.environ.get("GITHUB_API_TOKEN", "").strip()}     # blank keeps the stored one
+    values["owner"] = a.owner if a.owner is not None else infra.credentials(ws, "github").get("owner", "")
+    ok, msg = infra.save_credentials(ws, "github", values, None)
+    return _out(ok, message=msg, token="set" if infra.credentials(ws, "github").get("token") else "NOT set")
+
+
+def cmd_github_test(a, ws) -> int:
+    if not infra.configured(ws, "github"):
+        return _out(False, error="GitHub is not configured yet (a token)")
+    res = infra_github.test(ws)
+    infra.log(ws, None, "github", "test", "connection", "operator script", res["ok"], res["detail"])
+    return _out(res["ok"], detail=res["detail"])
+
+
 def cmd_ssh_test(a, ws) -> int:
     if not infra.configured(ws, "ssh"):
         return _out(False, error="SSH is not configured yet (hosts and a key)")
@@ -195,6 +215,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--secret-stdin", action="store_true", help="read the API token from the first line of standard input (else the CLOUDFLARE_API_TOKEN variable)")
     s.set_defaults(fn=cmd_cloudflare_set)
     sub.add_parser("cloudflare-test").set_defaults(fn=cmd_cloudflare_test)
+    s = sub.add_parser("github-set")
+    s.add_argument("--owner", help="the default owner (your user name or organisation), so a repository can be named without it")
+    s.add_argument("--secret-stdin", action="store_true", help="read the token from the first line of standard input (else the GITHUB_API_TOKEN variable)")
+    s.set_defaults(fn=cmd_github_set)
+    sub.add_parser("github-test").set_defaults(fn=cmd_github_test)
     s = sub.add_parser("ssh-set-hosts")
     s.add_argument("--hosts", required=True, help="comma-separated name=user@address[:port], e.g. pve1=root@10.0.0.7 (use the Proxmox node names)")
     s.set_defaults(fn=cmd_ssh_set_hosts)

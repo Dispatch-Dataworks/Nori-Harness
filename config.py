@@ -291,6 +291,17 @@ _SPEC: dict[str, tuple] = {
     "phone_screen_enabled": (False, bool, "user", False, "let her look at my phone's screen (screenshots), in a window I open"),
     "phone_hidden_apps": ("", str, "user", False, "package names of phone apps she must never see or control (comma separated)"),
     "phone_actions_per_hour": (30, int, "user", False, "most phone actions she may take per hour"),
+    # Notification awareness (docs/devices.md, "Notifications she can see"): OFF at every layer. Three keys, all of which must allow it: this
+    # workspace switch (the operator), the person's own level below, and the phone's own per-server choice in the app.
+    "phone_capture_allowed": (False, bool, "workspace", False, "let people here share their phone's notifications with their assistant (each person still chooses for themselves)"),
+    "phone_capture_level": ("off", str, "user", False, "which phone notifications she may see: off, apps (only the apps listed) or all (including other people's messages)"),
+    "phone_capture_apps": ("", str, "user", False, "package names of the apps whose notifications she may see at the 'apps' level (comma separated)"),
+    "phone_capture_consent_ts": (0, int, "user", False, "when this person agreed that other people's messages may reach her (0 = never); the 'all' level needs it"),
+    "phone_capture_sms": (False, bool, "user", False, "let her see text messages (SMS) as they arrive on my phone: incoming only, no history; needs the same agreement as the 'all' level"),
+    "phone_capture_sms_short": (False, bool, "user", False, "also share texts from short-code senders (banks, one-time-code services)"),
+    "phone_capture_keep_days": (7, int, "user", False, "days to keep the notifications she was shown"),
+    "phone_capture_hide_codes": (True, bool, "user", False, "hide one-time codes and PINs in notifications before they reach her"),
+    "phone_capture_digest": (True, bool, "user", False, "put the latest notifications in front of her when I message her (off: only when she looks)"),
     "browser_notifications_enabled": (True, bool, "user", False, "desktop notifications through the browser extension"),
     "browser_activity_enabled": (False, bool, "user", False, "passive browsing time (host names and seconds only)"),
     "browser_hidden_hosts": ("", str, "user", False, "sites the extension never reports or shares (comma separated, *.example.com ok)"),

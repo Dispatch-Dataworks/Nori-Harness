@@ -104,6 +104,7 @@ object Control {
             WindowControl.closeInteract(c, "paused")
             ScreenShareService.stop(c)
             Api.cancelPoll()
+            CaptureSync.reconcile(c)                       // anything waiting to be shared is dropped, not held for later
         }
         PlaceManager.sync(c)
         Notifier.refreshSync(c)

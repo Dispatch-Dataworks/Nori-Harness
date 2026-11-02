@@ -622,12 +622,22 @@ def _maybe_run_integration_health() -> None:
         print(f"integration_health.tick raised: {exc}", flush=True)
 
 
+def _maybe_prune_captured() -> None:
+    """Instance-wide: notifications the owner shared are forgotten after the days they set, even if the phone has stopped reporting."""
+    try:
+        import phone_capture
+        phone_capture.prune_all()
+    except Exception as exc:  # noqa: BLE001 -- housekeeping must never take the cycle down
+        print(f"phone_capture.prune_all raised: {exc}", flush=True)
+
+
 def run_cycle_once() -> int:
     """One pass over every active user. Returns how many proactive
     messages were actually sent -- exposed so real tests don't have to
     wait on the real interval."""
     _maybe_run_backup()
     _maybe_run_integration_health()
+    _maybe_prune_captured()
     _maybe_check_updates()
     sent = 0
     for user in accounts.all_active_users():

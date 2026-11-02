@@ -85,6 +85,12 @@ def _system_parts(user_id: int, display_name: str) -> list[tuple[str, str]]:
     ]
 
 
+def assistant_name(user_id: int) -> str:
+    """What this person's assistant is called. Here, not imported from persona by every caller: persona is the prompt-editing code, and only this module
+    and persona_admin may import it (tests/test_nori_persona_admin.py guards that list)."""
+    return persona.assistant_name_for_user(user_id)
+
+
 def build_system(user_id: int, display_name: str) -> str:
     parts = [text for _label, text in _system_parts(user_id, display_name)]
     return "\n\n".join(p for p in parts if p.strip())

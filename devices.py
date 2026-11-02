@@ -43,7 +43,7 @@ CODE_LEN = 8
 CODE_TTL_S = 15 * 60
 MAX_LIVE_CODES = 5
 MAX_DEVICES = {"phone": 6, "browser": 12}
-KNOWN_CAPS = ("notifications", "share", "health", "places", "actions", "screen", "control")
+KNOWN_CAPS = ("notifications", "share", "health", "places", "actions", "screen", "control", "capture", "sms")
 PHONE_POLL_WAIT_S = 25
 NOTIFY_KINDS = ("chat", "proactive", "reminder", "job_proactive", "peer_proactive", "image")
 MAX_MESSAGES_PER_POLL = 20
@@ -368,6 +368,7 @@ def _csv(s: str) -> list[str]:
 
 def phone_settings(user_id: int) -> dict:
     from device_data import list_places   # local: device_data imports this module
+    import phone_capture                  # local: phone_capture imports this module
     g = lambda k: config.get("user", user_id, k)  # noqa: E731
     row = store.read(lambda c: c.execute("SELECT workspace_id FROM users WHERE id=?", (user_id,)).fetchone())
     name = config.get("workspace", row["workspace_id"], "assistant_name") if row else ""
@@ -387,6 +388,8 @@ def phone_settings(user_id: int) -> dict:
         "places_list": [{"id": p["id"], "name": p["name"], "lat": p["lat"], "lon": p["lon"],
                          "radius_m": p["radius_m"], "home": bool(p["is_home"])} for p in list_places(user_id)],
         "actions_per_hour": int(g("phone_actions_per_hour") or 30),
+        # Notifications she can see (phone_capture.py): off unless the operator, this person and (in the app) the phone have each said so.
+        **phone_capture.settings_for_phone(user_id),
     }
 
 

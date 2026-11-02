@@ -194,7 +194,7 @@ class SyncService : Service() {
             val c = this@SyncService
             val now = System.currentTimeMillis()
             val body = Protocol.pollRequest(
-                BuildConfig.VERSION_NAME, false, AppState.chatVisibleFor(slot), inbox.ackValue(), deviceCaps(), Windows.reportedUntil(Prefs.interactUntil(c), now),
+                BuildConfig.VERSION_NAME, false, AppState.chatVisibleFor(slot), inbox.ackValue(), CaptureSync.capsFor(c, slot, deviceCaps()), Windows.reportedUntil(Prefs.interactUntil(c), now),
                 Windows.reportedUntil(Prefs.shareUntil(c), now), snapshot(slot),
             )
             val r = Api.post(c, slot, "/device/poll", body, PollPolicy.CLIENT_TIMEOUT_MS, isPoll = true)
@@ -307,8 +307,10 @@ class SyncService : Service() {
     private fun periodic() {
         val app = applicationContext
         WindowControl.reconcile(app)
+        CaptureSync.reconcile(app)                                  // what a connection no longer allows (switched off, paused, unpaired) is dropped, not kept
         val usable = Prefs.usableSlots(app)
         if (usable.isEmpty()) return
+        if (!Prefs.paused(app)) for (slot in usable) CaptureSync.flush(app, slot)
         PlaceManager.sync(app)
         for (slot in usable) sendPlaceEvents(app, slot)
         val due = System.currentTimeMillis() - HealthSync.lastRun >= 15 * 60_000L
@@ -360,6 +362,9 @@ class SyncService : Service() {
             val s = instance ?: return
             s.worker?.execute { s.safely { s.periodic() } }
         }
+
+        /** Something was queued to share (or a sharing switch changed): send it, or drop what is no longer allowed, soon. */
+        fun nudgeCapture(c: Context) = workNow(c)
 
         /** The app was opened: read health data now as well as every 15 minutes. */
         fun requestHealth(c: Context) {

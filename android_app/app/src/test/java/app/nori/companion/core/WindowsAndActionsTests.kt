@@ -260,8 +260,9 @@ class CommandGateTest {
         val off = CommandGate.deviceCaps(OwnerSwitches(), true, true, true, true, true)
         assertTrue(off.notifications); assertFalse(off.health); assertFalse(off.places); assertFalse(off.actions); assertFalse(off.screen); assertFalse(off.control)
         val json = c.toJson()
-        for (k in listOf("notifications", "share", "health", "places", "actions", "screen", "control")) assertTrue(json.has(k))
-        assertEquals(7, json.length())
+        for (k in listOf("notifications", "share", "health", "places", "actions", "screen", "control", "capture", "sms")) assertTrue(json.has(k))
+        assertEquals(9, json.length())
+        assertFalse("sharing flags are per connection and default to off", json.getBoolean("capture") || json.getBoolean("sms"))
         assertNotNull(JSONArray())
     }
 }

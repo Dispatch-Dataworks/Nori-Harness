@@ -11,7 +11,11 @@
          SYSTEM_ALERT_WINDOW: Android blocks starting an app/link from the background; an app with a visible overlay window may. Used for phone actions, and for keeping the screen on during a window.
          ACCESS_*_LOCATION: on-device place fences (arrived / left) and the one-shot "Save here as place". No location trail, no coordinates in polls.
          SET_ALARM: timers and alarms Nori sets for you. health.*: read-only Health Connect access for the metrics you switch on.
-         NOT requested: QUERY_ALL_PACKAGES, PACKAGE_USAGE_STATS, CAMERA, notification-listener access, contacts, SMS, call log. -->
+         RECEIVE_SMS: ONLY to be told when a NEW text arrives, and only while the owner has switched "Texts" on for a connection (it is a runtime permission, asked for at that moment, never at startup). This app cannot read the
+         texts already on the phone (no READ_SMS, no inbox, no content://sms observer), cannot send any (no SEND_SMS) and never touches contacts or the call log.
+         Notification access (the NotificationListenerService below) is not a manifest permission: it is a switch the owner flips in Android's settings. It reads nothing unless a connection's "Notifications" level is above Off.
+         The text of a text message can therefore reach a Nori server in exactly two ways, both opt-in per connection: as a notification from the messaging app (Notifications level), or as a new incoming text (Texts).
+         NOT requested: QUERY_ALL_PACKAGES, PACKAGE_USAGE_STATS, CAMERA, READ_SMS, SEND_SMS, READ_CONTACTS, READ_CALL_LOG. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -28,6 +32,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
     <uses-permission android:name="android.permission.health.READ_BLOOD_PRESSURE" />
@@ -47,6 +52,7 @@
 
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <application
         android:name=".NoriApp"
@@ -132,6 +138,17 @@
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- Android's "Notification access". Exported because the system must bind to it; only the system can (BIND_NOTIFICATION_LISTENER_SERVICE). It does nothing while every connection's Notifications level is Off. -->
+        <service
+            android:name=".NoriNotificationListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".PauseTile"
             android:exported="true"
@@ -166,6 +183,12 @@
         <receiver android:name=".ControlReceiver" android:exported="false" />
         <receiver android:name=".ApprovalReceiver" android:exported="false" />
         <receiver android:name=".GeofenceReceiver" android:exported="false" />
+        <!-- NEW incoming texts only. Exported because the system delivers the broadcast; BROADCAST_SMS means only the system may. It returns at once unless the owner switched Texts on for a connection. -->
+        <receiver android:name=".SmsReceiver" android:exported="true" android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

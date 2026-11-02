@@ -1,5 +1,6 @@
 package app.nori.companion.core
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,10 +14,33 @@ class ManifestTest {
     }
 
     @Test fun noMonitoringPermissionsAreRequested() {
-        for (p in listOf("QUERY_ALL_PACKAGES", "PACKAGE_USAGE_STATS", "CAMERA", "READ_SMS", "READ_CONTACTS", "READ_CALL_LOG", "ACTIVITY_RECOGNITION", "FOREGROUND_SERVICE_LOCATION"))
+        for (p in listOf("QUERY_ALL_PACKAGES", "PACKAGE_USAGE_STATS", "CAMERA", "READ_SMS", "SEND_SMS", "READ_CONTACTS", "READ_CALL_LOG", "ACTIVITY_RECOGNITION", "FOREGROUND_SERVICE_LOCATION")) {
             assertFalse("manifest must not request $p", manifest.contains("<uses-permission android:name=\"android.permission.$p\""))
-        assertFalse(manifest.contains("android.service.notification.NotificationListenerService"))
-        assertFalse(manifest.contains("android:permission=\"android.permission.BIND_NOTIFICATION_LISTENER_SERVICE\""))
+            assertFalse("manifest must not mention android.permission.$p at all", manifest.contains("android.permission.$p\""))
+        }
+    }
+
+    @Test fun notificationAccessIsDeclaredWithTheBindPermission() {
+        val svc = manifest.substringAfter("android:name=\".NoriNotificationListener\"").substringBefore("</service>")
+        assertTrue(svc.contains("android:permission=\"android.permission.BIND_NOTIFICATION_LISTENER_SERVICE\""))
+        assertTrue(svc.contains("android.service.notification.NotificationListenerService"))
+        assertTrue("the system must be able to bind it", svc.contains("android:exported=\"true\""))
+    }
+
+    @Test fun incomingTextsAreReceiveOnlyAndTheReceiverIsLockedToTheSystem() {
+        assertTrue(manifest.contains("<uses-permission android:name=\"android.permission.RECEIVE_SMS\""))
+        val rcv = manifest.substringAfter("android:name=\".SmsReceiver\"").substringBefore("</receiver>")
+        assertTrue(rcv.contains("android:permission=\"android.permission.BROADCAST_SMS\""))
+        assertTrue(rcv.contains("android.provider.Telephony.SMS_RECEIVED"))
+        assertTrue(rcv.contains("android:exported=\"true\""))
+        assertFalse("texts are not read or sent", manifest.contains("android.permission.READ_SMS\"") || manifest.contains("android.permission.SEND_SMS\""))
+    }
+
+    @Test fun sharingIsOffByDefaultInThePureRules() {
+        assertEquals(CaptureLevel.OFF, CaptureLevel.parse(null)); assertEquals(CaptureLevel.OFF, CaptureLevel.parse(""))
+        val none = SlotCapture(0, true, CaptureLevel.ALL, CaptureLevel.OFF, emptyList(), emptyList())
+        assertFalse(Capture.anyWanted(listOf(none))); assertFalse(Capture.anyWantedSms(listOf(none), true))
+        assertEquals(CaptureLevel.OFF, DeviceSettings().capture); assertFalse(DeviceSettings().captureSms)
     }
 
     @Test fun cleartextAndBackupAreOff() {

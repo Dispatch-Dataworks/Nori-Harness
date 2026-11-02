@@ -1,11 +1,11 @@
 # Infrastructure tools
 
-Tools that let an agent (built for Iron) work with the servers it lives beside: Proxmox first, then SSH, then Cloudflare, with GitHub planned.
+Tools that let an agent (built for Iron) work with the servers and services it lives beside: Proxmox first, then SSH, Cloudflare and GitHub.
 They are the part of Nori most able to cause real damage, so the design is mostly about refusing. (`infra.py`, `infra_proxmox.py`; added 2026-10-30.)
 
 **Status:** the framework, **Proxmox reads and changes**, **SSH shell access** (on the nodes and inside guests) and **Cloudflare** (reads, and changes to DNS, cache,
-zone settings, tunnels and rules, plus a free-form change) are built. GitHub is next. Changes and the shell are the part most able to cause damage, so each one is a
-permission with a policy; see below.
+zone settings, tunnels and rules, plus a free-form change) and **GitHub** (reads, and changes to issues, pull requests, branches, files, workflow runs, plus a free-form
+change) are built. Changes and the shell are the part most able to cause damage, so each one is a permission with a policy; see below.
 
 ## The rules
 
@@ -148,9 +148,70 @@ account outside the denied areas, never the deletion of a whole zone or account,
 Tunnel routes need a tunnel managed from Cloudflare (created from the dashboard or by `cloudflare_tunnel_change create`); a tunnel configured by a `config.yml` on its host
 is reported as such and is edited over SSH instead. The permissions to give the token for each change are listed in step 5 of the setup guide.
 
+## GitHub (`infra_github.py` reads, `infra_github_write.py` changes)
+
+Native rather than MCP, for the same reason. Settings → Infrastructure → GitHub has the setup steps. In short: make a **fine-grained personal access token** (GitHub →
+Settings → Developer settings → Personal access tokens → Fine-grained tokens), set the resource owner, a **short expiry**, **Only select repositories** (exactly the ones
+the agent may see) and read-only repository permissions (Contents, Issues, Pull requests, Actions, Commit statuses, Checks). Paste it; the default owner is optional (so
+the agent can say just `my-repo`). **Test the connection**, then **switch on**. Unlike Cloudflare, GitHub cannot lock a personal token to an IP address, so the limits
+are the repositories chosen, the permissions ticked and the expiry; the test button warns if the token is a classic one (which cannot be limited to chosen repositories).
+The token's own permissions are the second lock: a read-only token cannot change anything whatever Nori is told, and widening it (Issues / Pull requests / Contents /
+Actions: Read and write) is how you let the agent do more. The address is fixed (`api.github.com`) and TLS is always verified. `scripts/infra_provision.py github-set`
+(token from `GITHUB_API_TOKEN` or `--secret-stdin`, `--owner`) and `github-test` do the same from the command line.
+
+Reads (free once on; each logged; GET only; every result labelled as data, free text cut and stripped, anything shaped like a token or private key scrubbed, secret-looking
+keys dropped):
+
+| tool | what it shows |
+|---|---|
+| `github_overview` | who the token is, its kind and expiry, the rate limit, and every repository it can see with your permission on each. Start here. |
+| `github_repo` | one repository: visibility, default branch and whether it is protected, merge methods allowed, what the token may do there |
+| `github_branches` | branches with their tip commit and whether each is protected |
+| `github_commits` | recent commits (by branch, path, author, date), or one commit with the files it changed (`include_patch` adds the diffs) |
+| `github_pulls` | the list, or one pull request with description, files, reviews, comments, mergeability and the state of its checks |
+| `github_issues` | the list (pull requests excluded), or one issue with its comments |
+| `github_actions` | workflow runs (by branch, status, workflow), one run with its jobs and failed steps, the workflows, or the **end of a job's log** |
+| `github_file` | a file (text, 20000 characters by default) or a directory, at a branch, tag or commit |
+| `github_search` | code, issues, repos or commits within one repository (or the default owner's) |
+| `github_api_get` | any other read under `/repos/<owner>/<name>`; secrets, keys, webhooks, collaborators and invitations, tokens, raw blobs and archives are refused |
+
+Two things worth knowing. **Redirects are never followed with the token attached** (the HTTP layer hands a redirect back instead of following it). The one redirect that is
+needed, a job log, which GitHub serves from a signed address on its own storage, is fetched by a second request that carries no credentials at all, to an `https` address
+on `*.githubusercontent.com` or `*.blob.core.windows.net` only. And **files likely to hold secrets are never read or written**: `.env` (not `.env.example`), `*.pem`, `*.key`,
+`id_rsa`, credentials and secrets files, `terraform.tfstate`, `kubeconfig` and the like; the check happens before GitHub is even asked.
+
+Changes (six tools that only ever *ask*; what happens next is the permission's policy):
+
+| permission | what | policy |
+|---|---|---|
+| `github.issues` | create an issue, comment on an issue or pull request, add or remove a label, close or reopen an issue | ask; may be set to auto |
+| `github.pulls` | open a pull request, edit it, close or reopen it, request reviewers | ask; may be set to auto |
+| `github.workflow` | re-run a run, re-run only its failed jobs, or cancel it | ask; may be set to auto |
+| `github.branch` | create a branch from a branch or commit | ask; may be set to auto |
+| `github.merge` | merge a pull request (only the exact commit that was shown) | **always asks** |
+| `github.branch.delete` | delete a branch (never the default or a protected one) | **always asks** |
+| `github.commit` | create, change or delete one file as a commit on a branch | **always asks** |
+| `github.workflow.dispatch` | start a workflow by hand (it can deploy) | **always asks** |
+| `github.api` | any other POST/PUT/PATCH/DELETE under `/repos/<owner>/<name>`, shown in full | **always asks** |
+
+How a change is kept honest: the repository is always the one GitHub itself reports (the model gives `owner/name`, never a path, and a repository that was replaced or
+archived since is refused), and the card says exactly what happens: the **full text** of an issue, comment or description (and "a PUBLIC repository: anyone can read this"
+when it is one), a pull request's head commit and target, the **whole diff** of a file change (a new file's lines, or the before/after of a replacement; a change too big
+to show in full is refused), whether a commit goes **straight to the default branch**, the head commit and the state of the checks for a merge. At run time the thing is
+**read again and compared with what the card showed**: an issue whose title changed, a pull request with new commits or a different target (a merge also sends GitHub the
+commit it was shown, so GitHub refuses it too), a file whose content changed, a branch that moved, a run that was already re-run, all stop it with nothing done. Text that
+looks like a secret (a token, a private key) is refused outright rather than posted or committed. A timed-out change is never re-sent. A 403 is explained in plain words (the
+token's permissions, or the repository it was not given). One chokepoint (`_call`) accepts only an allowlist of (method, path) pairs, or for the free-form tool a path under
+`/repos/<owner>/<name>` outside the denied areas, never the deletion of a repository, and only harmless edits to the repository itself (visibility, name, default branch and
+archiving are done on GitHub).
+
+A file change is best made on a branch of its own and proposed as a pull request; writing to `.github/workflows/` additionally needs a token with the Workflows
+permission, which is best left off, and is called out on the card.
+
 ## What is not here yet
 
-* **GitHub.** Planned, behind the same off-by-default switch.
+* GitHub: reviews (approving or requesting changes), releases, the GraphQL API (for example marking a draft ready for review), forks and cross-repository pull requests,
+  and organisation-level administration have no named tool. Reviews and releases can be done through the free-form change (which always asks and shows the whole request).
 * Cloudflare: analytics (GraphQL), Access policy edits, Workers/Pages deploys and R2/KV/D1 data have no named tool. Access, Workers, Pages and the rest can be read,
   and changed one request at a time through the free-form change (which always asks and shows the whole request).
 * Creating or cloning guests, migrating, editing network or storage definitions.
@@ -179,3 +240,11 @@ shown (page, log, debug, command line); every read a GET to the one fixed addres
 read tool and its filters, paging, text cleaning, plain-English errors; the never-auto permissions; every change asks, shows exactly what, and runs once; records, rules,
 routes and tunnels re-read at run time and refused if changed; the chokepoint's allowlist; the connector token never reaching the model; the free-form change refused
 in the denied areas; failures and timeouts; and the operator script's `cloudflare-set` / `cloudflare-test`.
+
+`tests/test_nori_infra_github.py` (63): off by default and invisible; admin-only, never peer-requestable; the agent cannot switch it on; the token encrypted and never shown
+(page, log, debug, command line); every read a GET to the one fixed address through the allowlist; the real HTTP layer (against a local server) never following a redirect;
+job logs fetched without the token and only from GitHub's storage hosts; secret-shaped text scrubbed from diffs, comments and files; files likely to hold secrets neither
+read nor written; the free-form read outside the denied areas; each read tool and its filters, paging and plain-English errors; the never-auto permissions; every change
+asks, shows exactly what (the whole text, the whole diff), and runs once; the repository, issue, pull request head, file and branch tip re-read at run time and refused if
+changed; a merge sending the commit it was shown; the chokepoint's allowlist; the free-form change refused in the denied areas; failures and timeouts; and the operator
+script's `github-set` / `github-test`.

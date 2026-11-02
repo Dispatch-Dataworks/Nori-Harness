@@ -1722,6 +1722,13 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         checklist = precheck.build_block(session, user_id)
     if checklist:
         messages.append(checklist)
+    # What has just reached the owner's phone (phone_capture.py): only on a turn answering the owner directly -- never a peer-motivated or unprompted
+    # turn, where what it says could travel on to someone else -- and only when they have switched it on, screened and labelled.
+    if peer_pending == "user":
+        import phone_capture   # local: phone_capture -> devices/bridge are loaded after chat
+        glance = phone_capture.digest_message(user_id, display_name, context.assistant_name(user_id))
+        if glance:
+            messages.append(glance)
     schemas = tools.active_schemas(session)
     leak_re = _leak_pattern({s["function"]["name"] for s in schemas}) if schemas else None
     model_slug, _reasoning_effort = _resolve_model(session["workspace_id"])

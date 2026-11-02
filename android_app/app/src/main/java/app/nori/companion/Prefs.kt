@@ -2,6 +2,9 @@ package app.nori.companion
 
 import android.content.Context
 import app.nori.companion.core.AgentName
+import app.nori.companion.core.CaptureLevel
+import app.nori.companion.core.CaptureOutbox
+import app.nori.companion.core.RecentApps
 import app.nori.companion.core.Connections
 import app.nori.companion.core.DeviceSettings
 import app.nori.companion.core.OwnerSwitches
@@ -67,7 +70,7 @@ object Prefs {
     fun needsRepair(c: Context, slot: Int) = sp(c).getBoolean(k(slot, "needs_repair"), false)
     fun setNeedsRepair(c: Context, slot: Int, v: Boolean) = sp(c).edit().putBoolean(k(slot, "needs_repair"), v).apply()
 
-    private val PER_CONNECTION_STATE = listOf("ack", "seen", "settings", "health_ledger", "place_tracker", "event_outbox", "current_place", "status", "latest_app", "apk_url")
+    private val PER_CONNECTION_STATE = listOf("ack", "seen", "settings", "health_ledger", "place_tracker", "event_outbox", "current_place", "status", "latest_app", "apk_url", "capture_level", "capture_sms", "capture_outbox")
 
     fun setPaired(c: Context, slot: Int, server: String, token: String, name: String) {
         val others = pairedSlots(c).any { it != slot }
@@ -86,7 +89,7 @@ object Prefs {
     fun unpair(c: Context, slot: Int) {
         val e = sp(c).edit()
         e.remove(k(slot, "token")).remove(k(slot, "name")).putBoolean(k(slot, "needs_repair"), false)
-        for (n in listOf("settings", "current_place", "health_ledger", "place_tracker", "event_outbox", "status")) e.putString(k(slot, n), "")
+        for (n in listOf("settings", "current_place", "health_ledger", "place_tracker", "event_outbox", "status", "capture_level", "capture_sms", "capture_outbox")) e.putString(k(slot, n), "")
         e.apply()
         if (!anyPaired(c)) sp(c).edit().putLong("interact_until", 0L).putLong("share_until", 0L).apply()
     }
@@ -126,6 +129,23 @@ object Prefs {
         if (on) s.add(metric) else s.remove(metric)
         sp(c).edit().putStringSet("health_metrics", s).apply()
     }
+
+    // ── sharing the phone's notifications and incoming texts (per connection; both OFF until the owner turns them on for THAT connection) ──
+    /** How much of the notifications this connection may see: the phone's own half (the server has its own). Off unless the owner chose otherwise; an unpair or re-pair resets it to off. */
+    fun captureLevel(c: Context, slot: Int): CaptureLevel = CaptureLevel.parse(getFor(c, slot, "capture_level"))
+    fun setCaptureLevel(c: Context, slot: Int, level: CaptureLevel) = putFor(c, slot, "capture_level", level.wire)
+
+    /** Sharing NEW incoming texts with this connection (separate from the notification level). Off by default. */
+    fun captureSms(c: Context, slot: Int): Boolean = getFor(c, slot, "capture_sms") == "on"
+    fun setCaptureSms(c: Context, slot: Int, on: Boolean) = putFor(c, slot, "capture_sms", if (on) "on" else "")
+
+    @Synchronized fun captureOutbox(c: Context, slot: Int): CaptureOutbox = CaptureOutbox.parse(getFor(c, slot, "capture_outbox"))
+    @Synchronized fun saveCaptureOutbox(c: Context, slot: Int, o: CaptureOutbox) = putFor(c, slot, "capture_outbox", if (o.size() == 0) "" else o.serialize())
+    @Synchronized fun clearCaptureOutbox(c: Context, slot: Int) = putFor(c, slot, "capture_outbox", "")
+
+    /** Display-only: apps that notified lately (label and package; never content; never sent anywhere). */
+    @Synchronized fun recentNotifApps(c: Context): RecentApps = RecentApps.parse(get(c, "recent_notif_apps"))
+    @Synchronized fun saveRecentNotifApps(c: Context, r: RecentApps) = put(c, "recent_notif_apps", r.serialize())
 
     // ── what each server last said ───────────────────────────────────
     fun serverSettings(c: Context, slot: Int): DeviceSettings = DeviceSettings.parse(sp(c).getString(k(slot, "settings"), ""))

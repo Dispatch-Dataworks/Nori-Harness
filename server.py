@@ -159,6 +159,8 @@ import infra_proxmox_write  # noqa: F401  (the changes: every one asks the owner
 import infra_ssh  # noqa: F401  (a shell on the nodes and inside guests; off until switched on)
 import infra_cloudflare  # noqa: F401  (registers the cloudflare_* reads; off until an admin switches them on)
 import infra_cloudflare_write  # noqa: F401  (the changes: every one asks the owner first unless its permission says otherwise)
+import infra_github  # noqa: F401  (registers the github_* reads; off until an admin switches them on)
+import infra_github_write  # noqa: F401  (the changes: every one asks the owner first unless its permission says otherwise)
 import integration_health
 import jobs
 import logbuf
@@ -194,6 +196,7 @@ import bridge
 import device_data
 import devices
 import phone_tools  # noqa: F401  (registers the phone_* / place_reminder_* tools)
+import phone_capture  # noqa: F401  (the notifications she can see: the phone_notifications tool and the /device/notifications route)
 import firstrun
 import onboarding
 import sandbox
@@ -1678,11 +1681,18 @@ APP_JS = (
 # addition a sibling application doesn't have: a genuine per-message error+retry
 # state, not a toast that disappears. Reads window.NORI_CHAT (csrf/state/
 # last_id/colors), set by an inline script chat_page emits before this.
+# The longest chat message (2026-11-02). Before this the whole urlencoded form was capped at 64 KB and an oversized one came back as an EMPTY form, which the CSRF
+# check then reported as "bad csrf token": a long message looked like a security error and could never be retried into working. A message is now allowed up
+# to this many characters, and the form limit for /send (Handler._FORM_LIMITS) is sized for that at the worst case: 12 bytes a character once an emoji is
+# percent-encoded.
+MAX_MESSAGE_CHARS = 100_000
+
 CHAT_JS = (
     "<script>(function(){"
     "var cfg=window.NORI_CHAT||{};"
     "var msglist=document.getElementById('msglist');"
     "var CSRF=cfg.csrf,last=cfg.last_id||0,curState=cfg.state,COLORS=cfg.colors||{};"
+    "var MAXC=" + str(MAX_MESSAGE_CHARS) + ";"
     "var seenIds=new Set();"
     "var sending=false,polling=false,unread=0;"
     "var voiceModalOpen=false;"  # set/read by the voice-mode block far below; declared here since addMessage (right below) already needs to check it
@@ -2213,6 +2223,8 @@ CHAT_JS = (
     "if(form){form.addEventListener('submit',async function(e){"
     "e.preventDefault();var inp=document.getElementById('msgInput');var text=inp.value.trim();"
     "if(sending)return;"
+    "if(text.length>MAXC){alert('That message is '+text.length.toLocaleString()+' characters and the limit is '+MAXC.toLocaleString()"
+    "+'. It is still in the box: shorten it, or save it as a file in your working folder and ask your assistant to read it.');return;}"
     # A staged photo takes this same submit (one message, not two) --
     # the button and Enter both just mean "send whatever's ready", text
     # alone, photo alone, or photo-plus-caption. uploadChatPhoto is the
@@ -2988,9 +3000,30 @@ class Handler(BaseHTTPRequestHandler):
         return {"Set-Cookie": "ns=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
                               + ("; Secure" if SECURE_COOKIE else "")}
 
+    # An urlencoded form is small everywhere (64 KB) except a chat message, which a person may paste a document into.
+    _FORM_LIMIT = 65536
+    _FORM_LIMITS = {"/send": 1_310_720}      # MAX_MESSAGE_CHARS at 12 bytes each (an emoji, percent-encoded), plus the rest of the form
+    _form_oversize = 0
+
+    def _drain_body(self, n: int, cap: int = 16 * 1024 * 1024) -> None:
+        """Read and throw away a body we are refusing, so the browser has finished sending when our answer arrives (answering with the upload half-sent can
+        reset the connection and the person sees 'connection problem' instead of the reason)."""
+        left = min(n, cap)
+        while left > 0:
+            chunk = self.rfile.read(min(65536, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+
     def form(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
-        if n <= 0 or n > 65536:
+        self._form_oversize = 0
+        if n <= 0:
+            return {}
+        if n > self._FORM_LIMITS.get(str(getattr(self, "path", "")).partition("?")[0], self._FORM_LIMIT):
+            # Remembered, not hidden: an empty form here used to reach the CSRF check, which then called a too-long message a bad token (see MAX_MESSAGE_CHARS).
+            self._form_oversize = n
+            self._drain_body(n)
             return {}
         raw = self.rfile.read(n)
         parsed = urllib.parse.parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
@@ -3294,6 +3327,15 @@ class Handler(BaseHTTPRequestHandler):
             if is_json_api:
                 return self.send_json({"ok": False, "error": "not signed in"}, 401)
             return self.send(303, b"", {"Location": "/login"})
+        if self._form_oversize:
+            if path == "/send":
+                why = (f"That message is too large to send: the limit is {MAX_MESSAGE_CHARS:,} characters. Shorten it, or save it as a file in your "
+                       "working folder and ask your assistant to read it.")
+            else:
+                why = f"That request is too large for this page (over {self._FORM_LIMIT // 1024} KB)."
+            if is_json_api:
+                return self.send_json({"ok": False, "error": why}, 413)
+            return self.send(413, page_simple("too large", f"<p>{esc(why)}</p>"))
         if not self.csrf_ok(sess, form):
             if is_json_api:
                 return self.send_json({"ok": False, "error": "bad csrf token -- reload and try again"}, 403)
@@ -8588,10 +8630,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(resp, code)
 
     _DEVICE_PATHS = ("/device/register", "/device/poll", "/device/ack", "/device/result", "/device/approval",
-                     "/device/events", "/device/place", "/device/health", "/device/share", "/device/unregister")
+                     "/device/events", "/device/place", "/device/health", "/device/share", "/device/unregister", "/device/notifications")
     _DEVICE_LIMITS = {"/device/poll": 16 * 1024, "/device/register": 4096, "/device/ack": 4096,
                       "/device/approval": 4096, "/device/unregister": 4096, "/device/events": 64 * 1024,
                       "/device/place": 8192, "/device/health": 512 * 1024, "/device/result": 12 * 1024 * 1024,
+                      "/device/notifications": 256 * 1024,
                       "/device/share": 12 * 1024 * 1024}
     _BRIDGE_LIMITS = {"/bridge/poll": 16 * 1024, "/bridge/result": 8 * 1024 * 1024, "/bridge/register": 4096,
                       "/bridge/share": 12 * 1024 * 1024, "/bridge/ask": 256 * 1024, "/bridge/activity": 64 * 1024,
@@ -8745,6 +8788,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._device_approval(token, body)
         if path == "/device/events":
             return self.send_json({"ok": True, "recorded": device_data.record_events(token, body.get("events"))})
+        if path == "/device/notifications":
+            out, code = phone_capture.record(token, body.get("items"))
+            return self.send_json(out, code)
         if path == "/device/health":
             return self.send_json({"ok": True, **device_data.ingest_health(token, body.get("samples"))})
         if path == "/device/share":
@@ -8924,6 +8970,8 @@ class Handler(BaseHTTPRequestHandler):
             + post("pair/phone", "<button class='btn btn-primary'>pair a phone</button></form>") + apk_line
             + post("phone", phone_switches + "<button class='btn btn-primary'>save phone settings</button></form>") + "</div>")
 
+        capture_box = self._capture_box(sess, post, g)
+
         places = device_data.list_places(uid)
         place_rows = "".join(
             f"<div class=list-row><div class=list-meta><b>{esc(p['name'])}</b><small>{'home · ' if p['is_home'] else ''}{p['radius_m']} m</small></div>"
@@ -8987,17 +9035,120 @@ class Handler(BaseHTTPRequestHandler):
                    "(counts only, never content).</p>"
                    + ("".join(f"<div class=list-row><div class=list-meta><b>{esc(a['kind'])}</b><small>{esc(usertime.fmt(uid, a['ts'], '%b %d %H:%M'))} · {esc(a['detail'] or '')}</small></div></div>" for a in acts)
                       or "<p class=muted>nothing yet</p>") + "</div>")
-        jump = ("<p class=muted>jump to: <a href='#phone'>phone</a> · <a href='#places'>places</a> · "
+        jump = ("<p class=muted>jump to: <a href='#phone'>phone</a> · <a href='#capture'>notifications</a> · <a href='#places'>places</a> · "
                 "<a href='#browser'>browser</a>" + (" · <a href='#computer-use'>computer use</a>" if is_admin else "")
                 + " · <a href='#activity'>activity</a></p>")
-        self._settings_response(sess, "devices", e + i + code_box + token_box + jump + phone_box + places_box
+        self._settings_response(sess, "devices", e + i + code_box + token_box + jump + phone_box + capture_box + places_box
                                 + browser_box + computer_use + act_box)
+
+    def _capture_box(self, sess: dict, post, g) -> str:
+        """Settings -> Devices -> "Notifications the assistant can see" (docs/devices.md): off at every layer; each step is the person's own explicit choice."""
+        uid = sess["user_id"]
+        is_admin = sess["role"] == "admin"
+        allowed = phone_capture.allowed(uid)
+        head = ("<div class=section id=capture><h2>notifications ⟦n⟧ can see</h2>"
+                "<p class=muted>The passive awareness a household assistant needs (a text from school, a camera alert, a delivery) reaches a phone as "
+                "notifications. This is <b>off</b> until it is switched on in three places: here by the person who runs this server, here by you, and in the "
+                "app on your phone for this assistant. Turning it on for one assistant does nothing for another.</p>")
+        allow = ""
+        if is_admin:
+            allow = post("captureallow",
+                         f"<div class=field><label><input type=checkbox name=phone_capture_allowed{' checked' if allowed else ''}> let people on this server "
+                         "share their phone's notifications with ⟦n⟧ " + info_tip("Each person still chooses for themselves, and can change it at any time. Switching this "
+                         "off stops it for everyone here at once and forgets everything that was kept.") + "</label></div>"
+                         "<button class='btn'>save</button></form>")
+        if not allowed:
+            return head + allow + ("" if is_admin else "<p class=muted>Not allowed on this server: ask the person who runs it.</p>") + "</div>"
+        lv = str(g("phone_capture_level") or "off")
+        lv = lv if lv in phone_capture.LEVELS else "off"
+        consent = int(g("phone_capture_consent_ts") or 0)
+        st = phone_capture.stats(uid)
+
+        def radio(v, label, tip):
+            return (f"<div class=field><label><input type=radio name=capture_level value={v}{' checked' if lv == v else ''}> {label} "
+                    f"{info_tip(tip)}</label></div>")
+
+        agreed = (f"agreed {esc(usertime.fmt(uid, consent, '%b %d %Y'))}" if consent else "not agreed")
+        form = (
+            radio("off", "off", "Nothing is read, kept or sent.")
+            + radio("apps", "only the apps I list", "Only notifications from the apps listed below are shared. For example a security-camera app, a delivery app or a calendar. Nothing else.")
+            + radio("all", "everything, including other people's messages", "Every notification except private apps (password managers, authenticators, wallets and your hidden list): "
+                    "texts and chat messages from other people included. Needs your agreement below.")
+            + "<div class=field><label>apps for the 'only the apps I list' choice (package names, comma separated)</label>"
+              f"<input type=text name=phone_capture_apps value='{esc(g('phone_capture_apps'))}'>"
+              + info_tip("Android's package names, such as com.ringapp. The app on your phone lists the apps that have recently notified, with their package names, "
+                         "under Notifications. It never shows their text.") + "</div>"
+            + f"<div class=field><label><input type=checkbox name=capture_sms{' checked' if g('phone_capture_sms') else ''}> "
+              "also read text messages (SMS) as they arrive " + info_tip("A separate, deeper choice. Only new incoming texts are shared, as they arrive: nothing already on the phone is "
+              "read, the app cannot send texts, and chat-app (RCS) messages still come through the notifications choice above. Texts can include bank messages and "
+              "one-time codes from services; codes are hidden unless you turn that off. Needs your agreement below and the SMS permission on the phone.") + "</label></div>"
+            + f"<div class=field><label><input type=checkbox name=phone_capture_sms_short{' checked' if g('phone_capture_sms_short') else ''}> "
+              "include texts from short-code senders (banks, one-time-code services) " + info_tip("Off by default: these are mostly codes and alerts that matter to nobody but you.") + "</label></div>"
+            + f"<div class=field><label><input type=checkbox name=capture_consent{' checked' if consent else ''}> "
+              f"<b>I understand and agree</b> ({agreed}) " + info_tip("Needed for 'everything' and for text messages. It means: other people's private messages to me will be read by "
+              "⟦n⟧ and sent to the AI model provider this server uses (after a safety check for hidden instructions), they are kept for the days below, and ⟦n⟧ is told they are "
+              "private to me. Untick it to take the agreement back: 'everything' and text messages then stop.") + "</label></div>"
+            + f"<div class=field><label>days to keep them</label><input type=number name=phone_capture_keep_days min=1 max=30 value={int(g('phone_capture_keep_days') or 7)}></div>"
+            + f"<div class=field><label><input type=checkbox name=phone_capture_hide_codes{' checked' if g('phone_capture_hide_codes') else ''}> hide one-time codes and PINs</label></div>"
+            + f"<div class=field><label><input type=checkbox name=phone_capture_digest{' checked' if g('phone_capture_digest') else ''}> let ⟦n⟧ glance at the latest when I message it "
+              + info_tip("On: the newest few (from the last hour) sit in front of ⟦n⟧ when you write to it. Off: only when it looks with its notifications tool. "
+              "Either way it is never shown on a turn that is not answering you, and never to another agent.") + "</label></div>")
+        if not is_admin:
+            form += ("<div class=field><label>apps ⟦n⟧ must never see (package names, comma separated)</label>"
+                     f"<input type=text name=capture_hidden_apps value='{esc(g('phone_hidden_apps'))}'></div>")
+        mine = (post("capture", form + "<button class='btn btn-primary'>save</button></form>")
+                + f"<p class=muted>Kept now: {st['kept']} ({st['withheld']} withheld because the wording looked like instructions to an AI, {st['pending']} waiting to be checked).</p>"
+                + post("capture/clear", "<button class='btn btn-danger'>forget everything that has been kept</button></form>")
+                + "<p class=muted>Only you can see these; no other account, an administrator's included. ⟦n⟧ is told they are private to you. Passwords, banking and "
+                  "authenticator apps are never read, whatever you choose.</p>")
+        return head + allow + mine + "</div>"
 
     def devices_settings_post(self, sess: dict, path: str, form: dict):
         uid, ws = sess["user_id"], sess["workspace_id"]
         is_admin = sess["role"] == "admin"
         sub = path[len("/settings/devices/"):].strip("/").split("/")
         act = sub[0]
+        if act == "captureallow" and len(sub) == 1:
+            if not is_admin:
+                return self.not_found()
+            on = "phone_capture_allowed" in form
+            config.set("workspace", ws, "phone_capture_allowed", on)
+            if not on:
+                phone_capture.clear_workspace(ws)
+            return self.devices_settings_form(sess, info="people here may now choose to share notifications" if on else "switched off for everyone here; what was kept is forgotten")
+        if act == "capture" and len(sub) == 2 and sub[1] == "clear":
+            n = phone_capture.clear(uid)
+            return self.devices_settings_form(sess, info=f"forgot {n} notification(s)")
+        if act == "capture" and len(sub) == 1:
+            if not phone_capture.allowed(uid):
+                return self.devices_settings_form(sess, err="sharing notifications is not allowed on this server")
+            lv = form.get("capture_level", "off")
+            if lv not in phone_capture.LEVELS:
+                return self.devices_settings_form(sess, err="choose off, only the apps I list, or everything")
+            sms, agree = "capture_sms" in form, "capture_consent" in form
+            if (lv == "all" or sms) and not agree:
+                return self.devices_settings_form(sess, err="'everything' and text messages need your agreement: tick \"I understand and agree\" (nothing was saved)")
+            try:
+                days = max(1, min(30, int(form.get("phone_capture_keep_days") or 7)))
+            except ValueError:
+                return self.devices_settings_form(sess, err="days to keep must be a number")
+            if agree and not phone_capture.consented(uid):
+                config.set("user", uid, "phone_capture_consent_ts", int(time.time()))
+            if not agree:
+                config.set("user", uid, "phone_capture_consent_ts", 0)
+            config.set("user", uid, "phone_capture_level", lv)
+            config.set("user", uid, "phone_capture_sms", sms)
+            config.set("user", uid, "phone_capture_sms_short", "phone_capture_sms_short" in form)
+            config.set("user", uid, "phone_capture_apps", ",".join(phone_capture._csv(form.get("phone_capture_apps", ""))))
+            config.set("user", uid, "phone_capture_keep_days", days)
+            config.set("user", uid, "phone_capture_hide_codes", "phone_capture_hide_codes" in form)
+            config.set("user", uid, "phone_capture_digest", "phone_capture_digest" in form)
+            if not is_admin:
+                config.set("user", uid, "phone_hidden_apps", ",".join(phone_capture._csv(form.get("capture_hidden_apps", ""))))
+            if lv == "off" and not sms:
+                phone_capture.clear(uid)
+                return self.devices_settings_form(sess, info="off; what was kept has been forgotten")
+            return self.devices_settings_form(sess, info="saved. It also has to be switched on in the app on your phone, for this assistant.")
         if act == "pair" and len(sub) == 2 and sub[1] in ("phone", "browser"):
             code, err = devices.create_code(uid, ws, sub[1])
             if code is None:
@@ -12083,6 +12234,9 @@ class Handler(BaseHTTPRequestHandler):
         text = (form.get("text") or "").strip()
         if not text:
             return self.send_json({"ok": True, "messages": []})
+        if len(text) > MAX_MESSAGE_CHARS:
+            return self.send_json({"ok": False, "error": f"That message is {len(text):,} characters and the limit is {MAX_MESSAGE_CHARS:,}. Shorten it, or "
+                                                          "save it as a file in your working folder and ask your assistant to read it."}, 413)
         voice = form.get("source") == "voice"
         user_id = sess["user_id"]
         user = accounts.get_user(user_id)
