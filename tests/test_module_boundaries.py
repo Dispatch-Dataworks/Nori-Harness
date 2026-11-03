@@ -42,13 +42,38 @@ def _all_source_files() -> list[Path]:
     return [p for p in ROOT.rglob("*.py") if ".git" not in p.parts]
 
 
+def _optional_import_nodes(tree: ast.AST) -> set[int]:
+    """Imports that are allowed to be missing at run time: inside `try:` whose handler catches ImportError
+    (the vendored skylight_calendar package uses httpx only when it happens to be installed), or under
+    `if TYPE_CHECKING:` (never executed). Anything else must resolve."""
+    optional: set[int] = set()
+
+    def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+        kinds = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        return any(isinstance(k, ast.Name) and k.id in ("ImportError", "ModuleNotFoundError") for k in kinds)
+
+    for node in ast.walk(tree):
+        body = []
+        if isinstance(node, ast.Try) and any(_catches_import_error(h) for h in node.handlers):
+            body = node.body
+        elif isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+            body = node.body
+        for stmt in body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                optional.add(id(stmt))
+    return optional
+
+
 def _imported_top_level_names(path: Path) -> set[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError:
         return set()
+    optional = _optional_import_nodes(tree)
     names = set()
     for node in ast.walk(tree):
+        if id(node) in optional:
+            continue
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.add(alias.name.split(".")[0])
@@ -79,6 +104,18 @@ class EveryImportResolvesWithinThisRepo(unittest.TestCase):
         self.assertNotIn(name, local)
         self.assertNotIn(name, _STDLIB)
         self.assertNotIn(name, _DECLARED_DEPENDENCIES)
+
+    def test_only_a_guarded_import_may_be_missing(self):
+        """The optional-import allowance is narrow: a try/except ImportError or TYPE_CHECKING import is
+        skipped, the same import anywhere else is still checked."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "probe.py"
+            p.write_text("try:\n    import ghost_a\nexcept ImportError:\n    ghost_a = None\n"
+                         "if TYPE_CHECKING:\n    import ghost_b\n"
+                         "try:\n    import ghost_c\nexcept ValueError:\n    pass\n"
+                         "import ghost_d\n", encoding="utf-8")
+            self.assertEqual(_imported_top_level_names(p), {"ghost_c", "ghost_d"})
 
 
 if __name__ == "__main__":

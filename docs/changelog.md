@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-02 — Skylight, the family's wall calendar
+
+Connect the household's Skylight frame (Settings -> Skylight, admins) and every member's assistant can read and update its calendar, grocery and to-do lists, chore chart, meal plan and reward points: "put Kayla's dentist on Thursday at 3:30", "we're out of eggs", "did Garrett make his bed?". Signing in uses the email and password once (only Skylight's session is kept, encrypted) or Skylight's own sign-in page with the landing address pasted back, so Nori never sees the password. Requests go to Skylight and nowhere else, one at a time (Skylight rotates its refresh token, and two refreshes racing would sign Nori out), and every one is logged on the settings page. Not peer-requestable, not in any sub-agent's roster. Built on the operator's own `skylight-calendar` library, vendored (`skylight_calendar/`); its 0.2.0 runs on the standard library, so nothing new is installed. Skylight has no public API, so this can break when Skylight changes their app. See docs/skylight.md.
+
 ## 2026-11-02 — fixed: chat (RCS) messages were lost when text sharing was on
 
 Android app 0.3.1. Most phones now carry two-person conversations as chat (RCS) rather than SMS, and chat messages never arrive as SMS: they reach the assistant only as the messaging app's notification. App 0.3.0 hid that app's notifications whenever text sharing was on, so a person with Google Messages could receive plain texts but lose every chat message. The app no longer hides them; a text that arrives both ways is kept once (the server compares the first 30 characters within 10 minutes, whichever copy came first). To receive chat messages the messaging app must be among the chosen apps (Google Messages is `com.google.android.apps.messaging`) or the level must be *everything*; a muted conversation shows no notification and so is not seen.

@@ -42,6 +42,7 @@ Everything else here goes deeper once it's up.
   | [MCP client](mcp.md) | Connecting a third-party MCP tool server |
   | [Web search & fetch](web-search-and-fetch.md) | Tavily search and the SSRF-hardened fetch tool |
   | [Home Assistant](home-assistant.md) | Smart-home read/control, entity exposure |
+  | [Skylight](skylight.md) | The family's wall calendar: calendar, lists, chores, rewards and meal plan |
   | [Google & Microsoft](google-and-microsoft.md) | Gmail/Calendar/Contacts/Drive, Outlook/OneDrive/SharePoint |
   | [Peer agents (PACI)](peer-agents.md) | Connecting Nori to another agent as an ongoing peer |
   | [Scheduler](scheduler.md) | The background tick, proactive pings, one-off and recurring scheduled tasks |

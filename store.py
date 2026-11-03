@@ -1814,6 +1814,26 @@ CREATE TABLE IF NOT EXISTS infra_log (
     detail       TEXT
 );
 
+-- Skylight, the family's wall calendar (2026-11-02, see skylight.py): one connection per household (the OAuth session, the frame,
+-- encrypted JSON; never a password) and a log of every use. The last 2000 log rows are kept.
+CREATE TABLE IF NOT EXISTS skylight_connection (
+    workspace_id INTEGER PRIMARY KEY,
+    data_enc     TEXT NOT NULL,
+    updated_ts   REAL NOT NULL,
+    updated_by   INTEGER
+);
+CREATE TABLE IF NOT EXISTS skylight_log (
+    id           INTEGER PRIMARY KEY,
+    ts           REAL NOT NULL,
+    workspace_id INTEGER,
+    user_id      INTEGER,
+    action       TEXT NOT NULL,
+    target       TEXT,
+    ok           INTEGER NOT NULL,
+    detail       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_skylight_log_ws ON skylight_log(workspace_id, id);
+
 -- Every request to the debug endpoint (2026-10-30, see debug_api.py), answered or refused: when, from where, which path, and how it ended. The last 1000 kept.
 CREATE TABLE IF NOT EXISTS debug_access_log (
     id     INTEGER PRIMARY KEY,

@@ -161,7 +161,7 @@ def handler(role="admin"):
         "_settings_rail", "_settings_shell", "settings_menu_page",
         "_settings_response", "settings_page", "_household_members", "invite_admin_form", "invite_admin_post",
         "subagents_admin_form", "mcp_admin_form", "peers_admin_form", "tools_admin_form",
-        "avatars_admin_page", "models_admin_form", "webtools_admin_form", "homeassistant_admin_form",
+        "avatars_admin_page", "models_admin_form", "webtools_admin_form", "homeassistant_admin_form", "skylight_admin_form",
         "memory_backend_admin_form", "memory_backend_connection_post", "memory_backend_switch_post",
         "memory_backend_migrate_post", "memory_backend_categories_post", "memory_backend_category_post",
         "memory_backend_broad_post", "sandbox_admin_form", "sandbox_enabled_post", "updates_admin_form", "updates_post", "computeruse_admin_form", "computeruse_post",

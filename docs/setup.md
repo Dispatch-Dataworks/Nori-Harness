@@ -16,6 +16,9 @@ depends on it). `Pillow` is optional, for photo-grid thumbnails only —
 without it, `/photos` serves full-size originals as grid tiles
 instead, silently, no missing-feature error.
 
+One library is vendored rather than installed: `skylight_calendar/` (MIT, for
+[Skylight](skylight.md)), which runs on the standard library; see its `VENDORED.md`.
+
 ## Environment variables (`.env`)
 
 `nori.env` lives **outside the repo entirely** — a sibling directory

@@ -302,6 +302,8 @@ _SPEC: dict[str, tuple] = {
     "phone_capture_keep_days": (7, int, "user", False, "days to keep the notifications she was shown"),
     "phone_capture_hide_codes": (True, bool, "user", False, "hide one-time codes and PINs in notifications before they reach her"),
     "phone_capture_digest": (True, bool, "user", False, "put the latest notifications in front of her when I message her (off: only when she looks)"),
+    # Skylight (skylight.py): the household's wall calendar. Connecting it in Settings -> Skylight turns this on; off keeps the connection.
+    "skylight_enabled": (False, bool, "workspace", False, "let assistants use the family's Skylight calendar, lists, chores and meals"),
     "browser_notifications_enabled": (True, bool, "user", False, "desktop notifications through the browser extension"),
     "browser_activity_enabled": (False, bool, "user", False, "passive browsing time (host names and seconds only)"),
     "browser_hidden_hosts": ("", str, "user", False, "sites the extension never reports or shares (comma separated, *.example.com ok)"),

@@ -180,6 +180,7 @@ import recurrence
 import scheduler
 import schedules
 import sharepoint
+import skylight
 import store
 import catalog
 import notes
@@ -3486,6 +3487,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.sandbox_enabled_post(sess, form)
         if path.startswith("/admin/updates/"):
             return self.updates_post(sess, path, form)
+        if path.startswith("/admin/skylight/"):
+            return self.skylight_post(sess, path, form)
         if path == "/first-run/identity":
             return self.first_run_identity_post(sess, form)
         if path == "/first-run/skip":
@@ -5968,6 +5971,111 @@ class Handler(BaseHTTPRequestHandler):
             return self.updates_admin_form(sess, info="checked")
         if action == "dismiss":
             return self.updates_admin_form(sess, info="skipped" if updates.dismiss(wsid) else "nothing to skip")
+        return self.not_found()
+
+    # -- admin: Skylight (2026-11-02, skylight.py) -- the household's wall calendar. One connection for the household; signing in
+    # either with the password (used once, never kept) or on Skylight's own page with the landing address pasted back.
+    def skylight_admin_form(self, sess: dict, err: str = "", info: str = "", browser_url: str = ""):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid = sess["workspace_id"]
+        csrf = esc(sess["csrf"])
+        e = f"<p class=err>{esc(err)}</p>" if err else ""
+        i = f"<p class=info>{esc(info)}</p>" if info else ""
+        st = skylight.status(wsid)
+        hidden = f"<input type=hidden name=csrf value='{csrf}'>"
+
+        def post(action: str, inner: str, extra: str = "") -> str:
+            return f"<form method=post action='/admin/skylight/{action}'{extra}>{hidden}{inner}</form>"
+
+        signin = (
+            "<div class=section><h2>sign in</h2>"
+            "<p class=muted>With the email and password of the Skylight account. ⟦n⟧ uses them once, to sign in, and keeps only "
+            "the session Skylight hands back (encrypted). The password is not stored.</p>"
+            + post("connect",
+                   "<div class=field><input type=text name=email placeholder='Skylight email' autocomplete=off required></div>"
+                   "<div class=field><input type=password name=password placeholder='Skylight password' autocomplete=off required></div>"
+                   "<button class='btn btn-primary'>connect</button>")
+            + "<p class=muted style='margin-top:1rem'>Or without giving ⟦n⟧ the password: open Skylight's own sign-in page, sign in "
+            "there, then copy the address of the page you land on (it starts <code>https://ourskylight.com/welcome?code=</code>) "
+            "and paste it below within 15 minutes.</p>"
+            + post("browser/start", "<button class=btn>open Skylight's sign-in page</button>")
+            + (f"<p><a href='{esc(browser_url)}' target=_blank rel='noopener noreferrer'>Skylight sign-in page</a> (opens in a new tab)</p>"
+               if browser_url else "")
+            + (post("browser/finish",
+                    "<div class=field><input type=text name=pasted placeholder='https://ourskylight.com/welcome?code=...' autocomplete=off required></div>"
+                    "<button class='btn btn-primary'>finish signing in</button>") if st["browser_pending"] else "")
+            + "</div>")
+
+        if st["connected"]:
+            when = usertime.vfmt(st["connected_ts"], "%Y-%m-%d %H:%M") if st["connected_ts"] else ""
+            frames = ""
+            if len(st["frames"]) > 1:
+                opts = "".join(f"<option value='{esc(f['id'])}'{' selected' if f['id'] == st['frame_id'] else ''}>{esc(f['name'])}</option>"
+                               for f in st["frames"])
+                frames = post("frame", f"<div class=field><label>frame <select name=frame_id>{opts}</select></label></div>"
+                                       "<button class=btn>use this frame</button>")
+            status = (
+                "<div class=section><h2>status</h2>"
+                f"<p><span class='chip active'>connected</span> <b>{esc(st['frame_name'])}</b>"
+                + (f" <span class=muted>· {esc(st['timezone'])}</span>" if st["timezone"] else "")
+                + (f" <span class=muted>· {esc(st['email'])}</span>" if st["email"] else "")
+                + (f" <span class=muted>· since {esc(when)}</span>" if when else "") + "</p>"
+                + frames
+                + post("enabled",
+                       "<div class=field><label><input type=checkbox name=on" + (" checked" if st["enabled"] else "")
+                       + "> assistants may use it: read and change the calendar, lists, chores and meal plan</label></div>"
+                       "<button class=btn>save</button>")
+                + "<p class=muted>Every member's assistant can use it, as anyone in the house can tap the frame. Event titles and list "
+                "items are passed to the assistant as written (they can include invites synced in from other people's calendars), "
+                "labelled as information, not instructions.</p>"
+                + post("disconnect", "<button class=btn>disconnect</button>",
+                       " onsubmit=\"return confirm('Disconnect Skylight? Assistants lose access until it is connected again.')\"")
+                + "</div>")
+            body = status + signin.replace("<h2>sign in</h2>", "<h2>sign in again</h2>", 1)
+        else:
+            gone = ("<p class=err>Skylight signed ⟦n⟧ out (the saved session stopped working). Sign in again below.</p>"
+                    if st["signed_out"] else "")
+            body = ("<div class=section><h2>status</h2>" + gone
+                    + "<p><span class=chip>not connected</span></p><p class=muted>Connect the household's Skylight frame and every "
+                    "member's assistant can read and update its calendar, grocery and to-do lists, chore chart and meal plan.</p></div>"
+                    + signin)
+
+        def _log_row(row: dict) -> str:
+            outcome = "<span class=ok>ok</span>" if row["ok"] else f"<span class=err>failed{' — ' + esc(row['detail']) if row['detail'] else ''}</span>"
+            when = usertime.vfmt(row["ts"], "%m-%d %H:%M:%S")
+            return (f"<div class=list-row><div class=list-meta><b>{esc(row['action'])}</b> {outcome} <span class=muted>{when}</span>"
+                    f"<small>{esc(row.get('target') or '')}</small></div></div>")
+        log_rows = "".join(_log_row(r) for r in skylight.recent_log(wsid, 50))
+        main = (f"{e}{i}{body}"
+                "<p class=muted>Skylight has no public API: this uses the private one its own apps use, so it can stop working when "
+                "Skylight changes their app.</p>"
+                f"<div class=section><h2>recent activity</h2>{log_rows or '<p class=muted>nothing yet</p>'}</div>")
+        self._settings_response(sess, "skylight", main)
+
+    def skylight_post(self, sess: dict, path: str, form: dict):
+        if sess["role"] != "admin":
+            return self.forbidden()
+        wsid, uid = sess["workspace_id"], sess["user_id"]
+        action = path[len("/admin/skylight/"):].strip("/")
+        if action == "connect":
+            ok, msg = skylight.connect_with_password(wsid, uid, form.get("email", ""), form.get("password", ""))
+            return self.skylight_admin_form(sess, info=msg) if ok else self.skylight_admin_form(sess, err=msg)
+        if action == "browser/start":
+            return self.skylight_admin_form(sess, info="sign in on Skylight's page, then paste the address you land on below",
+                                            browser_url=skylight.browser_start(wsid, uid))
+        if action == "browser/finish":
+            ok, msg = skylight.browser_finish(wsid, uid, form.get("pasted", ""))
+            return self.skylight_admin_form(sess, info=msg) if ok else self.skylight_admin_form(sess, err=msg)
+        if action == "frame":
+            ok, msg = skylight.choose_frame(wsid, uid, form.get("frame_id", ""))
+            return self.skylight_admin_form(sess, info=msg) if ok else self.skylight_admin_form(sess, err=msg)
+        if action == "enabled":
+            ok, msg = skylight.set_enabled(wsid, "on" in form, uid)
+            return self.skylight_admin_form(sess, info=msg) if ok else self.skylight_admin_form(sess, err=msg)
+        if action == "disconnect":
+            skylight.disconnect(wsid, uid)
+            return self.skylight_admin_form(sess, info="disconnected")
         return self.not_found()
 
     def sandbox_admin_form(self, sess: dict, err: str = "", info: str = ""):
@@ -9512,7 +9620,7 @@ class Handler(BaseHTTPRequestHandler):
                                                ("tools", "Tool builder"), ("models", "Model config"),
                                                ("avatars", "Avatars"), ("webtools", "Web search/fetch"),
                                                ("sandbox", "Code sandbox"), ("updates", "Updates"),
-                                               ("homeassistant", "Home Assistant"),
+                                               ("homeassistant", "Home Assistant"), ("skylight", "Skylight"),
                                                ("memorybackend", "Memory backend"),
                                                ("persona", "Persona"), ("contexttuning", "Context tuning"), ("media", "Images"),
                                                ("backups", "Backups"), ("health", "Integration health"),
@@ -9694,7 +9802,7 @@ class Handler(BaseHTTPRequestHandler):
         admin_pages = {"infra": self.infra_admin_form, "debug": self.debug_admin_form, "subagents": self.subagents_admin_form, "mcp": self.mcp_admin_form,
                        "tools": self.tools_admin_form, "models": self.models_admin_form,
                        "avatars": self.avatars_admin_page, "webtools": self.webtools_admin_form,
-                       "homeassistant": self.homeassistant_admin_form,
+                       "homeassistant": self.homeassistant_admin_form, "skylight": self.skylight_admin_form,
                        "contexttuning": self.context_admin_form, "persona": self.persona_admin_form, "media": self.media_admin_form,
                        "backups": self.backups_admin_form, "health": self.integration_health_admin_form,
                        "memorybackend": self.memory_backend_admin_form,
