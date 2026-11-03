@@ -2,6 +2,14 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-03 — pictures through any connection: choose who reads and who draws them
+
+Reading pictures was OpenRouter only. Settings → Images now has a *reading pictures* section with a provider dropdown and a model dropdown. The model dropdown lists the models at that provider that can see, with the ones you already use first. Any connection works, because every adapter now carries a picture in its own format: Responses `input_image`, Anthropic image blocks, and Copilot's vision header. Drawing pictures can now also use the ChatGPT sign-in (the Codex `image_generation` tool) and the Grok sign-in (api.x.ai with its token). Both are best-effort, since neither is documented for this. See [Image generation](image-generation.md#reading-pictures).
+
+## 2026-11-03 — fixed: a failed image read said "vision is off"
+
+Nori couldn't read the pictures in a working-folder folder. Vision was switched on, but the vision model's OpenRouter account had run out of credit (HTTP 402). `read_file` reported every failed vision call as "vision is off for this account", so she told the user to turn on a setting that was already on, and sent sub-agents that failed the same way. A failed call now says the vision model couldn't be reached, gives the provider's reason, and says sub-agents can't read the image either. It isn't cached, so the next read tries again.
+
 ## 2026-11-03 — fixed: approvals you couldn't see or couldn't answer; every approval now on the board
 
 Iron asked three times to run the same cloudflared update. Three things went wrong:

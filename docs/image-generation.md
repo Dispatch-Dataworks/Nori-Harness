@@ -32,17 +32,48 @@ provider **Settings → Images → image provider** (`image_provider`) names:
 | OpenRouter (default) | `/api/v1/images` | `input_references` | the connected OpenRouter provider's key, else `OPENROUTER_API_KEY` (`chat.openrouter_key()`); reports a real cost |
 | OpenAI (API key) | `/v1/images/generations`, or multipart `/v1/images/edits` (`image[]`) when there is a reference | yes, via edits | model e.g. `gpt-image-1`; the organisation must be verified for image models; no cost is returned, so the per-image estimate is used |
 | xAI (API key) | `/v1/images/generations`, or `/v1/images/edits` with a data-URL `image` | yes, via edits | model e.g. `grok-imagine-image-2.0`; asks for base64 and accepts a URL reply |
+| Grok sign-in (`xai_oauth`) | the same api.x.ai endpoints, with the sign-in's OAuth token | yes, via edits | best-effort (2026-11-03): the token carries `api:access`, but xAI doesn't document image calls with it |
+| ChatGPT sign-in (`openai_oauth`) | the Codex Responses endpoint with the `image_generation` tool (`chat._codex_image`) | yes, as `input_image` parts | best-effort (2026-11-03), undocumented; the "image model" is the **chat model** that runs the tool, by default the first one set up for that sign-in; no cost is returned |
 
-Only providers with a documented image API are offered. Claude (Anthropic) has no image
-generation; GitHub Copilot and the ChatGPT/Codex and Grok **subscription** sign-ins have no
-documented image endpoint (community tools reach one through the Codex backend's
-`image_generation` tool, but it is undocumented and unverified, so it is not wired in). A
+Claude (Anthropic) and GitHub Copilot have no image generation, so they are not offered. The
+two sign-ins are wired in on a best-effort basis. A refusal comes back in the provider's own
+words in Settings → Images → recent activity, the same as any other image failure. A
 model name only means something at its own provider, so choosing a provider resets the model
 to that provider's default unless you also edit it (`imagegen.configure`). The chosen
 provider being deleted or disconnected falls back to OpenRouter. The OpenAI and xAI adapters
 were written from the providers' documentation and are tested against faked replies, not yet
 against a live account. Whichever model is configured (`image_model` in Settings; nothing
 generates if it's left blank or if `image_gen_enabled` is off).
+
+## Reading pictures
+
+Every picture read goes through `chat.vision()`: working-folder images, photos sent in chat,
+phone and browser screenshots, and the avatar builder's upload. It sends the picture to the
+connection and model chosen under **Settings → Images → reading pictures** (`vision_provider`,
+`vision_model`, 2026-11-03; `chat.vision_backend`). Before this, reading pictures was
+OpenRouter only. An empty OpenRouter balance stopped every picture read, even with a
+connected ChatGPT sign-in whose model can see.
+
+- **Any connection can be chosen.** Each adapter now carries a picture in its own format:
+  - OpenRouter, Copilot, and OpenAI or xAI with an API key: the chat-completions `image_url`
+    part. Copilot also gets its `copilot-vision-request` header.
+  - The Responses endpoints (the ChatGPT and Grok sign-ins, Copilot's `/responses`): an
+    `input_image` part.
+  - Anthropic: an `image` block.
+- **The model dropdown** lists what each provider says can see: OpenRouter's
+  `input_modalities`, Copilot's `supports.vision`, and xAI's `/language-models`. All Claude
+  models are listed. For OpenAI, its chat families are listed and its audio, speech, embedding
+  and image models are left out. The models already set up for that connection under Model
+  config come first. The ChatGPT sign-in has no model list, so only those appear there, or you
+  type a name.
+- **Defaults and fallback.** The default is OpenRouter with `NORI_VISION_MODEL`, as before.
+  Choosing another connection picks the first model you use with it. A chosen connection that
+  is deleted or disconnected falls back to OpenRouter.
+- **When a read fails,** the provider's reason comes back (`workfiles.read_file` says the
+  model couldn't read it, not that vision is off).
+
+The settings that let a picture be sent at all (`workfile_vision_enabled`,
+`chat_vision_enabled`) are unchanged.
 
 ## Prompt assembly is fixed, regardless of what she writes
 

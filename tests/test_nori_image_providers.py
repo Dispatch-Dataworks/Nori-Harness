@@ -128,8 +128,9 @@ class Base(unittest.TestCase):
 
 class Backend(Base):
     def test_which_provider_types_can_draw(self):
-        self.assertEqual(set(chat.IMAGE_PROVIDER_TYPES), {"openrouter", "openai_api_key", "xai_api_key"})
-        for t in ("anthropic_oauth", "openai_oauth", "github_copilot", "xai_oauth"):
+        # The ChatGPT and Grok sign-ins joined on 2026-11-03 (test_nori_vision_providers.py pins how they draw).
+        self.assertEqual(set(chat.IMAGE_PROVIDER_TYPES), {"openrouter", "openai_api_key", "xai_api_key", "xai_oauth", "openai_oauth"})
+        for t in ("anthropic_oauth", "anthropic_api_key", "github_copilot"):
             self.assertNotIn(t, chat.IMAGE_PROVIDER_TYPES)
         add("anthropic_api_key")
         self.assertEqual(chat.image_choices(WS), [])
@@ -378,7 +379,8 @@ class Pages(Base):
         self.assertIn("name=image_provider", html)
         self.assertIn("OpenRouter (default)", html)
         self.assertIn("OpenAI Key", html)
-        self.assertNotIn("Claude Key", html)
+        drawing = html.split("name=image_provider", 1)[1].split("</select>", 1)[0]
+        self.assertNotIn("Claude Key", drawing, "Claude can read pictures (the reading-pictures list) but cannot draw")
         self.assertNotIn("model (OpenRouter)", html)
 
     def test_saving_the_images_page_chooses_the_provider_and_resets_the_model(self):

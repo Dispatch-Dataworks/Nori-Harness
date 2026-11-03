@@ -3238,6 +3238,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.image_get(sess, path[len("/image/"):])
         if path == "/admin/image-models":
             return self.image_models_get(sess, urllib.parse.parse_qs(qs))
+        if path == "/admin/vision-models":
+            return self.vision_models_get(sess, urllib.parse.parse_qs(qs))
         if path == "/admin/persona/preview":
             return self.persona_preview_get(sess, urllib.parse.parse_qs(qs))
         if path == "/admin/contexttuning/preview":
@@ -7716,8 +7718,24 @@ class Handler(BaseHTTPRequestHandler):
             if not row or row["workspace_id"] != sess["workspace_id"] or row["type"] not in chat.IMAGE_PROVIDER_TYPES:
                 return self.send_json({"ok": False, "error": "not an image provider", "items": []})
         ok, res = providers.list_image_models(row)
-        default = chat.IMAGE_DEFAULT_MODELS.get(row["type"] if row else "openrouter", "")
+        default = chat.image_default_model(row)
         return self.send_json({"ok": ok, "items": res if ok else [], "error": "" if ok else res, "default": default})
+
+    def vision_models_get(self, sess: dict, q: dict):
+        """JSON for the picture-reading model dropdown: the models that can read pictures for ?provider=ID (0 = OpenRouter)."""
+        if sess["role"] != "admin":
+            return self.forbidden()
+        try:
+            pid = int((q.get("provider") or ["0"])[0] or 0)
+        except ValueError:
+            pid = 0
+        row = None
+        if pid:
+            row = providers.get(pid)
+            if not row or row["workspace_id"] != sess["workspace_id"] or pid not in {c["id"] for c in chat.vision_choices(sess["workspace_id"])}:
+                return self.send_json({"ok": False, "error": "not a connected provider", "items": []})
+        ok, res = providers.list_vision_models(row)
+        return self.send_json({"ok": ok, "items": res if ok else [], "error": "" if ok else res, "default": chat.vision_default_model(row)})
 
     def context_preview_get(self, sess: dict, q: dict):
         if sess["role"] != "admin":
@@ -7758,6 +7776,11 @@ class Handler(BaseHTTPRequestHandler):
         provider_options = (f"<option value=0>OpenRouter (default)</option>"
                             + "".join(f"<option value={c['id']}{' selected' if c['id'] == chosen_provider else ''}>{esc(c['label'])}</option>"
                                       for c in chat.image_choices(wsid) if c["type"] != "openrouter"))
+        vision = chat.vision_backend(wsid)
+        chosen_vision = (vision["provider"] or {}).get("id", 0)
+        vision_options = ("<option value=0>OpenRouter (default)</option>"
+                          + "".join(f"<option value={c['id']}{' selected' if c['id'] == chosen_vision else ''}>{esc(c['label'])}</option>"
+                                    for c in chat.vision_choices(wsid) if c["type"] != "openrouter"))
         cap = config.get("workspace", wsid, "image_daily_cap_usd")
         per_req = config.get("workspace", wsid, "image_cost_per_request_usd")
         cap_tip = info_tip("Shared by both image tools, whole household.")
@@ -7779,17 +7802,30 @@ class Handler(BaseHTTPRequestHandler):
             "Prompt content rules and the provider's own checks still apply.</p></div>"
             "<div class=field><label>image provider</label>"
             f"<select name=image_provider>{provider_options}</select>"
-            "<p class=muted>Which connection draws the pictures: OpenRouter, or an OpenAI or xAI API key you have connected under Model config. "
-            "Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins have no image service. Changing the provider resets the model "
-            "to that provider's default unless you also edit it.</p></div>"
+            "<p class=muted>Which connection draws the pictures: OpenRouter, or an OpenAI or xAI connection under Model config (an API key, or the "
+            "ChatGPT or Grok sign-in; the sign-ins aren't documented for pictures, so a refusal shows in recent activity below). Claude and Copilot "
+            "connections have no image service. Changing the provider resets the model to that provider's default unless you also edit it.</p></div>"
             "<div class=field id=image-model-field><label>image model</label>"
             "<select><option value='__other'>loading...</option></select>"
             f"<input type=text name=image_model value='{esc(model)}' placeholder='model name'>"
             "<p class='muted img-note'></p>"
             "<p class=muted>OpenRouter: for example <code>bytedance-seed/seedream-5-0-lite</code>. OpenAI: <code>gpt-image-1</code> (the organisation must be "
-            "verified for image models). xAI: <code>grok-imagine-image-2.0</code>. It must accept a reference picture, which the selfie tool and the avatar "
-            "builder use.</p></div>"
+            "verified for image models). xAI: <code>grok-imagine-image-2.0</code>. ChatGPT sign-in: the chat model that runs the image tool, such as the one "
+            "you chat with. It must accept a reference picture, which the selfie tool and the avatar builder use.</p></div>"
             + __import__('image_model_ui').JS +
+            "<h3>reading pictures</h3>"
+            "<div class=field><label>picture-reading provider</label>"
+            f"<select name=vision_provider>{vision_options}</select>"
+            "<p class=muted>Which connection reads pictures: files in the working folder, photos sent in chat, phone and browser screenshots, and the "
+            "avatar builder's upload. Any connection under Model config can carry a picture; pick a model below that can see. Changing the provider "
+            "resets the model to the first one you use with it unless you also edit it.</p></div>"
+            "<div class=field id=vision-model-field><label>picture-reading model</label>"
+            "<select><option value='__other'>loading...</option></select>"
+            f"<input type=text name=vision_model value='{esc(vision['model'])}' placeholder='model name'>"
+            "<p class='muted img-note'></p>"
+            f"<p class=muted>Reading pictures now: <b>{esc(chat.vision_label(wsid))}</b>"
+            + ("" if vision["ok"] else f" &middot; <span class=err>{esc(vision['reason'])}</span>") + "</p></div>"
+            + __import__('image_model_ui').VISION_JS +
             f"<div class=field><label>daily budget (USD) {cap_tip}</label>"
             f"<input type=number name=image_daily_cap_usd value='{cap}' min=0 step=0.10></div>"
             f"<div class=field><label>per-image cost estimate (USD) {per_req_tip}</label>"
@@ -7824,6 +7860,13 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(form.get("image_provider"), str):
             try:
                 ok, msg = imagegen.configure(wsid, int(form["image_provider"] or 0), form.get("image_model") or "")
+            except ValueError:
+                ok, msg = False, "that is not a provider"
+            if not ok:
+                errors.append(msg)
+        if isinstance(form.get("vision_provider"), str):
+            try:
+                ok, msg = chat.configure_vision(wsid, int(form["vision_provider"] or 0), form.get("vision_model") or "")
             except ValueError:
                 ok, msg = False, "that is not a provider"
             if not ok:
@@ -11216,8 +11259,8 @@ class Handler(BaseHTTPRequestHandler):
                 "<button class='btn btn-primary'>save</button></form>") if options else ""
             parts.append(
                 "<div class=section><h2>Connect an image model first</h2>"
-                "<p class=muted>⟦n⟧'s portraits are drawn by an image model, through an <b>OpenRouter</b>, <b>OpenAI</b> (API key) or <b>xAI</b> (API key) "
-                "connection. Claude and Copilot connections and the ChatGPT or Grok subscription sign-ins cannot draw pictures.</p>"
+                "<p class=muted>⟦n⟧'s portraits are drawn by an image model, through an <b>OpenRouter</b>, <b>OpenAI</b> or <b>xAI</b> connection (an API "
+                "key, or the ChatGPT or Grok sign-in). Claude and Copilot connections cannot draw pictures.</p>"
                 + ("" if options else f"<p>&#10007; No such provider is connected yet. <a href='{connect}'>Add one</a> (it can be the same key ⟦n⟧ thinks with, "
                    "or one used only for pictures), then come back here to choose it.</p>")
                 + setup + "</div>")
@@ -11238,7 +11281,7 @@ class Handler(BaseHTTPRequestHandler):
                 route = avatar_builder.vision_route(wsid)
                 vision_line = (f"<label><input type=checkbox name=vision value=1 checked> Let a vision model read the picture and write the description for you to check "
                                f"(the picture is sent once to {esc(route['label'])})</label>" if route else
-                               "<span class=muted>No vision model is available (it needs an OpenRouter connection), so write the description yourself.</span>")
+                               "<span class=muted>No vision model is available (choose one under Settings &rarr; Images), so write the description yourself.</span>")
                 parts.append(
                     "<div class=section><h2>Or upload a picture of ⟦n⟧</h2>"
                     "<p class=muted>If you already have ⟦n⟧'s neutral portrait, use it as it is: it becomes the reference every other expression is drawn from, so a plain "

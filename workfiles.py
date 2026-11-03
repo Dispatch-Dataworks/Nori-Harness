@@ -554,7 +554,17 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False, offse
     ext = target.suffix.lower()
 
     if ext in _IMAGE_MIME:
-        caption = _get_or_caption_image(user_id, rel, target, _IMAGE_MIME[ext])
+        import chat
+        try:
+            caption = _get_or_caption_image(user_id, rel, target, _IMAGE_MIME[ext])
+        except chat.ModelError as exc:
+            # Vision is on but the vision model call failed (2026-11-03: OpenRouter out of credit). This used to read "vision is off", so she
+            # told the user to switch on a setting that was already on, and sent sub-agents that hit the same wall.
+            print(f"workfile vision failed for {rel}: {exc}", flush=True)
+            return {"kind": "image",
+                    "error": f"the picture-reading model ({chat.vision_label()}) couldn't read it: {str(exc)[:200]}. "
+                             "Vision is switched on; this is the model or its provider account. An admin can choose another connection "
+                             "under Settings -> Images. Sub-agents read images through the same model, so they can't read it either until then."}
         if caption is None:
             return {"kind": "image",
                     "message": "vision is off for this account -- enable it on the files page "
@@ -838,13 +848,10 @@ def _get_or_caption_image(user_id: int, rel: str, path: Path, mime: str) -> str 
     if not config.get("user", user_id, "workfile_vision_enabled"):
         return None
     import chat
-    try:
-        caption = chat.vision(
-            "Describe what's in this image in a few plain, factual sentences -- objects, any "
-            "visible text, general composition. Not creative, not speculative.",
-            [(path.read_bytes(), mime)])
-    except chat.ModelError:
-        return None
+    caption = chat.vision(   # a ModelError goes to read_file, which reports it -- None means vision is switched off
+        "Describe what's in this image in a few plain, factual sentences -- objects, any "
+        "visible text, general composition. Not creative, not speculative.",
+        [(path.read_bytes(), mime)])
     now = time.time()
     def _w(c):
         r = c.execute("SELECT id FROM work_files WHERE user_id=? AND rel_path=?", (user_id, rel)).fetchone()

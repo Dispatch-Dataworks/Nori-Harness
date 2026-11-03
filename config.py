@@ -189,6 +189,10 @@ _SPEC: dict[str, tuple] = {
                     "image generation model (a name at the chosen image provider)"),
     # Which connected provider draws pictures (a providers.id; see chat.image_backend). 0 = OpenRouter, which is how it worked before this existed.
     "image_provider": (0, int, "workspace", False, "which connected provider draws pictures (0 = OpenRouter)"),
+    # Which connected provider reads pictures, and with which model (see chat.vision_backend; 2026-11-03). 0 and a blank model = OpenRouter with
+    # NORI_VISION_MODEL, which is how it worked before this existed.
+    "vision_provider": (0, int, "workspace", False, "which connected provider reads pictures (0 = OpenRouter)"),
+    "vision_model": ("", str, "workspace", False, "picture-reading model (a name at the chosen provider; blank = its default)"),
     # {appearance} is NOT a template placeholder here the way a sibling application's
     # equivalent uses one -- her physical description is baked directly
     # into this string rather than kept as a second, separately-derived

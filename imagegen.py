@@ -193,6 +193,7 @@ def configure(workspace_id: int, provider_id: int, model: str) -> tuple[bool, st
     """Choose which connected provider draws pictures and which model. Used by Settings -> Images and the avatar builder's setup card. A model that is
     blank, or unchanged while the provider changes, becomes that provider's default (a model name only means something at the provider it belongs to)."""
     import chat
+    import providers
     choices = {c["id"]: c for c in chat.image_choices(workspace_id)}
     if provider_id and provider_id not in choices:
         return False, "that provider is not connected, or cannot draw pictures"
@@ -200,7 +201,9 @@ def configure(workspace_id: int, provider_id: int, model: str) -> tuple[bool, st
     old = chat.image_backend(workspace_id)
     model = (model or "").strip()
     if not model or (model == config.get("workspace", workspace_id, "image_model") and new_type != old["type"]):
-        model = chat.IMAGE_DEFAULT_MODELS[new_type]
+        model = chat.image_default_model(providers.get(provider_id) if provider_id else None)
+    if not model:
+        return False, f"type the name of the chat model {choices[provider_id]['label']} should draw with"
     config.set("workspace", workspace_id, "image_provider", provider_id)
     config.set("workspace", workspace_id, "image_model", model)
     return True, f"pictures will be drawn by {choices[provider_id]['label'] if provider_id else 'OpenRouter'} with {model}"
@@ -278,7 +281,7 @@ def describe_chat_photo(user_id: int, data: bytes, mime: str) -> dict | None:
     except chat.ModelError as exc:
         print(f"chat-photo vision description failed: {exc}", flush=True)
         return None
-    return {"description": text, "model": chat.VISION_MODEL, "ts": time.time()}
+    return {"description": text, "model": chat.vision_backend()["model"], "ts": time.time()}
 
 
 def chat_photo_extra_user(description: str | None, caption: str) -> dict:

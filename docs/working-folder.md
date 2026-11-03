@@ -15,6 +15,17 @@ option used elsewhere for untrusted text), `search_files`, and
 `read_image_bytes`/vision captioning for images. A per-user quota is
 checked before any write completes, not after.
 
+When the user has switched on *working-folder images sent to vision
+model*, reading an image with `read_file` sends it to the picture-reading
+model the admin chose under **Settings → Images → reading pictures**
+(`chat.vision_backend`; by default OpenRouter with `NORI_VISION_MODEL`).
+See [Image generation](image-generation.md#reading-pictures). The
+description is cached per file. With the setting off, `read_file` says
+vision is off. If the setting is on but the call fails (for example, the
+OpenRouter account is out of credit), it returns an error with the
+provider's reason. Nothing is cached, so the next read tries again.
+Sub-agents read images the same way, so they fail the same way.
+
 ## Downloading a file from a URL
 
 `download_image(session, url, filename)` doesn't write straight into

@@ -359,7 +359,7 @@ def more_candidates(workspace_id: int, user_id: int) -> tuple[bool, str]:
 
 
 # ── start from an uploaded picture ───────────────────────────────────────
-NO_VISION = ("No vision model is available (it needs an OpenRouter connection, or a chat model known to accept pictures). Write the description "
+NO_VISION = ("No vision model is available (choose a connection that reads pictures under Settings -> Images). Write the description "
              "yourself below")
 VISION_PROMPT = (
     "This is a portrait of a character: a person, a robot, an animal, an illustration, anything. Write a description of the character that an image "
@@ -462,15 +462,21 @@ def clean_model_text(text) -> str:
 
 
 def vision_route(workspace_id: int) -> dict | None:
-    """Which model reads the uploaded picture, or None. The workspace's primary chat model when it is one the app knows takes pictures
-    (chat.model_accepts_images) and is reached through OpenRouter, whose message format carries them; otherwise the app's vision model
-    (chat.VISION_MODEL, NORI_VISION_MODEL) through the OpenRouter connection, the same one chat photos and working-folder images use."""
+    """Which model reads the uploaded picture, or None. A connection chosen to read pictures under Settings -> Images (chat.vision_backend, 2026-11-03)
+    comes first. Without one: the workspace's primary chat model when it is one the app knows takes pictures (chat.model_accepts_images) and is
+    reached through OpenRouter; otherwise the OpenRouter picture-reading model, the same one chat photos and working-folder images use."""
     import chat
+    b = chat.vision_backend(workspace_id)
+    if b["provider"] is not None:
+        if not b["ok"]:
+            return None
+        entry = {"alias": b["model"], "model_name": b["model"], "reasoning_effort": None, "provider": b["provider"]}
+        return {"kind": "chosen", "model": b["model"], "label": f"{b['label']} ({b['model']})", "_entry": entry}
     chain = chat._resolve_model_chain(workspace_id)
     if chain and chain[0]["provider"]["type"] == "openrouter" and chat.model_accepts_images(chain[0]["model_name"]):
         return {"kind": "primary", "model": chain[0]["model_name"], "label": f"{chain[0]['provider']['label']} ({chain[0]['model_name']})", "_entry": chain[0]}
-    if chat.has_openrouter_key():
-        return {"kind": "dedicated", "model": chat.VISION_MODEL, "label": f"OpenRouter ({chat.VISION_MODEL})"}
+    if b["ok"]:
+        return {"kind": "dedicated", "model": b["model"], "label": f"OpenRouter ({b['model']})"}
     return None
 
 
@@ -485,7 +491,7 @@ def _vision_read(workspace_id: int, user_id: int, image: tuple[bytes, str]) -> d
     url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
     messages = [{"role": "user", "content": [{"type": "text", "text": VISION_PROMPT}, {"type": "image_url", "image_url": {"url": url}}]}]
     try:
-        if route["kind"] == "primary":
+        if route["kind"] in ("primary", "chosen"):
             res = chat.call_for_model(route["_entry"], messages, max_tokens=VISION_MAX_TOKENS, temperature=0.0, timeout=VISION_TIMEOUT_S)
         else:
             res = chat.call(messages, model=route["model"], api_key=chat.openrouter_key(), max_tokens=VISION_MAX_TOKENS, temperature=0.0,

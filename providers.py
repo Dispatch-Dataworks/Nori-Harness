@@ -708,13 +708,20 @@ def list_image_models(provider: dict | None) -> tuple[bool, list[dict] | str]:
                 ref = " (takes a reference picture)" if "image" in (arch.get("input_modalities") or []) else ""
                 out.append({"id": m["id"], "label": (m.get("name") or m["id"]) + ref})
             return True, sorted(out, key=lambda m: m["id"])
-        if ptype in ("openai_api_key", "xai_api_key"):
+        if ptype == "openai_oauth":
+            # The ChatGPT sign-in draws with the image_generation tool, run by one of its chat models (chat._codex_image): the ones already set up.
+            names = __import__("chat").provider_model_names(provider["id"])
+            if not names:
+                return False, "add a model for this sign-in under Model config first, or type its name"
+            return True, [{"id": n, "label": f"{n} (draws with the image tool)"} for n in names]
+        if ptype in ("openai_api_key", "xai_api_key", "xai_oauth"):
             url = "https://api.openai.com/v1/models" if ptype == "openai_api_key" else "https://api.x.ai/v1/models"
-            ok, res = _list_models_openai(url=url, headers={"Authorization": f"Bearer {api_key_for(provider)}"})
-            if ptype == "xai_api_key":
+            secret = access_token_for(provider) if ptype == "xai_oauth" else api_key_for(provider)
+            ok, res = _list_models_openai(url=url, headers={"Authorization": f"Bearer {secret}"})
+            if ptype in ("xai_api_key", "xai_oauth"):
                 try:
                     data = _post_json("https://api.x.ai/v1/image-generation-models", None,
-                                      headers={"Accept": "application/json", "Authorization": f"Bearer {api_key_for(provider)}"}, method="GET")
+                                      headers={"Accept": "application/json", "Authorization": f"Bearer {secret}"}, method="GET")
                     items = [{"id": m["id"], "label": m["id"]} for m in (data.get("models") or data.get("data") or []) if m.get("id")]
                     if items:
                         return True, sorted(items, key=lambda m: m["id"])
@@ -727,6 +734,89 @@ def list_image_models(provider: dict | None) -> tuple[bool, list[dict] | str]:
         return False, "this provider type has no image service"
     except Exception as exc:  # noqa: BLE001
         return False, f"couldn't list models: {exc}"
+
+
+# ── Picture-reading model lists (Settings -> Images; 2026-11-03) ────────
+# Where a provider's list says which models take a picture, that is used: OpenRouter's architecture.input_modalities, Copilot's
+# capabilities.supports.vision, xAI's /language-models input_modalities. Anthropic's Claude models all read pictures. OpenAI's list says nothing about
+# it, so its chat families are kept and its audio, speech, embedding, image-drawing and moderation models are dropped. The ChatGPT sign-in has no list
+# at all. Every list starts with the models already set up for that connection under Model config, so the one in use is always there to pick.
+_OPENAI_VISION_PREFIXES = ("gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5", "chatgpt-4o", "o1", "o3", "o4")
+_OPENAI_NOT_VISION = ("audio", "realtime", "tts", "transcribe", "embedding", "image", "dall-e", "moderation", "search", "whisper")
+
+
+def list_vision_models(provider: dict | None) -> tuple[bool, list[dict] | str]:
+    """Models that can read pictures at a provider, for the Images settings dropdown. provider None = OpenRouter by the connected key or the
+    environment key. (True, [{"id","label"}]) or (False, message)."""
+    ptype = provider["type"] if provider else "openrouter"
+    try:
+        ok, res = _vision_models(provider, ptype)
+    except Exception as exc:  # noqa: BLE001 -- a listing problem is a message under the dropdown, never a 500
+        ok, res = False, f"couldn't list models: {exc}"
+    known = __import__("chat").provider_model_names(provider["id"]) if provider else []
+    if not known:
+        return ok, res
+    listed = res if ok else []
+    ids = {m["id"] for m in listed}
+    head = [{"id": n, "label": f"{n} (in your model list)"} for n in known if n not in ids]
+    return True, head + listed
+
+
+def _vision_models(provider: dict | None, ptype: str) -> tuple[bool, list[dict] | str]:
+    if ptype == "openrouter":
+        headers = {"Accept": "application/json"}
+        try:
+            key = api_key_for(provider) if provider else __import__("chat").openrouter_key()
+        except Exception:  # noqa: BLE001 -- the public list needs no key
+            key = ""
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        try:
+            data = _post_json(_OPENROUTER_MODELS_URL, None, headers=headers, method="GET")
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            return False, f"couldn't list models: {exc}"
+        out = []
+        for m in data.get("data") or []:
+            arch = m.get("architecture") or {}
+            if m.get("id") and "image" in (arch.get("input_modalities") or []) and "text" in (arch.get("output_modalities") or ["text"]):
+                out.append({"id": m["id"], "label": m.get("name") or m["id"]})
+        return True, sorted(out, key=lambda m: m["id"])
+    if ptype == "github_copilot":
+        headers = {"Authorization": f"Bearer {access_token_for(provider)}", "Accept": "application/json", **_COPILOT_HEADERS}
+        try:
+            data = _post_json("https://api.githubcopilot.com/models", None, headers=headers, method="GET")
+        except urllib.error.HTTPError as exc:
+            return False, f"couldn't list models ({exc.code}): {exc.read().decode('utf-8', 'replace')[:200]}"
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            return False, f"couldn't list models: {exc}"
+        out = [{"id": m["id"], "label": m.get("name") or m["id"]} for m in data.get("data") or []
+               if m.get("id") and ((m.get("capabilities") or {}).get("supports") or {}).get("vision")]
+        return True, sorted({m["id"]: m for m in out}.values(), key=lambda m: m["id"])
+    if ptype in ("xai_api_key", "xai_oauth"):
+        secret = access_token_for(provider) if ptype == "xai_oauth" else api_key_for(provider)
+        try:
+            data = _post_json("https://api.x.ai/v1/language-models", None,
+                              headers={"Accept": "application/json", "Authorization": f"Bearer {secret}"}, method="GET")
+            items = data.get("models") or data.get("data") or []
+            out = [{"id": m["id"], "label": m["id"]} for m in items if m.get("id") and "image" in (m.get("input_modalities") or [])]
+            if out:
+                return True, sorted(out, key=lambda m: m["id"])
+        except Exception:  # noqa: BLE001 -- fall back to the general list
+            pass
+        return list_models(provider)
+    if ptype in ("anthropic_api_key", "anthropic_oauth"):
+        ok, res = list_models(provider)
+        if not ok:
+            return ok, res
+        return True, [m for m in res if m["id"].startswith("claude-") and not m["id"].startswith(("claude-2", "claude-instant"))]
+    if ptype == "openai_api_key":
+        ok, res = list_models(provider)
+        if not ok:
+            return ok, res
+        return True, [m for m in res if m["id"].startswith(_OPENAI_VISION_PREFIXES) and not any(k in m["id"] for k in _OPENAI_NOT_VISION)]
+    if ptype == "openai_oauth":
+        return False, "the ChatGPT sign-in has no model list: add the model under Model config, or type its name"
+    return False, f"unknown provider type {ptype!r}"
 
 
 def _list_models_anthropic(*, headers: dict) -> tuple[bool, list[dict] | str]:

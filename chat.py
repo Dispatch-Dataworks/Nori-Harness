@@ -202,6 +202,8 @@ def _urlopen_sse_final_response(req, socket_timeout: int) -> dict:
             if item.get("type") == "function_call":
                 function_calls.append({"type": "function_call", "call_id": item.get("call_id"),
                                        "name": item.get("name"), "arguments": item.get("arguments") or "{}"})
+            elif item.get("type") == "image_generation_call" and item.get("result"):
+                function_calls.append({"type": "image_generation_call", "result": item["result"]})   # _codex_image's picture
         elif etype == "response.completed" and isinstance(evt.get("response"), dict):
             r = evt["response"]
             usage = r.get("usage") or usage
@@ -628,28 +630,111 @@ def call(messages: list[dict], *, model: str | None = None, max_tokens: int | No
     raise err_cls(f"model call failed after {attempt + 1} attempt(s): {last}", kind=getattr(last, "kind", None))
 
 
+# ── Who reads pictures (2026-11-03) ──────────────────────────────────────
+# Reading a picture was OpenRouter only (VISION_MODEL, NORI_VISION_MODEL), so an empty OpenRouter balance stopped every picture read while a connected
+# ChatGPT sign-in whose model reads pictures sat unused. The workspace setting vision_provider (a providers.id; 0 = OpenRouter, as before) picks the
+# connection and vision_model the model, the same pair image_provider/image_model are for drawing. Every connection type can carry a picture now (see
+# _responses_content and _anthropic_content); whether the chosen model can see is listed per provider in Settings -> Images.
+
+def vision_choices(workspace_id: int) -> list[dict]:
+    """The connected, enabled providers a picture can be sent to: [{"id", "label", "type"}]."""
+    import providers
+    return [{"id": p["id"], "label": p["label"], "type": p["type"]} for p in providers.list_all(workspace_id)
+            if p["type"] in _PROVIDER_CALLERS and p["enabled"] and p["status"] == "connected"]
+
+
+def provider_model_names(provider_id: int) -> list[str]:
+    """The model names this workspace already uses with a provider (Settings -> Model config), the chain's order first."""
+    import models
+    names = [m["model_name"] for m in models.list_enabled() if m["provider_id"] == provider_id]
+    return sorted(set(names), key=names.index)
+
+
+def vision_default_model(provider: dict | None) -> str:
+    """OpenRouter's is VISION_MODEL; any other connection's is the first model already set up for it, or "" when there is none."""
+    if provider is None or provider["type"] == "openrouter":
+        return VISION_MODEL
+    names = provider_model_names(provider["id"])
+    return names[0] if names else ""
+
+
+def vision_backend(workspace_id: int | None = None) -> dict:
+    """Who reads pictures right now: {"type", "label", "provider" (the row, or None for OpenRouter), "model", "ok", "reason"}. vision_provider 0, or
+    a provider since deleted or disconnected, means OpenRouter with VISION_MODEL unless vision_model names another OpenRouter model."""
+    import accounts
+    import config
+    import providers
+    wsid = workspace_id if workspace_id is not None else accounts.the_workspace_id()
+    chosen = int(config.get("workspace", wsid, "vision_provider") or 0) if wsid is not None else 0
+    saved = (config.get("workspace", wsid, "vision_model") or "").strip() if wsid is not None else ""
+    if chosen:
+        row = providers.get(chosen)
+        if row and row["workspace_id"] == wsid and row["enabled"] and row["status"] == "connected" and row["type"] in _PROVIDER_CALLERS:
+            model = saved or vision_default_model(row)
+            return {"type": row["type"], "label": row["label"], "provider": row, "model": model, "ok": bool(model),
+                    "reason": "" if model else f"choose the model {row['label']} should read pictures with, under Settings -> Images"}
+        saved = ""
+    ok = has_openrouter_key()
+    return {"type": "openrouter", "label": "OpenRouter", "provider": None, "model": saved or VISION_MODEL, "ok": ok,
+            "reason": "" if ok else "no connection reads pictures: choose one under Settings -> Images"}
+
+
+def vision_label(workspace_id: int | None = None) -> str:
+    b = vision_backend(workspace_id)
+    return f"{b['label']} ({b['model']})" if b["model"] else b["label"]
+
+
+def configure_vision(workspace_id: int, provider_id: int, model: str) -> tuple[bool, str]:
+    """Choose which connection reads pictures and with which model (Settings -> Images). A blank model, or one left unchanged while the connection
+    changes, becomes that connection's default (vision_default_model)."""
+    import config
+    import providers
+    choices = {c["id"]: c for c in vision_choices(workspace_id)}
+    if provider_id and provider_id not in choices:
+        return False, "that connection is not connected"
+    old = vision_backend(workspace_id)
+    row = providers.get(provider_id) if provider_id else None
+    new_type = row["type"] if row else "openrouter"
+    model = (model or "").strip()
+    if not model or (model == old["model"] and (new_type != old["type"] or (row or {}).get("id") != (old["provider"] or {}).get("id"))):
+        model = vision_default_model(row)
+    if not model:
+        return False, f"type the name of the model {choices[provider_id]['label']} should read pictures with"
+    config.set("workspace", workspace_id, "vision_provider", provider_id)
+    config.set("workspace", workspace_id, "vision_model", model)
+    return True, f"pictures will be read by {choices[provider_id]['label'] if provider_id else 'OpenRouter'} with {model}"
+
+
 def vision(instruction: str, images: list[tuple[bytes, str]], *, model: str | None = None,
-          max_tokens: int | None = None) -> str:
-    """A single reading of one or more images by a vision-capable model --
-    retyped from a sibling application's chat.vision(), same shape. tools=None on this
-    call, same structural principle ingest.py's read pass uses: nothing
-    about describing a picture should ever be able to invoke a tool.
+          max_tokens: int | None = None, workspace_id: int | None = None, timeout: int | None = None) -> str:
+    """A single reading of one or more images by the model chosen to read pictures (vision_backend) -- retyped from a sibling application's
+    chat.vision(), same shape. tools=None on this call, same structural principle ingest.py's read pass uses: nothing about describing a picture
+    should ever be able to invoke a tool. `model` overrides the chosen model at the same connection.
 
     Returns plain prose. The CALLER is responsible for treating that prose
     as untrusted content before it reaches anywhere tool-capable -- an
     image can contain rendered text that's just as capable of smuggling an
-    instruction as an email body is. workfiles.py is the one caller today,
-    and it does route this through ingest.summarize_untrusted() before the
-    caption reaches the model."""
+    instruction as an email body is. workfiles.py's reads route this
+    through ingest.summarize_untrusted() before the caption reaches the
+    model. Raises ModelError when no connection can read pictures or the call fails."""
     import base64
     content = [{"type": "text", "text": instruction}]
     for data, mime in images:
         b64 = base64.b64encode(data).decode("ascii")
         content.append({"type": "image_url",
                         "image_url": {"url": f"data:{mime or 'image/jpeg'};base64,{b64}"}})
-    result = call([{"role": "user", "content": content}], tools=None,
-                 model=model or VISION_MODEL, max_tokens=max_tokens or 400, temperature=0.0)
-    return result["content"].strip()
+    messages = [{"role": "user", "content": content}]
+    b = vision_backend(workspace_id)
+    if not b["ok"]:
+        raise ModelError(b["reason"])
+    if b["type"] == "openrouter":
+        result = call(messages, tools=None, model=model or b["model"], max_tokens=max_tokens or 400, temperature=0.0,
+                      timeout=timeout, api_key=openrouter_key())
+    else:
+        entry = {"alias": model or b["model"], "model_name": model or b["model"], "reasoning_effort": None, "provider": b["provider"]}
+        # More room than OpenRouter's 400: the models on these connections are mostly reasoning models, whose thinking counts toward the limit.
+        result = call_for_model(entry, messages, tools=None, max_tokens=max_tokens or 1500, temperature=0.0, timeout=timeout)
+    return (result.get("content") or "").strip()
 
 
 # 120s, not a guess (2026-09-17, real timeout complaints from the operator) --
@@ -732,8 +817,23 @@ def openrouter_image(prompt: str, *, model: str, seed: int | None = None, n: int
 # API are listed: OpenRouter (/images), OpenAI with an API key (/v1/images/generations, and /v1/images/edits when a reference picture is given) and xAI with
 # an API key (/v1/images/generations and /edits). Anthropic has no image generation, and Copilot and the ChatGPT/Codex and Grok subscription sign-ins have
 # no documented image endpoint, so they are not offered (a Codex-subscription route exists in community tools, but it is undocumented and unverified).
-IMAGE_PROVIDER_TYPES = ("openrouter", "openai_api_key", "xai_api_key")
-IMAGE_DEFAULT_MODELS = {"openrouter": "bytedance-seed/seedream-5-0-lite", "openai_api_key": "gpt-image-1", "xai_api_key": "grok-imagine-image-2.0"}
+#
+# 2026-11-03, the subscription sign-ins too, both best-effort (neither is documented for this): the Grok sign-in (xai_oauth) through the same api.x.ai
+# image API with its OAuth token (the token carries api:access, and the models list already works this way), and the ChatGPT sign-in (openai_oauth)
+# through the Codex endpoint's Responses image_generation tool, where the "image model" is the chat model that runs the tool. A refusal comes back as
+# the provider's own words in the media log, like any other image failure.
+IMAGE_PROVIDER_TYPES = ("openrouter", "openai_api_key", "xai_api_key", "xai_oauth", "openai_oauth")
+IMAGE_DEFAULT_MODELS = {"openrouter": "bytedance-seed/seedream-5-0-lite", "openai_api_key": "gpt-image-1", "xai_api_key": "grok-imagine-image-2.0",
+                        "xai_oauth": "grok-imagine-image-2.0", "openai_oauth": ""}
+
+
+def image_default_model(provider: dict | None) -> str:
+    """A provider's default drawing model; for the ChatGPT sign-in, the first chat model already set up for it ("" when there is none)."""
+    ptype = provider["type"] if provider else "openrouter"
+    if ptype == "openai_oauth":
+        names = provider_model_names(provider["id"])
+        return names[0] if names else ""
+    return IMAGE_DEFAULT_MODELS.get(ptype, "")
 _IMAGE_URLS = {"openai_api_key": "https://api.openai.com/v1/images/", "xai_api_key": "https://api.x.ai/v1/images/"}
 IMAGE_DOWNLOAD_MAX = 25 * 1024 * 1024
 
@@ -760,7 +860,8 @@ def image_backend(workspace_id: int | None = None) -> dict:
             return {"type": row["type"], "label": row["label"], "provider": row, "ok": True, "reason": ""}
     ok = has_openrouter_key()
     return {"type": "openrouter", "label": "OpenRouter", "provider": None, "ok": ok,
-            "reason": "" if ok else "no image provider is connected: add an OpenRouter, OpenAI or xAI API key and choose it under Settings -> Images"}
+            "reason": "" if ok else ("no image provider is connected: connect OpenRouter, OpenAI or xAI (an API key or the ChatGPT or Grok sign-in) "
+                                     "and choose it under Settings -> Images")}
 
 
 def _multipart(fields: dict, files: list[tuple[str, str, str, bytes]]) -> tuple[bytes, str]:
@@ -863,11 +964,55 @@ def generate_image(prompt: str, *, model: str, seed: int | None = None, referenc
     if not b["ok"]:
         return {"ok": False, "reason": b["reason"]}
     import providers
+    if b["type"] == "openai_oauth":
+        return _codex_image(prompt, model=model, references=references, provider=b["provider"])
     try:
-        key = providers.api_key_for(b["provider"])
+        key = providers.access_token_for(b["provider"]) if b["type"] == "xai_oauth" else providers.api_key_for(b["provider"])
     except ValueError as exc:
         return {"ok": False, "reason": f"image API call failed: {exc}"}
     return (_openai_image if b["type"] == "openai_api_key" else _xai_image)(prompt, model=model, references=references, key=key)
+
+
+_CODEX_IMAGE_INSTRUCTIONS = ("Draw the picture the user describes, using the image_generation tool, exactly once. When the user includes a picture, "
+                             "use it as the reference for the person or thing in it. Do not reply with text instead of a picture.")
+
+
+def _codex_image(prompt: str, *, model: str, references: list[tuple[bytes, str]] | None, provider: dict) -> dict:
+    """A picture through the ChatGPT sign-in: one Codex Responses call (stream and store:false, as _call_openai_oauth needs) with the
+    image_generation tool, the reference pictures as input_image parts. The tool's result is the picture as base64. No cost comes back."""
+    import base64
+    import imagegen
+    import providers
+    if not model:
+        return {"ok": False, "reason": "choose the chat model that draws through the ChatGPT sign-in, under Settings -> Images"}
+    try:
+        token = providers.access_token_for(provider)
+    except ValueError as exc:
+        return {"ok": False, "reason": f"image API call failed: {exc}"}
+    content = [{"type": "input_text", "text": prompt}]
+    content += [{"type": "input_image", "image_url": f"data:{m or 'image/png'};base64,{base64.b64encode(d).decode('ascii')}"} for d, m in references or []]
+    body = {"model": model, "instructions": _CODEX_IMAGE_INSTRUCTIONS, "input": [{"role": "user", "content": content}],
+            "tools": [{"type": "image_generation"}], "stream": True, "store": False}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "text/event-stream",
+               "chatgpt-account-id": (provider.get("account_meta") or {}).get("account_id", "")}
+    req = urllib.request.Request(providers.OPENAI_CODEX_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers=headers)
+    try:
+        data = _urlopen_sse_final_response(req, IMAGE_TIMEOUT_S)
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "reason": f"image API {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ModelError) as exc:
+        if "timed out" in str(exc).lower() or isinstance(exc, TimeoutError):
+            return {"ok": False, "reason": f"image API call timed out after {IMAGE_TIMEOUT_S}s"}
+        return {"ok": False, "reason": f"image API call failed: {exc}"}
+    for item in data.get("output") or []:
+        if item.get("type") == "image_generation_call" and item.get("result"):
+            try:
+                raw = base64.b64decode(item["result"])
+            except (base64.binascii.Error, ValueError) as exc:  # type: ignore[attr-defined]
+                return {"ok": False, "reason": f"image API call failed: {exc}"}
+            return {"ok": True, "bytes": raw, "mime": imagegen.sniff_mime(raw[:16]), "cost": None}
+    said = "".join(c.get("text", "") for item in data.get("output") or [] for c in item.get("content") or [] if isinstance(c, dict))
+    return {"ok": False, "reason": "image API returned no image" + (f": {said[:200]}" if said else "")}
 
 
 EMBED_API_URL = "https://openrouter.ai/api/v1/embeddings"
@@ -1000,6 +1145,11 @@ def _call_openrouter(entry: dict, messages: list[dict], *, tools=None, tool_choi
 _COPILOT_RESPONSES_ONLY: set[str] = set()
 
 
+def _copilot_vision_header(messages: list[dict]) -> dict:
+    """Copilot refuses a request that carries a picture unless it says so in this header (VS Code's Copilot Chat sends it the same way)."""
+    return {"copilot-vision-request": "true"} if _has_images(messages) else {}
+
+
 def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
                          want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
     """Tries /chat/completions first (the common case, and what every
@@ -1018,7 +1168,7 @@ def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_
                                        temperature=temperature, timeout=timeout)
     token = providers.access_token_for(entry["provider"])
     headers = {"copilot-integration-id": "vscode-chat", "openai-intent": "conversation-panel",
-              "x-github-api-version": "2025-04-01", **providers._COPILOT_HEADERS}
+              "x-github-api-version": "2025-04-01", **providers._COPILOT_HEADERS, **_copilot_vision_header(messages)}
     try:
         return call(messages, model=entry["model_name"], reasoning_effort=entry["reasoning_effort"],
                    tools=tools, tool_choice=tool_choice, want_json=want_json, max_tokens=max_tokens,
@@ -1033,6 +1183,49 @@ def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_
         return _call_copilot_responses(entry, messages, tools=tools, tool_choice=tool_choice,
                                        want_json=want_json, max_tokens=max_tokens,
                                        temperature=temperature, timeout=timeout)
+
+
+# Pictures in a message (2026-11-03). Nori's messages carry a picture the chat-completions way, a content list with {"type": "image_url", "image_url":
+# {"url": "data:..."}} parts; OpenRouter, Copilot, OpenAI and xAI with an API key take that as it is. The Responses-API adapters and Anthropic each
+# want their own part shapes, and turned the list into nothing before: these two translate it, so every connection can read a picture.
+
+def _has_images(messages: list[dict]) -> bool:
+    return any(isinstance(m.get("content"), list) and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
+               for m in messages)
+
+
+def _responses_content(content):
+    """A message's content for a Responses-API input item: a string stays as it is, a parts list becomes input_text/input_image parts."""
+    if not isinstance(content, list):
+        return content or ""
+    out = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            out.append({"type": "input_text", "text": p.get("text") or ""})
+        elif p.get("type") == "image_url":
+            out.append({"type": "input_image", "image_url": (p.get("image_url") or {}).get("url", "")})
+    return out
+
+
+def _anthropic_content(content):
+    """A message's content for the Messages API: a string stays as it is, a parts list becomes text/image blocks (a data: URL as base64, any other
+    URL as a url source)."""
+    if not isinstance(content, list):
+        return content or ""
+    out = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            out.append({"type": "text", "text": p.get("text") or ""})
+        elif p.get("type") == "image_url":
+            url = (p.get("image_url") or {}).get("url", "")
+            m = re.match(r"data:([\w/+.-]+);base64,(.*)", url, re.S)
+            out.append({"type": "image", "source": {"type": "base64", "media_type": m.group(1), "data": m.group(2)} if m
+                        else {"type": "url", "url": url}})
+    return out
 
 
 def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list[dict]]:
@@ -1064,7 +1257,7 @@ def _messages_to_responses_input(messages: list[dict]) -> tuple[str | None, list
                 input_items.append({"type": "function_call", "call_id": tc.get("id"),
                                    "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
         else:
-            input_items.append({"role": role, "content": m.get("content") or ""})
+            input_items.append({"role": role, "content": _responses_content(m.get("content"))})
     if not input_items and len(system_parts) > 1:
         # A turn with no conversation yet (onboarding's opening message, a ping on an empty history): the only thing sent is system text, and these
         # endpoints refuse a request with no input at all (400, "one of input ... must be provided"). The last system part goes as a user-role
@@ -1162,7 +1355,7 @@ def _call_copilot_responses(entry: dict, messages: list[dict], *, tools=None, to
     token = providers.access_token_for(entry["provider"])
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",
               "copilot-integration-id": "vscode-chat", "x-github-api-version": "2025-04-01",
-              **providers._COPILOT_HEADERS}
+              **providers._COPILOT_HEADERS, **_copilot_vision_header(messages)}
     return _plain_responses_call("https://api.githubcopilot.com/responses", headers, entry["model_name"],
                                  messages, tools, entry["reasoning_effort"], timeout, "Copilot")
 
@@ -1255,7 +1448,7 @@ def _messages_to_anthropic(messages: list[dict], *, claude_code_identity: bool =
                 blocks.append({"type": "tool_use", "id": tc.get("id"), "name": fn.get("name"), "input": args})
             out.append({"role": "assistant", "content": blocks})
         else:
-            out.append({"role": role, "content": m.get("content") or ""})
+            out.append({"role": role, "content": _anthropic_content(m.get("content"))})
     own = 1 if claude_code_identity else 0
     if not out and len(system_blocks) > own + 1:
         # Only system text so far (onboarding's opening turn, a ping on an empty history): Anthropic wants at least one message, so the last system
@@ -1424,7 +1617,7 @@ def _call_openai_oauth(entry: dict, messages: list[dict], *, tools=None, tool_ch
                 input_items.append({"type": "function_call", "call_id": tc.get("id"),
                                    "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
         else:
-            input_items.append({"role": role, "content": m.get("content") or ""})
+            input_items.append({"role": role, "content": _responses_content(m.get("content"))})
     if not input_items and len(system_parts) > 1:
         # A turn with no conversation yet (onboarding's opening message, a ping on an empty history): the only thing sent is system text, and these
         # endpoints refuse a request with no input at all (400, "one of input ... must be provided"). The last system part goes as a user-role
