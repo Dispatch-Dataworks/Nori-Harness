@@ -818,7 +818,8 @@ CREATE TABLE IF NOT EXISTS work_files (
     updated_ts         REAL NOT NULL,
     vision_description TEXT,
     vision_ts          REAL,
-    source_url         TEXT
+    source_url         TEXT,
+    vision_version     INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_work_files ON work_files(user_id, rel_path);
 
@@ -2088,6 +2089,9 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE peers ADD COLUMN invite_address TEXT",
     # The chat message that carries a peer request's approval card (2026-11-03, approvals.py), so the card follows the request.
     "ALTER TABLE peer_pending_actions ADD COLUMN message_id INTEGER",
+    # Which picture-reading prompt wrote work_files.vision_description (2026-11-03, workfiles.VISION_VERSION). NULL on every older row: those
+    # hold a few-sentence description, not a transcription, so they are read again.
+    "ALTER TABLE work_files ADD COLUMN vision_version INTEGER",
     # sub_agents.model_id is NOT here -- see init()'s own comment on why
     # (same models-rename FK-rewrite hazard as model_chain).
 ]

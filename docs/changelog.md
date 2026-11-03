@@ -2,6 +2,13 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-03 — fixed: sub-agents reading pictures got a short gist, not the values
+
+With vision working again, Nori's picture-by-picture reviews of eight MyChart screenshots still came back "incomplete: read as a gist only despite exact access being granted". There were three causes:
+- **The model was asked for a description.** The vision model was asked for "a few plain, factual sentences". It is now asked to transcribe every visible word and value, keeping each value next to its label, and to write `[unreadable]` instead of guessing.
+- **Exact access made no difference for pictures.** `read_file_full` returned the same ~400-character gist for a picture as `read_file` did, so a sub-agent granted exact file text could never get more. It now gets the whole transcription, paged like a text file.
+- **The first reading was cached for good.** A second pass got the same text back. A cached reading now records which prompt wrote it, and one from an older prompt is read again. A picture replaced under the same name is read again too.
+
 ## 2026-11-03 — pictures through any connection: choose who reads and who draws them
 
 Reading pictures was OpenRouter only. Settings → Images now has a *reading pictures* section with a provider dropdown and a model dropdown. The model dropdown lists the models at that provider that can see, with the ones you already use first. Any connection works, because every adapter now carries a picture in its own format: Responses `input_image`, Anthropic image blocks, and Copilot's vision header. Drawing pictures can now also use the ChatGPT sign-in (the Codex `image_generation` tool) and the Grok sign-in (api.x.ai with its token). Both are best-effort, since neither is documented for this. See [Image generation](image-generation.md#reading-pictures).

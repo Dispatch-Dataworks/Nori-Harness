@@ -284,10 +284,12 @@ def _meta_upsert(user_id: int, rel: str, *, created_by: str, source_url: str | N
         row = c.execute("SELECT id, created_by, created_ts FROM work_files WHERE user_id=? AND rel_path=?",
                         (user_id, rel)).fetchone()
         if row:
+            # New content: the old picture's cached reading no longer describes it (2026-11-03; a replaced picture kept its old reading).
             if source_url is not None:
-                c.execute("UPDATE work_files SET updated_ts=?, source_url=? WHERE id=?", (now, source_url, row["id"]))
+                c.execute("UPDATE work_files SET updated_ts=?, source_url=?, vision_description=NULL, vision_version=NULL WHERE id=?",
+                          (now, source_url, row["id"]))
             else:
-                c.execute("UPDATE work_files SET updated_ts=? WHERE id=?", (now, row["id"]))
+                c.execute("UPDATE work_files SET updated_ts=?, vision_description=NULL, vision_version=NULL WHERE id=?", (now, row["id"]))
         else:
             c.execute("INSERT INTO work_files(user_id, rel_path, created_by, created_ts, updated_ts, source_url) "
                      "VALUES (?,?,?,?,?,?)", (user_id, rel, created_by, now, now, source_url))
@@ -569,8 +571,14 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False, offse
             return {"kind": "image",
                     "message": "vision is off for this account -- enable it on the files page "
                               "to let her look at images"}
+        if preserve_content:
+            # A sub-agent with exact file text gets the picture's whole transcription, paged like a text file (2026-11-03). It used to get the
+            # same ~400-character gist as read_file, so a MyChart screenshot's values were lost and the job was marked "read as a gist only".
+            return _page(rel, caption, offset, kind="image", screen_kind="image transcription")
         ingested = ingest.summarize_untrusted(caption, kind="image description")
-        return {"kind": "image", **ingested}
+        return {"kind": "image", **ingested,
+                "note": "a short gist of the picture's transcription, not every value in it; a sub-agent with exact file text "
+                        "(read_file_full) gets the whole transcription"}
 
     raw = target.read_bytes()
     try:
@@ -581,7 +589,11 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False, offse
     if not preserve_content:
         ingested = ingest.summarize_untrusted(text[:READ_TEXT_MAX_CHARS], kind="file")
         return {"kind": "text", "path": rel, "total_chars": len(text), **ingested}
+    return _page(rel, text, offset, kind="text", screen_kind="file")
 
+
+def _page(rel: str, text: str, offset, *, kind: str, screen_kind: str) -> dict:
+    """One page of `text` for read_file's preserve_content mode: the page verbatim, screened, with total_chars/offset/next_offset."""
     total = len(text)
     try:
         offset = int(offset)
@@ -596,13 +608,13 @@ def read_file(session: dict, path: str, *, preserve_content: bool = False, offse
     # Only the page goes to the screening model (the old path sent up to
     # 200K characters through it to return 4,000). The content returned is
     # that page verbatim, deterministically -- never the model's words.
-    ingested = ingest.summarize_untrusted(page, kind="file", preserve_content=True) if page else {
+    ingested = ingest.summarize_untrusted(page, kind=screen_kind, preserve_content=True) if page else {
         "category": "informational", "priority": "normal", "suggested_action": "", "suspicious": False}
     if ingested.get("screening_failed"):
         return {"error": "couldn't screen this page right now -- retry the same offset",
                 "offset": offset, "total_chars": total}
     more = end < total
-    return {"kind": "text", **ingested, "content": page, "path": rel, "offset": offset, "total_chars": total,
+    return {"kind": kind, **ingested, "content": page, "path": rel, "offset": offset, "total_chars": total,
             "next_offset": end if more else None, "truncated": more}
 
 
@@ -841,26 +853,38 @@ def download_image(session: dict, url: str, filename: str) -> dict:
         staging_path.unlink(missing_ok=True)
 
 
+# What the picture-reading model is asked for a working-folder image (2026-11-03). It was "a few plain, factual sentences", so a screenshot of lab
+# results came back as a description of it, the numbers gone before anything could read them. Now: every visible word and value, transcribed, then a
+# line on what the picture is. VISION_VERSION goes into work_files.vision_version with the result; a cached reading from another version is read again.
+VISION_VERSION = 2
+VISION_PROMPT = (
+    "Transcribe this image for someone who cannot see it. First write out every piece of visible text exactly as it appears, top to bottom: "
+    "headings, labels, every number with its unit, dates and times, names, and flags such as High or Low. Write each table row or chart point "
+    "on its own line and keep each value next to its label. Write [unreadable] for anything you cannot read; never guess a value. Then, in one or "
+    "two sentences, say what the image is (a screenshot of what kind of screen, a photo of what). Do not interpret, diagnose or add anything "
+    "that is not visible.")
+VISION_MAX_TOKENS = 3000
+
+
 def _get_or_caption_image(user_id: int, rel: str, path: Path, mime: str) -> str | None:
     row = _meta_row(user_id, rel)
-    if row and row.get("vision_description"):
+    if row and row.get("vision_description") and row.get("vision_version") == VISION_VERSION:
         return row["vision_description"]
     if not config.get("user", user_id, "workfile_vision_enabled"):
         return None
     import chat
-    caption = chat.vision(   # a ModelError goes to read_file, which reports it -- None means vision is switched off
-        "Describe what's in this image in a few plain, factual sentences -- objects, any "
-        "visible text, general composition. Not creative, not speculative.",
-        [(path.read_bytes(), mime)])
+    # A ModelError goes to read_file, which reports it -- None means vision is switched off.
+    caption = chat.vision(VISION_PROMPT, [(path.read_bytes(), mime)], max_tokens=VISION_MAX_TOKENS)
     now = time.time()
     def _w(c):
         r = c.execute("SELECT id FROM work_files WHERE user_id=? AND rel_path=?", (user_id, rel)).fetchone()
         if r:
-            c.execute("UPDATE work_files SET vision_description=?, vision_ts=? WHERE id=?", (caption, now, r["id"]))
+            c.execute("UPDATE work_files SET vision_description=?, vision_ts=?, vision_version=? WHERE id=?",
+                      (caption, now, VISION_VERSION, r["id"]))
         else:
             c.execute("INSERT INTO work_files(user_id, rel_path, created_by, created_ts, updated_ts, "
-                     "vision_description, vision_ts) VALUES (?,?,?,?,?,?,?)",
-                     (user_id, rel, "user", now, now, caption, now))
+                     "vision_description, vision_ts, vision_version) VALUES (?,?,?,?,?,?,?,?)",
+                     (user_id, rel, "user", now, now, caption, now, VISION_VERSION))
     store.write(_w)
     return caption
 

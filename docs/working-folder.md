@@ -19,8 +19,23 @@ When the user has switched on *working-folder images sent to vision
 model*, reading an image with `read_file` sends it to the picture-reading
 model the admin chose under **Settings → Images → reading pictures**
 (`chat.vision_backend`; by default OpenRouter with `NORI_VISION_MODEL`).
-See [Image generation](image-generation.md#reading-pictures). The
-description is cached per file. With the setting off, `read_file` says
+See [Image generation](image-generation.md#reading-pictures).
+
+**What it gets back (2026-11-03).**
+- **The model transcribes the picture.** It writes out every visible word and value, each
+  value next to its label, marks what it can't read as `[unreadable]`, then says in a line
+  what the picture is (`workfiles.VISION_PROMPT`). It used to be asked for "a few plain,
+  factual sentences", so a screenshot of lab results came back as a description and the
+  numbers were lost.
+- **A live turn's `read_file` gets a gist of that transcription.** It's screened and short,
+  the same boundary as text files, with a note saying it is a gist.
+- **A sub-agent granted exact file text gets the whole transcription from
+  `read_file_full`,** paged and screened like a text file. That read also counts toward the
+  job's completion check.
+
+The transcription is cached per file with the prompt version that wrote it
+(`work_files.vision_version`). A reading from an older prompt is read again, and so is a
+picture that was replaced under the same name. With the setting off, `read_file` says
 vision is off. If the setting is on but the call fails (for example, the
 OpenRouter account is out of credit), it returns an error with the
 provider's reason. Nothing is cached, so the next read tries again.

@@ -86,5 +86,70 @@ class ReadImageTests(unittest.TestCase):
         self.assertEqual(vis.call_count, 1)
 
 
+TRANSCRIPT = "WBC 18.2 x10^3/uL (High)\n" * 300     # longer than one page
+
+
+def _screened(text, kind, preserve_content=False):
+    return {"category": "informational", "suspicious": False, **({"content": text} if preserve_content else {"summary": text[:40]})}
+
+
+class TranscriptionTests(unittest.TestCase):
+    """Found live the same day: with vision working, a sub-agent granted exact file text still got a ~400-character gist of a few-sentence
+    description, so MyChart values were lost, a "second pass" got the same cached text, and the job was marked "read as a gist only"."""
+
+    def setUp(self):
+        self.path = f"{self._testMethodName}.png"
+        assert workfiles.upload_file(_SESSION, self.path, PNG).get("ok")
+        config.set("user", _UID, "workfile_vision_enabled", True)
+        self.addCleanup(config.set, "user", _UID, "workfile_vision_enabled", False)
+        p = patch.object(ingest, "summarize_untrusted", side_effect=_screened)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_the_model_is_asked_to_transcribe_every_value(self):
+        with patch("chat.vision", return_value="x") as vis:
+            workfiles.read_file(_SESSION, self.path)
+        prompt = vis.call_args.args[0]
+        self.assertIn("every number with its unit", prompt)
+        self.assertIn("never guess a value", prompt)
+        self.assertEqual(vis.call_args.kwargs["max_tokens"], workfiles.VISION_MAX_TOKENS)
+
+    def test_exact_access_gets_the_whole_transcription_paged(self):
+        with patch("chat.vision", return_value=TRANSCRIPT):
+            first = workfiles.read_file(_SESSION, self.path, preserve_content=True)
+            self.assertEqual((first["kind"], first["offset"], first["total_chars"]), ("image", 0, len(TRANSCRIPT)))
+            self.assertTrue(TRANSCRIPT.startswith(first["content"]))
+            got, off = first["content"], first["next_offset"]
+            while off is not None:
+                page = workfiles.read_file(_SESSION, self.path, preserve_content=True, offset=off)
+                got, off = got + page["content"], page["next_offset"]
+        self.assertEqual(got, TRANSCRIPT)
+
+    def test_a_sub_agent_reading_it_in_full_is_not_reported_as_gist_only(self):
+        import jobs
+        tracker = jobs._JobTracker([], raw_file_access=True)
+        with patch("chat.vision", return_value="WBC 18.2"):
+            tracker.saw_summary_read(self.path, workfiles.read_file(_SESSION, self.path))
+            tracker.saw_raw_read(workfiles.read_file(_SESSION, self.path, preserve_content=True))
+        self.assertEqual(tracker.problems(), [])
+
+    def test_a_live_read_says_it_is_a_gist(self):
+        with patch("chat.vision", return_value=TRANSCRIPT):
+            r = workfiles.read_file(_SESSION, self.path)
+        self.assertIn("read_file_full", r["note"])
+
+    def test_an_older_description_is_read_again_and_a_replaced_picture_too(self):
+        with patch("chat.vision", return_value="new reading") as vis:
+            workfiles.read_file(_SESSION, self.path)
+            store.write(lambda c: c.execute("UPDATE work_files SET vision_version=NULL WHERE user_id=? AND rel_path=?", (_UID, self.path)))
+            workfiles.read_file(_SESSION, self.path)
+            self.assertEqual(vis.call_count, 2, "a reading from the old prompt is not reused")
+            workfiles.read_file(_SESSION, self.path)
+            self.assertEqual(vis.call_count, 2, "the current reading is reused")
+            assert workfiles.upload_file(_SESSION, self.path, PNG + b"\x01").get("ok")
+            workfiles.read_file(_SESSION, self.path)
+            self.assertEqual(vis.call_count, 3, "a new picture under the same name is read again")
+
+
 if __name__ == "__main__":
     unittest.main()
