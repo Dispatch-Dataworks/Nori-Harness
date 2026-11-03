@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-02 — fixed: a working assistant logged model errors on every call
+
+Some GitHub Copilot models (here gpt-5.6-luna) are served only through Copilot's `/responses` endpoint. Nori already fell back to it when `/chat/completions` refused the model, but never remembered that, so every call made the refused request first and logged it as an error (two lines per call) before answering normally. Now the first refusal is remembered for that model and later calls go straight to `/responses`; after a restart one refusal is logged, followed by a line saying it was expected. Any other error is unchanged.
+
 ## 2026-11-02 — Skylight, the family's wall calendar
 
 Connect the household's Skylight frame (Settings -> Skylight, admins) and every member's assistant can read and update its calendar, grocery and to-do lists, chore chart, meal plan and reward points: "put Kayla's dentist on Thursday at 3:30", "we're out of eggs", "did Garrett make his bed?". Signing in uses the email and password once (only Skylight's session is kept, encrypted) or Skylight's own sign-in page with the landing address pasted back, so Nori never sees the password. Requests go to Skylight and nowhere else, one at a time (Skylight rotates its refresh token, and two refreshes racing would sign Nori out), and every one is logged on the settings page. Not peer-requestable, not in any sub-agent's roster. Built on the operator's own `skylight-calendar` library, vendored (`skylight_calendar/`); its 0.2.0 runs on the standard library, so nothing new is installed. Skylight has no public API, so this can break when Skylight changes their app. See docs/skylight.md.

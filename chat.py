@@ -993,6 +993,13 @@ def _call_openrouter(entry: dict, messages: list[dict], *, tools=None, tool_choi
                temperature=temperature, timeout=timeout, api_key=key)
 
 
+# Copilot models learned to be /responses-only, from their own "unsupported_api_for_model" rejection (2026-11-02, real report from
+# Sage: "reporting model errors but working correctly"). Without this every call to such a model first made the doomed
+# /chat/completions request, and ModelError logs itself on construction, so a working assistant filled its log with two
+# errors per call. Per process: a restart re-learns it with one rejected call.
+_COPILOT_RESPONSES_ONLY: set[str] = set()
+
+
 def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_choice=None,
                          want_json=False, max_tokens=None, temperature=None, timeout=None) -> dict:
     """Tries /chat/completions first (the common case, and what every
@@ -1005,6 +1012,10 @@ def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_
     no extra API call on the normal path -- the fallback only fires for a
     model that's actually been rejected."""
     import providers
+    if entry["model_name"] in _COPILOT_RESPONSES_ONLY:
+        return _call_copilot_responses(entry, messages, tools=tools, tool_choice=tool_choice,
+                                       want_json=want_json, max_tokens=max_tokens,
+                                       temperature=temperature, timeout=timeout)
     token = providers.access_token_for(entry["provider"])
     headers = {"copilot-integration-id": "vscode-chat", "openai-intent": "conversation-panel",
               "x-github-api-version": "2025-04-01", **providers._COPILOT_HEADERS}
@@ -1016,6 +1027,9 @@ def _call_github_copilot(entry: dict, messages: list[dict], *, tools=None, tool_
     except ModelError as exc:
         if "unsupported_api_for_model" not in str(exc):
             raise
+        _COPILOT_RESPONSES_ONLY.add(entry["model_name"])
+        print(f"chat: Copilot serves {entry['model_name']} only through /responses -- the rejection just above is expected, "
+              "and this model goes straight to /responses from now on", flush=True)
         return _call_copilot_responses(entry, messages, tools=tools, tool_choice=tool_choice,
                                        want_json=want_json, max_tokens=max_tokens,
                                        temperature=temperature, timeout=timeout)
