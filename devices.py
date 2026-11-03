@@ -32,6 +32,7 @@ import re
 import secrets
 import time
 
+import approvals
 import bridge
 import config
 import conversation
@@ -335,7 +336,13 @@ def pending_messages(token: dict, *, app_visible: bool = False, advance_empty: b
             a = meta["approval"]
             if a.get("status") != "pending":
                 continue                       # already decided somewhere else
-            approval = {"id": a.get("id"), "summary": _plain(a.get("summary") or "", 120), "host": _plain(a.get("host") or "", 80)}
+            # The number the Approve / Deny buttons send back: a bridge command's own id, or a handle that names this message for any
+            # other kind (approvals.py) -- an infra change's id sent as-is once resolved an unrelated browser command instead.
+            try:
+                handle = approvals.notify_handle(a.get("source"), a.get("id"), r["id"])
+            except (TypeError, ValueError):
+                continue
+            approval = {"id": handle, "summary": _plain(a.get("summary") or "", 120), "host": _plain(a.get("host") or "", 80)}
         if quiet and cat not in ("reminder", "approval"):
             continue
         if cat == "chat" and not replies_on:

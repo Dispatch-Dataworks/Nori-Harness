@@ -45,6 +45,7 @@ import threading
 import time
 import urllib.parse
 
+import approvals
 import config
 import store
 
@@ -502,9 +503,8 @@ def complete(token: dict, cmd_id: int, payload: dict) -> tuple[bool, str]:
         mid = _notify(cmd["user_id"],
                       f"I'm paused waiting for your OK: I want to {cmd['action']} {desc} on {host or where}. "
                       f"Approve or deny it below (or in Settings → Devices).",
-                      meta={"approval": {"id": cmd_id, "status": "pending", "action": cmd["action"],
-                                         "summary": desc, "host": host or "",
-                                         "reason": _clip(payload.get("reason"), 200)}})
+                      meta=approvals.card("bridge", cmd_id, desc, host or "", action=cmd["action"],
+                                          reason=_clip(payload.get("reason"), 200)))
         store.write(lambda c: c.execute("UPDATE bridge_commands SET message_id=? WHERE id=?", (mid, cmd_id)))
     elif payload.get("ok"):
         store.write(lambda c: c.execute(
@@ -568,10 +568,36 @@ def config_workspace(user_id: int) -> int:
 def pending_approvals(user_id: int | None = None) -> list[dict]:
     sweep()
     rows = store.read(lambda c: c.execute(
-        "SELECT id, user_id, action, host, summary, created_ts FROM bridge_commands "
+        "SELECT id, user_id, action, host, summary, created_ts, message_id FROM bridge_commands "
         "WHERE status='awaiting_approval'" + (" AND user_id=?" if user_id is not None else "") + " ORDER BY id",
         (user_id,) if user_id is not None else ()).fetchall())
     return [dict(r) for r in rows]
+
+
+def _approvals_pending(sess: dict) -> list[dict]:
+    if sess.get("role") != "admin":
+        return []
+    return [{"id": r["id"], "summary": r["summary"] or r["action"], "host": r["host"] or "", "created_ts": r["created_ts"],
+             "expires_ts": r["created_ts"] + APPROVAL_TTL_S, "message_id": r["message_id"]}
+            for r in pending_approvals(sess["user_id"])]
+
+
+def _approvals_resolve(sess: dict, cmd_id: int, approve: bool) -> tuple[bool, str, str]:
+    if sess.get("role") != "admin":
+        return False, "admin only", "error"
+    ok, msg = resolve_approval(sess["user_id"], cmd_id, approve, sess["user_id"])
+    return ok, msg, _approvals_status(sess, cmd_id) or "error"
+
+
+def _approvals_status(sess: dict, cmd_id: int) -> str | None:
+    sweep()
+    cmd = _cmd(cmd_id)
+    if cmd is None or cmd["user_id"] != sess["user_id"]:
+        return None
+    return _CARD_STATUS.get(cmd["status"], cmd["status"])
+
+
+approvals.register("bridge", label="Browser or phone action", pending=_approvals_pending, resolve=_approvals_resolve, status=_approvals_status)
 
 
 def recent_commands(limit: int = 30) -> list[dict]:

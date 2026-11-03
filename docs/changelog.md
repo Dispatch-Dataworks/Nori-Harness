@@ -2,6 +2,16 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-03 — fixed: approvals you couldn't see or couldn't answer; every approval now on the board
+
+Iron asked three times to run the same cloudflared update. Three things went wrong:
+
+- **The card never reached the tab you were typing in.** It was posted mid-turn, and the reply's higher message id moved the page past it, so it showed only after a reload. Now the reply brings back everything posted during the turn, and the page checks for new cards every 5 seconds while it waits.
+- **Approve on a phone notification went to the wrong place.** For an infrastructure change, the button sent the change's id, which the server read as a browser command's id. So it either did nothing or answered a different request. The button now carries a number that names its own module.
+- **Iron never saw what an approved command printed.** The chat only said "Done:", so it asked again. The new read-only `infra_requests` tool shows how each of its requests ended, with the output as a labelled tool result.
+
+Every approval, whatever module it comes from (infrastructure changes, browser and phone actions, a peer agent's held request), is now in one list (`approvals.py`). A *Waiting for your OK* section at the top of the board shows everything still pending, with working Approve and Deny buttons, when each expires, and a link to its card in the chat. Each one counts toward the board badge. A card in the chat updates when the request is decided somewhere else or expires. A peer's held request now gets a card with its arguments, instead of a line pointing at /peers, and can't run twice. See docs/approvals.md.
+
 ## 2026-11-02 — GitHub: one connection for your account and every organisation
 
 A fine-grained token reaches one account, so Iron could see either the operator's own repositories or an organisation's, not both. GitHub's settings now also offer a GitHub App sign-in: register an app once, install it on your account and each organisation (choosing the repositories each time), paste its client ID and sign in with a code at github.com/login/device. One connection then reaches every installation; adding an organisation later is just installing the app there. No secret is needed or kept. The 8-hour token is renewed by Nori, one renewal at a time, because GitHub replaces the refresh token on every renewal. A revoked sign-in is dropped with a plain message. Personal tokens work as before. See docs/infra.md.

@@ -134,6 +134,7 @@ load_env(ENV_PATH)
 
 import accounts
 import app_fetch
+import approvals
 import avatar_builder
 import capabilities
 import chat
@@ -1270,6 +1271,12 @@ body.app{position:fixed;inset:0;height:100vh;height:100dvh;display:flex;flex-dir
 .card-task.pri-high{border-left-color:var(--danger)}
 .card-task.pri-low{border-left-color:var(--text-mute)}
 .card-reminder{border-left-color:var(--k-reminder)}
+/* approvals waiting on him (2026-11-03, approvals.py): not a link, the buttons are the card */
+.card-approval{border-left-color:var(--danger);cursor:default}
+.card-approval .approval-q{max-height:9rem;overflow:auto;font-weight:500}
+.card-approval .card-meta{margin-top:.35rem;font-size:.75rem}
+.board-section{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-mute);margin:.1rem 0;font-weight:600}
+.board-approvals{display:flex;flex-direction:column;gap:.5rem;margin-bottom:.4rem}
 .card-kind{font-size:.66rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-mute);
   margin-bottom:.3rem;display:flex;gap:.4rem;flex-wrap:wrap}
 .card-title{font-weight:600}
@@ -1710,7 +1717,7 @@ CHAT_JS = (
     "box.dataset.status=status;while(box.firstChild)box.removeChild(box.firstChild);"
     "if(status==='pending'){"
     "var q=document.createElement('div');q.className='approval-q';"
-    "q.textContent=box.dataset.src==='infra'?('Allow: '+(box.dataset.summary||'this change')+'?'):('Allow this on '+(box.dataset.host||'the page')+'?');box.appendChild(q);"
+    "q.textContent=(box.dataset.src||'bridge')==='bridge'?('Allow this on '+(box.dataset.host||'the page')+'?'):('Allow: '+(box.dataset.summary||'this change')+'?');box.appendChild(q);"
     "var row=document.createElement('div');row.className='approval-btns';"
     "['approve','deny'].forEach(function(d){var b=document.createElement('button');b.type='button';"
     "b.className='btn '+(d==='approve'?'btn-primary':'btn-danger');b.dataset.decision=d;"
@@ -1722,18 +1729,29 @@ CHAT_JS = (
     "function approvalBox(a){var box=document.createElement('div');box.className='approval-card';"
     "box.dataset.id=a.id;box.dataset.host=a.host||'';box.dataset.reason=a.reason||'';box.dataset.src=a.source||'';box.dataset.summary=a.summary||'';"
     "renderApproval(box,a.status||'pending');return box;}"
-    "function hydrateApprovals(){var boxes=msglist?msglist.querySelectorAll('.approval-card'):[];"
+    # Every kind of approval (2026-11-03, approvals.py): the card names its module in data-src (none = a browser/phone command), the
+    # buttons post to the one /approval route, and the same request's card in the chat and on the board change together.
+    "function hydrateApprovals(root){var boxes=(root||msglist)?(root||msglist).querySelectorAll('.approval-card'):[];"
     "for(var i=0;i<boxes.length;i++){renderApproval(boxes[i],boxes[i].dataset.status||'pending');}}"
-    "if(msglist)msglist.addEventListener('click',function(e){"
+    "function approvalKey(box){return (box.dataset.src||'bridge')+':'+box.dataset.id;}"
+    "function approvalBoxesFor(key){var all=document.querySelectorAll('.approval-card'),out=[];"
+    "for(var i=0;i<all.length;i++){if(approvalKey(all[i])===key)out.push(all[i]);}return out;}"
+    "function setApprovalStatus(key,status,detail){approvalBoxesFor(key).forEach(function(b){"
+    "if(b.dataset.status!==status||detail)renderApproval(b,status,detail);});}"
+    "function pendingApprovalKeys(){var all=msglist?msglist.querySelectorAll('.approval-card[data-status=pending]'):[],seen={},out=[];"
+    "for(var i=0;i<all.length;i++){var k=approvalKey(all[i]);if(!seen[k]){seen[k]=1;out.push(k);}}return out.slice(-50);}"
+    "document.addEventListener('click',function(e){"
+    "if(e.target.closest&&e.target.closest('.approval-jump')){var bc=$('boardClose');if(bc)bc.click();return;}"
     "var btn=e.target.closest?e.target.closest('.approval-card button[data-decision]'):null;if(!btn)return;"
-    "var box=btn.closest('.approval-card');var btns=box.querySelectorAll('button');"
-    "for(var i=0;i<btns.length;i++)btns[i].disabled=true;"
-    "fetch(box.dataset.src==='infra'?'/infra/approval':'/bridge/approval',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-    "body:'csrf='+encodeURIComponent(CSRF)+'&id='+encodeURIComponent(box.dataset.id)+'&decision='+btn.dataset.decision})"
+    "var box=btn.closest('.approval-card'),key=approvalKey(box);"
+    "approvalBoxesFor(key).forEach(function(b){var bs=b.querySelectorAll('button');for(var i=0;i<bs.length;i++)bs[i].disabled=true;});"
+    "fetch('/approval',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+    "body:'csrf='+encodeURIComponent(CSRF)+'&source='+encodeURIComponent(box.dataset.src||'bridge')+'&id='+encodeURIComponent(box.dataset.id)+'&decision='+btn.dataset.decision})"
     ".then(function(r){return r.json();}).then(function(j){"
-    "if(j&&j.ok)renderApproval(box,j.status||'approved');"
-    "else renderApproval(box,j&&j.status&&j.status!=='pending'?j.status:'error',j&&j.message);})"
-    ".catch(function(){renderApproval(box,'error');});});"
+    "if(j&&j.ok)setApprovalStatus(key,j.status||'approved');"
+    "else setApprovalStatus(key,j&&j.status&&j.status!=='pending'?j.status:'error',j&&j.message);"
+    "if(j&&typeof j.board_count==='number')onBoardCount(j.board_count);})"
+    ".catch(function(){setApprovalStatus(key,'error');});});"
     "hydrateApprovals();"
     # /?prefill=... (2026-10-21): the Android app's widgets ("Log water", "Log weight") open the chat with the
     # composer already filled in. Capped, set as plain text, never sent automatically.
@@ -2174,7 +2192,7 @@ CHAT_JS = (
     "b.textContent=n;b.hidden=!n;}"
     "function refreshBoard(){var list=$('boardList');if(!list)return;"
     "fetch('/board/fragment').then(function(r){return r.json();}).then(function(d){"
-    "list.innerHTML=d.html;updateBoardCount(d.count);}).catch(function(){});}"
+    "list.innerHTML=d.html;hydrateApprovals(list);updateBoardCount(d.count);}).catch(function(){});}"
     "function onBoardCount(n){updateBoardCount(n);"
     "var board=$('board');if(board&&board.classList.contains('open'))refreshBoard();}"
     "window.refreshBoard=refreshBoard;"
@@ -2243,13 +2261,25 @@ CHAT_JS = (
     # interval and the same "skip while sending" guard a sibling application uses --
     # /send's own response already carries anything new for the tab that
     # sent it, so polling during that would just be redundant traffic.
+    # cards= (2026-11-03): the approval cards this page still shows as pending; the answer carries each one's status now, so a decision
+    # made on the board, a phone or another tab, or an expiry, reaches the card without a reload.
+    "function applyApprovalStates(st){if(!st)return;for(var k in st){if(st[k]!=='pending')setApprovalStatus(k,st[k]);}}"
     "async function poll(){if(sending||polling)return;polling=true;"
-    "try{var r=await fetch('/poll?since='+last);var d=await r.json();"
+    "try{var ks=pendingApprovalKeys();var r=await fetch('/poll?since='+last+(ks.length?'&cards='+encodeURIComponent(ks.join(',')):''));var d=await r.json();"
     "(d.messages||[]).forEach(function(m){addMessage(m);maybeNotify(m);});"
+    "applyApprovalStates(d.approvals);"
     "if(d.state)applyState(d.state);"
     "onBoardCount(d.board_count);}"
     "catch(e){}polling=false;}"
     "setInterval(poll,15000);"
+    # While a turn is running the ordinary poll stands aside (/send's answer carries the turn's messages), but an approval card she
+    # posts mid-turn should not wait for the whole turn to finish: this asks for just those, every 5 s, and only while sending.
+    "async function pollApprovals(){if(!sending||polling)return;polling=true;"
+    "try{var r=await fetch('/poll?since='+last+'&only=approvals');var d=await r.json();"
+    "(d.messages||[]).forEach(function(m){if(addMessage(m))maybeNotify(m);});"
+    "onBoardCount(d.board_count);}"
+    "catch(e){}polling=false;}"
+    "setInterval(pollApprovals,5000);"
     # Onboarding (2026-10-26): for a user who hasn't met her yet, ask the server to have her speak first.
     "async function beginOnboarding(){if(sending)return;sending=true;setSendDisabled(true);typing(true);"
     "try{var r=await fetch('/onboarding/begin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
@@ -3141,7 +3171,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/admin/avatars/build/img/"):
             return self.avatar_build_img_get(sess, urllib.parse.unquote(path[len("/admin/avatars/build/img/"):]), urllib.parse.parse_qs(qs))
         if path == "/poll":
-            return self.poll_get(sess, urllib.parse.parse_qs(qs).get("since", ["0"])[0])
+            pq = urllib.parse.parse_qs(qs)
+            return self.poll_get(sess, pq.get("since", ["0"])[0], cards=pq.get("cards", [""])[0], only=pq.get("only", [""])[0])
         if path == "/board/fragment":
             return self.board_fragment_get(sess)
         if path == "/board/notes.json":
@@ -3508,6 +3539,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.bridge_approval_post(sess, form)
         if path == "/infra/approval":
             return self.infra_approval_post(sess, form)
+        if path == "/approval":
+            return self.approval_post(sess, form)
         if path.startswith("/admin/infra/"):
             return self.infra_admin_post(sess, path, form)
         if path == "/admin/memorybackend/connection":
@@ -3891,10 +3924,32 @@ class Handler(BaseHTTPRequestHandler):
         # his own instruction, replacing what this counted before) -- an
         # open task/note/reminder he's already viewed no longer inflates
         # the badge just for existing.
+        # An approval waiting on him always needs attention (2026-11-03).
         open_tasks, real_notes, active_reminders = self._board_items(sess)
         return (sum(1 for t in open_tasks if t["needs_attention"])
                + sum(1 for n in real_notes if n["needs_attention"])
-               + sum(1 for r in active_reminders if r["needs_attention"]))
+               + sum(1 for r in active_reminders if r["needs_attention"])
+               + approvals.count(sess))
+
+    def _board_approvals_html(self, sess: dict) -> str:
+        """Every approval still waiting on him, from any module (approvals.py), at the top of the board (2026-11-03, operator: "any that
+        are still pending should show in the board view"). The same card the chat draws (CHAT_JS's renderApproval), so the buttons and the
+        wording are one implementation; a link back to the chat message that asked, when there is one."""
+        items = approvals.pending(sess)
+        if not items:
+            return ""
+        rows = []
+        for it in items:
+            when = f"asked {esc(_ago(it['created_ts']))}" if it.get("created_ts") else ""
+            if it.get("expires_ts"):
+                left = max(0, int(it["expires_ts"] - time.time()))
+                when += (" · " if when else "") + (f"expires in {left // 60} min" if left < 7200 else f"expires in {left // 3600} h")
+            link = f" · <a href='#message-{int(it['message_id'])}' class=approval-jump>in the chat</a>" if it.get("message_id") else ""
+            rows.append(f"<div class='card card-approval'><div class=card-title>{esc(it['label'])}</div>"
+                        + approval_card_html({**it, "status": "pending"})
+                        + f"<div class='card-meta muted'>{when}{link}</div></div>")
+        return (f"<div class=board-approvals><h3 class=board-section>Waiting for your OK ({len(items)})</h3>"
+                + "".join(rows) + "</div>")
 
     def _board_cards_html(self, sess: dict) -> str:
         """The board's own dynamic content -- cards plus the empty-state
@@ -3904,11 +3959,12 @@ class Handler(BaseHTTPRequestHandler):
         rather than re-deriving it or re-rendering the whole panel shell
         (header/close button/add-menu, none of which ever change)."""
         open_tasks, real_notes, active_reminders = self._board_items(sess)
-        cards = ("".join(self._task_card(t) for t in open_tasks)
+        waiting = self._board_approvals_html(sess)
+        cards = (waiting + "".join(self._task_card(t) for t in open_tasks)
                 + self._note_stack_html(real_notes)
                 + "".join(self._reminder_card(r) for r in active_reminders))
         empty = ("<p class=board-foot-note>nothing on the board -- tap + to add something.</p>"
-                if not open_tasks and not real_notes and not active_reminders else "")
+                if not waiting and not open_tasks and not real_notes and not active_reminders else "")
         return cards + empty
 
     def _board_panel(self, sess: dict) -> str:
@@ -7227,6 +7283,15 @@ class Handler(BaseHTTPRequestHandler):
         return self.settings_page(sess, "features", info="saved")
 
     # -- infrastructure tools (infra.py, infra_proxmox.py) --
+    def approval_post(self, sess: dict, form: dict):
+        """Approve / Deny for any kind of approval (approvals.py) -- the chat card and the board both post here (fetch, JSON back). Each
+        module keeps its own checks (admin, only your own requests, runs once)."""
+        decision = form.get("decision", "")
+        if decision not in ("approve", "deny"):
+            return self.send_json({"ok": False, "message": "decision must be approve or deny", "status": "error"}, 400)
+        ok, msg, status = approvals.resolve(sess, form.get("source", ""), form.get("id", ""), decision == "approve")
+        return self.send_json({"ok": ok, "message": msg, "status": status, "board_count": self._board_count(sess)}, 200 if ok else 409)
+
     def infra_approval_post(self, sess: dict, form: dict):
         """Approve / Deny from the chat card (fetch, JSON back). Admin only, and only your own pending requests; the framework runs a change exactly once."""
         if sess["role"] != "admin":
@@ -8844,16 +8909,20 @@ class Handler(BaseHTTPRequestHandler):
         """Approve / Deny from a notification's action button (phone or browser). Same resolve_approval as the chat
         card; only the owner's own requests resolve."""
         try:
-            cmd_id = int(body.get("id"))
+            handle = int(body.get("id"))
         except (TypeError, ValueError):
             return self.send_json({"ok": False, "error": "bad id"}, 400)
         if body.get("decision") not in ("approve", "deny"):
             return self.send_json({"ok": False, "error": "decision must be approve or deny"}, 400)
-        ok, msg = bridge.resolve_approval(token["user_id"], cmd_id, body["decision"] == "approve", token["user_id"])
-        cmd = bridge._cmd(cmd_id)
-        status = (bridge._CARD_STATUS.get(cmd["status"], cmd["status"])
-                  if cmd and cmd["user_id"] == token["user_id"] else "error")
-        devices.log_activity(token["user_id"], token["id"], "approval", f"{body['decision']} #{cmd_id}: {status}")
+        # Any kind of approval (2026-11-03): the number names a bridge command or, for every other module, the message carrying its card.
+        found = approvals.from_handle(token["user_id"], handle)
+        u = accounts.get_user(token["user_id"])
+        if found is None or u is None:
+            return self.send_json({"ok": False, "message": "no such request", "status": "error"}, 409)
+        source, aid = found
+        sess = {"user_id": u["id"], "workspace_id": u["workspace_id"], "role": u["role"]}
+        ok, msg, status = approvals.resolve(sess, source, aid, body["decision"] == "approve")
+        devices.log_activity(token["user_id"], token["id"], "approval", f"{body['decision']} {source} #{aid}: {status}")
         return self.send_json({"ok": ok, "message": msg, "status": status}, 200 if ok else 409)
 
     def device_post(self, path: str):
@@ -12295,6 +12364,16 @@ class Handler(BaseHTTPRequestHandler):
                     img_meta = None
                 tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"],
                                  "emotion": r.get("emotion"), "kind": "image", "meta": img_meta, "ts": r["ts"]})
+            elif r["role"] == "assistant" and r["kind"] != "chat":
+                # Anything else she posted mid-turn (2026-11-03, real bug): an approval card ("I'd like to: ..."), a "Done:" note, a
+                # message_user ping. They were in neither this response nor any later poll (the reply's higher id moves the tab's
+                # cursor past them), so the tab that asked never saw the card it was told to approve until a reload.
+                try:
+                    p_meta = json.loads(r["meta"]) if r.get("meta") else None
+                except (ValueError, TypeError):
+                    p_meta = None
+                tool_msgs.append({"id": r["id"], "role": r["role"], "content": r["content"],
+                                  "emotion": r.get("emotion"), "kind": r["kind"], "meta": p_meta, "ts": r["ts"]})
         # Read AFTER chat.run() -- if she called set_emotion this turn, the
         # message gets tagged with the state she ended the turn in.
         state = emotion.get_state(user["id"])
@@ -12464,7 +12543,7 @@ class Handler(BaseHTTPRequestHandler):
                                      "vision_model": vres["model"], "vision_ts": vres["ts"]}
         return self.send_json(payload)
 
-    def poll_get(self, sess: dict, since_raw: str):
+    def poll_get(self, sess: dict, since_raw: str, *, cards: str = "", only: str = ""):
         """The catch-up feed: a second tab, or a proactive ping that
         landed with nobody watching, shows up here without a reload.
         Also carries the current emotion state so a change that happened
@@ -12485,13 +12564,18 @@ class Handler(BaseHTTPRequestHandler):
             since = 0
         rows = conversation.since(sess["user_id"], since,
                                   include_tool=config.get("user", sess["user_id"], "show_tool_calls"))
-        return self.send_json({
-            "messages": [{"id": r["id"], "role": r["role"], "content": r["content"],
-                         "emotion": r.get("emotion"), "kind": r.get("kind"), "ts": r.get("ts"),
-                         "meta": json.loads(r["meta"]) if r.get("meta") else None} for r in rows],
-            "state": emotion.get_state(sess["user_id"]),
-            "board_count": self._board_count(sess),
-        })
+        msgs = [{"id": r["id"], "role": r["role"], "content": r["content"],
+                 "emotion": r.get("emotion"), "kind": r.get("kind"), "ts": r.get("ts"),
+                 "meta": json.loads(r["meta"]) if r.get("meta") else None} for r in rows]
+        if only == "approvals":
+            # CHAT_JS's mid-turn check (2026-11-03): just the approval cards posted while this tab's own turn is still running.
+            msgs = [m for m in msgs if m["role"] == "assistant" and isinstance(m["meta"], dict) and isinstance(m["meta"].get("approval"), dict)]
+            return self.send_json({"messages": msgs, "board_count": self._board_count(sess)})
+        out = {"messages": msgs, "state": emotion.get_state(sess["user_id"]), "board_count": self._board_count(sess)}
+        keys = [k for k in (cards or "").split(",") if k][:50]
+        if keys:
+            out["approvals"] = approvals.statuses(sess, keys)
+        return self.send_json(out)
 
 
 def _persona_customised_for(sess: dict) -> bool:

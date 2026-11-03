@@ -102,8 +102,10 @@ also has a built-in list; see below). Switches are the **server** half; the app 
 - Always answer within 25 s (a result of `{ok:false,error:"timed out"}` beats silence).
 
 ### `POST /device/approval`  `{id, decision:"approve"|"deny"}`
-Sent by the notification's action buttons (those actions require device unlock). Server: same `resolve_approval` as the chat card.
-Only resolves approvals belonging to this device's user.
+Sent by the notification's action buttons (those actions require device unlock). The server resolves it through the same
+module as the chat card ([Approvals](approvals.md)). `id` is the number the notification carried: a browser or phone command's own
+id, or `approvals.HANDLE_BASE` + the id of the message carrying the card for any other kind (an infrastructure change, a peer's
+request). Only resolves approvals belonging to this device's user.
 
 ### `POST /device/events`  `{events:[{kind:"arrived"|"left", place_id, ts}]}`
 On-device geofencing. The phone evaluates `places_list` itself and reports **only** enter/exit of named places. It never sends

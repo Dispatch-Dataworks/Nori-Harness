@@ -558,7 +558,7 @@ class ChatApprovalCards(unittest.TestCase):
         cid = self._pause()
         row, card = self._card(cid)
         self.assertEqual((row["role"], row["kind"]), ("assistant", "proactive"))
-        self.assertEqual(card, {"id": cid, "status": "pending", "action": "click", "summary": card["summary"],
+        self.assertEqual(card, {"id": cid, "status": "pending", "source": "bridge", "action": "click", "summary": card["summary"],
                                 "host": "www.example.com", "reason": "this submits a form"})
         self.assertIn("button", card["summary"])
         self.assertIn("below", row["content"])
@@ -639,7 +639,7 @@ class ChatApprovalCards(unittest.TestCase):
     def test_the_chat_script_renders_cards_and_posts_to_the_route(self):
         js = server.CHAT_JS
         for needle in ("function renderApproval", "approvalBox(m.meta.approval)", "hydrateApprovals();",
-                       "'/bridge/approval'", "button[data-decision]"):
+                       "'/approval'", "button[data-decision]"):
             self.assertIn(needle, js)
         self.assertNotIn("innerHTML=", js[js.index("function renderApproval"):js.index("function setSendDisabled")],
                          "card text is set with textContent only")

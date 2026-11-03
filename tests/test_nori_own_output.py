@@ -142,6 +142,7 @@ class SurfaceTriageTests(unittest.TestCase):
         "turns.py": ("no prompt", "counts and reads the user's unanswered messages"),
         "diagnostics.py": ("no prompt", "kind='tool' meta for the diagnostics page"),
         "infra.py": ("no prompt", "updates the approval card's status in a message it posted; shows no text to a model"),
+        "approvals.py": ("no prompt", "reads and updates an approval card's meta; shows no text to a model"),
         "debug_api.py": ("no prompt", "the debug endpoint: a developer reads messages over HTTP behind a token; nothing here is shown to a model"),
         "bridge.py": ("no prompt", "reads one message's meta only to update its approval card's status; nothing is put in a prompt"),
         "onboarding.py": ("no prompt", "counts her replies since onboarding began (to end it) and checks that a user message exists after a persona draft; no text is read"),

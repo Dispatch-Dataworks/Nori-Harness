@@ -679,7 +679,7 @@ class TheAdminPage(unittest.TestCase):
         page = web("/")[1]
         self.assertIn("data-src='infra'", page)
         self.assertIn("data-summary='do the thing to boxC'", page)
-        self.assertIn("'/infra/approval'", page)
+        self.assertIn("'/approval'", page)
         self.assertIn("Allow: ", page)
 
 

@@ -55,6 +55,7 @@ import urllib.request
 import uuid
 
 import accounts
+import approvals
 import chat
 import config
 import conversation
@@ -1892,7 +1893,7 @@ def _make_check_impl(peer_id: int):
     return _impl
 
 
-def _notify(user_id: int, text: str) -> None:
+def _notify(user_id: int, text: str, meta: dict | None = None) -> int | None:
     """Every §11.1 outcome writes a real, notification-eligible message
     (kind='proactive'), not a muted kind='tool' line -- found necessary
     diagnosing the tool-call-limit work earlier the same day: a tool-call
@@ -1901,9 +1902,16 @@ def _notify(user_id: int, text: str) -> None:
     the operator if it happens while they're not looking."""
     user = accounts.get_user(user_id)
     if user is None:
-        return
-    conversation.add_message(user_id, "assistant", text, kind="proactive",
-                             emotion=emotion.get_state(user_id))
+        return None
+    return conversation.add_message(user_id, "assistant", text, kind="proactive",
+                                    emotion=emotion.get_state(user_id), meta=meta)
+
+
+def _request_summary(peer: dict, tool_name: str, args: dict) -> str:
+    shown = json.dumps(args, ensure_ascii=False, sort_keys=True) if args else ""
+    if len(shown) > 300:
+        shown = shown[:299] + "…"
+    return f"{peer['name']} asks me to run {tool_name}" + (f" with {shown}" if shown else "")
 
 
 def _record_action(peer_id: int, tool_name: str, args: dict, source_message_id: str | None, *,
@@ -2019,10 +2027,12 @@ def _make_act_impl(peer_id: int):
                 _notify(user_id, f"{peer['name']} asked me to {action} -- carried it out: {outcome}")
             return result
         # 'prompt' -- held, not carried out, until the operator says so.
-        _record_action(peer_id, action, args, source_message_id, status="pending",
-                      expires_ts=time.time() + peer["expiry_hours"] * 3600)
-        _notify(user_id, f"{peer['name']} asked me to {action} -- holding off until you approve "
-                         f"it on /peers.")
+        aid = _record_action(peer_id, action, args, source_message_id, status="pending",
+                             expires_ts=time.time() + peer["expiry_hours"] * 3600)
+        summary = _request_summary(peer, action, args)
+        mid = _notify(user_id, f"{peer['name']} asked me to {action} -- holding off until you approve it.",
+                      meta=approvals.card("peer", aid, summary, peer["name"]))
+        store.write(lambda c: c.execute("UPDATE peer_pending_actions SET message_id=? WHERE id=?", (mid, aid)))
         return {"ok": True, "pending": True, "note": "held for the operator's approval, not carried out yet"}
     return _impl
 
@@ -2059,20 +2069,83 @@ def resolve_pending_action(session: dict, action_id: int, approve: bool) -> dict
     if action["status"] != "pending":
         return {"error": f"already resolved ({action['status']})"}
     args = json.loads(action["tool_args_json"])
+    status = "approved" if approve else "denied"
+    # Claimed before it runs (2026-11-03): the same request now has buttons in the chat, on the board and on /peers, and two clicks
+    # must never run it twice.
+    if not store.write(lambda c: c.execute(
+            "UPDATE peer_pending_actions SET status=?, resolved_ts=?, resolved_by=? WHERE id=? AND status='pending'",
+            (status, time.time(), session["user_id"], action_id)).rowcount):
+        return {"error": "already resolved"}
     if approve:
         session["_peer_act"] = True  # see _make_act_impl's identical line for what this marks
         result = tools.dispatch(action["tool_name"], args, session)
-        status = "approved"
     else:
         result = {"denied": True}
-        status = "denied"
     store.write(lambda c: c.execute(
-        "UPDATE peer_pending_actions SET status=?, resolved_ts=?, resolved_by=?, result_json=? WHERE id=?",
-        (status, time.time(), session["user_id"], json.dumps(result), action_id)))
+        "UPDATE peer_pending_actions SET result_json=? WHERE id=?", (json.dumps(result), action_id)))
+    approvals.set_card(action.get("message_id"), ("failed" if result.get("error") else "done") if approve else "denied")
     outcome = result.get("error") or ("done" if approve else "denied")
     _notify(session["user_id"], f"{peer['name']}'s request to {action['tool_name']} -- "
                                 f"{'approved' if approve else 'denied'}: {outcome}")
     return {"ok": True, "result": result}
+
+
+def _approvals_pending(session: dict) -> list[dict]:
+    """approvals.py's view: the requests waiting on THIS person -- the one whose chat got the card (a request from before cards has none,
+    and shows to everyone who owns the peer, as /peers does)."""
+    peers_by_id = {p["id"]: p for p in list_peers(session)}
+    now = time.time()
+    out = []
+    for r in list_pending_actions(session):
+        if r["status"] != "pending" or (r["expires_ts"] or 0) < now:
+            continue
+        if r.get("message_id"):
+            owner = store.read(lambda c, m=r["message_id"]: c.execute("SELECT user_id FROM messages WHERE id=?", (m,)).fetchone())
+            if owner is not None and owner["user_id"] != session["user_id"]:
+                continue
+        peer = peers_by_id.get(r["peer_id"])
+        if peer is None:
+            continue
+        try:
+            args = json.loads(r["tool_args_json"] or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        out.append({"id": r["id"], "summary": _request_summary(peer, r["tool_name"], args), "host": peer["name"],
+                    "created_ts": r["requested_ts"], "expires_ts": r["expires_ts"], "message_id": r.get("message_id")})
+    return out
+
+
+def _approvals_resolve(session: dict, action_id: int, approve: bool) -> tuple[bool, str, str]:
+    res = resolve_pending_action(session, action_id, approve)
+    if res.get("error"):
+        return False, res["error"], _approvals_status(session, action_id) or "error"
+    failed = approve and isinstance(res.get("result"), dict) and res["result"].get("error")
+    if failed:
+        return False, str(res["result"]["error"])[:300], "failed"
+    return True, "approved and done" if approve else "denied", "done" if approve else "denied"
+
+
+def _approvals_status(session: dict, action_id: int) -> str | None:
+    row = store.read(lambda c: c.execute("SELECT * FROM peer_pending_actions WHERE id=?", (action_id,)).fetchone())
+    if row is None:
+        return None
+    peer = get_peer(row["peer_id"])
+    if peer is None or not _owns_peer(session, peer):
+        return None
+    if row["status"] == "pending":
+        return "expired" if (row["expires_ts"] or 0) < time.time() else "pending"
+    if row["status"] == "approved":
+        try:
+            result = json.loads(row["result_json"] or "{}") or {}
+        except (ValueError, TypeError):
+            return "done"
+        if not result:
+            return "approved"                 # claimed, still running
+        return "failed" if isinstance(result, dict) and result.get("error") else "done"
+    return {"denied": "denied", "expired": "expired"}.get(row["status"], row["status"])
+
+
+approvals.register("peer", label="Request from a peer", pending=_approvals_pending, resolve=_approvals_resolve, status=_approvals_status)
 
 
 def _expire_pending_actions(peer: dict) -> None:
@@ -2090,6 +2163,7 @@ def _expire_pending_actions(peer: dict) -> None:
         store.write(lambda c: c.execute(
             "UPDATE peer_pending_actions SET status='expired', resolved_ts=? WHERE id=?",
             (now, row["id"])))
+        approvals.set_card(row.get("message_id"), "expired")
         _notify(peer["created_by"], f"{peer['name']}'s request to {row['tool_name']} went "
                                     f"unanswered too long -- it expired, nothing was done.")
 

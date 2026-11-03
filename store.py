@@ -2086,6 +2086,8 @@ _MIGRATIONS: list[str] = [
     # pending invitation (disabled, no URL yet, hidden from list_peers). invite_address is the address it advertised.
     "ALTER TABLE peers ADD COLUMN invite_key_enc TEXT",
     "ALTER TABLE peers ADD COLUMN invite_address TEXT",
+    # The chat message that carries a peer request's approval card (2026-11-03, approvals.py), so the card follows the request.
+    "ALTER TABLE peer_pending_actions ADD COLUMN message_id INTEGER",
     # sub_agents.model_id is NOT here -- see init()'s own comment on why
     # (same models-rename FK-rewrite hazard as model_chain).
 ]

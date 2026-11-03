@@ -37,6 +37,7 @@ Everything else here goes deeper once it's up.
   | [The working folder](working-folder.md) | Files she can read, write, and download into, and what's scanned |
   | [Sub-agents](sub-agents.md) | Background jobs run under a separate, limited roster |
   | [Code sandbox](sandbox.md) | Running python3 in a separate no-network container, and how results come back |
+  | [Approvals](approvals.md) | Everything waiting for your yes, from every module: the chat card, the board, notification buttons |
   | [Computer use](computer-use.md) | The browser bridge: her using your own browser, on sites you allow, with approvals |
   | [Devices: Android app & browser extension](devices.md) | Pairing, notifications, share, health, places, phone actions and control windows, the extension's side panel and browsing time |
   | [MCP client](mcp.md) | Connecting a third-party MCP tool server |
