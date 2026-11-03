@@ -17,6 +17,8 @@ infra_github_write.py so that "this module cannot change anything" stays a fact 
 How it is kept safe:
   * Credentials: a GitHub personal access token (a fine-grained one, limited by its owner in GitHub to the repositories and permissions wanted, is the one to use).
     That scoping is the second lock: a read-only token cannot change anything whatever Nori is told. Stored encrypted by infra.py; read only inside _headers().
+  * Or a GitHub App sign-in, which reaches every account and organisation the app is installed on with one connection (2026-11-02). The sign-in and its
+    renewal live in infra_github_app.py, the only GitHub code that POSTs (to GitHub's two sign-in addresses); this module just asks it for the bearer.
   * The address is fixed (https://api.github.com) and TLS is always verified. Redirects are never followed with the token attached. The one redirect that is needed
     (an Actions job log is served from a signed address on GitHub's own storage) is followed by a second request WITHOUT the token, to a host on a short list.
   * One chokepoint, _request(): GET only; the path must be one of a few fixed shapes or sit under /repos/<owner>/<repo>, with every segment validated, outside the
@@ -36,6 +38,7 @@ import urllib.parse
 import urllib.request
 
 import infra
+import infra_github_app
 
 SERVICE = "github"
 API = "https://api.github.com"
@@ -62,7 +65,10 @@ _FILE_SEG = re.compile(r"^[A-Za-z0-9._@+=~, ()-]{1,200}$")
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 
-FIXED_PATHS = ("/user", "/user/repos", "/rate_limit", "/search/code", "/search/issues", "/search/repositories", "/search/commits")
+FIXED_PATHS = ("/user", "/user/repos", "/user/installations", "/rate_limit", "/search/code", "/search/issues", "/search/repositories", "/search/commits")
+_INSTALL_REPOS = re.compile(r"^/user/installations/\d{1,15}/repositories$")
+_CLIENT_ID = re.compile(r"^(?:Iv[0-9a-z]{1,3}\.)?[A-Za-z0-9]{16,40}$")
+_SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,60})$")
 # Segments the free-form tools never touch: credentials, who has access, places a secret is the answer, and ways around the file deny-list below.
 DENY_SEGMENTS = {"secrets", "keys", "deploy_keys", "hooks", "collaborators", "invitations", "token", "tokens", "codespaces", "blobs", "tarball", "zipball", "transfer",
                  "credentials", "installation", "registration-token", "remove-token", "ssh_signing_keys", "gpg_keys"}
@@ -88,8 +94,13 @@ class GithubError(Exception):
 
 # ── settings fields ──────────────────────────────────────────────────────
 FIELDS = [
-    {"key": "token", "label": "Personal access token (a fine-grained token limited to the repositories you choose is best)", "secret": True, "required": True},
+    {"key": "token", "label": "Personal access token (a fine-grained token limited to the repositories you choose; or leave it blank and sign in with a GitHub App below)",
+     "secret": True},
     {"key": "owner", "label": "Default owner (optional: your user name or organisation, so a repository can be named without it)"},
+    {"key": "app_client_id", "label": "GitHub App client ID (to sign in with an app instead of a token: one sign-in reaches every account and organisation the app is "
+                                      "installed on)"},
+    {"key": "app_slug", "label": "GitHub App name as it appears in its address, github.com/apps/<this> (optional: for the install link)"},
+    {"key": "app_session", "label": "GitHub App sign-in", "secret": True, "kind": "generated"},
 ]
 
 
@@ -100,6 +111,12 @@ def validate(values: dict) -> str:
     owner = (values.get("owner") or "").strip()
     if owner and not _OWNER_RE.match(owner):
         return "the default owner is a GitHub user or organisation name (letters, digits and hyphens)"
+    cid = (values.get("app_client_id") or "").strip()
+    if cid and not _CLIENT_ID.match(cid):
+        return "that does not look like a GitHub App client ID (it starts Iv, like Iv23liAbCdEf0123456; the app's settings page shows it)"
+    slug = (values.get("app_slug") or "").strip()
+    if slug and not _SLUG.match(slug):
+        return "the app name is the last part of its address, github.com/apps/<name>: lower-case letters, digits and hyphens"
     return ""
 
 
@@ -137,9 +154,9 @@ def _fetch_plain(url: str, timeout: float) -> tuple[int, bytes]:
 
 
 def _headers(ws: int, content_type: str = "") -> dict:
-    tok = infra.credentials(ws, SERVICE).get("token")
+    tok = infra_github_app.app_token(ws) or infra.credentials(ws, SERVICE).get("token")
     if not tok:
-        raise GithubError("no token is saved")
+        raise GithubError("no token is saved and there is no GitHub App sign-in")
     h = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Nori-infra"}
     if content_type:
         h["Content-Type"] = content_type
@@ -221,7 +238,7 @@ def _seg_ok(seg: str) -> bool:
 def path_ok(path: str) -> bool:
     if not isinstance(path, str):
         return False
-    if path in FIXED_PATHS:
+    if path in FIXED_PATHS or _INSTALL_REPOS.match(path):
         return True
     m = _REPO_PATH.match(path)
     return bool(m) and all(_seg_ok(s) for s in m.group(3).split("/")[1:])
@@ -386,14 +403,39 @@ def _first_line(s, cap: int = 160) -> str:
 
 # ── the reads ────────────────────────────────────────────────────────────
 def token_kind(ws: int) -> str:
+    if infra_github_app.app_signed_in(ws):
+        return "github-app"
     tok = infra.credentials(ws, SERVICE).get("token") or ""
     return "fine-grained" if tok.startswith("github_pat_") else "classic" if tok.startswith("ghp_") else "other"
+
+
+def installations(ws: int) -> list[dict]:
+    """With a GitHub App sign-in: every account or organisation the app is installed on (that this person can reach), with the repositories it was given."""
+    rows = _all(ws, "/user/installations", per_page=100, max_pages=2, key="installations")
+    out = []
+    for inst in rows:
+        if not isinstance(inst, dict) or not isinstance(inst.get("id"), int):
+            continue
+        repos = _all(ws, f"/user/installations/{inst['id']}/repositories", per_page=100, max_pages=3, key="repositories")
+        out.append({"account": _login(inst.get("account")), "type": (inst.get("account") or {}).get("type") if isinstance(inst.get("account"), dict) else None,
+                    "repository_selection": inst.get("repository_selection"), "suspended": bool(inst.get("suspended_at")),
+                    "repos": [r for r in repos if isinstance(r, dict)]})
+    return out
+
+
+def _install_line(i: dict) -> str:
+    seen = "all repositories" if i["repository_selection"] == "all" else f"{len(i['repos'])} chosen"
+    return f"{i['account']}: {seen}" + (" (suspended)" if i["suspended"] else "")
 
 
 def overview(ws: int) -> dict:
     me, hdr = _get_page(ws, "/user")
     me = me if isinstance(me, dict) else {}
-    rows = _all(ws, "/user/repos", {"sort": "pushed", "affiliation": "owner,collaborator,organization_member"}, per_page=100, max_pages=3)
+    insts = installations(ws) if infra_github_app.app_signed_in(ws) else None
+    if insts is not None:
+        rows = [r for i in insts for r in i["repos"]]
+    else:
+        rows = _all(ws, "/user/repos", {"sort": "pushed", "affiliation": "owner,collaborator,organization_member"}, per_page=100, max_pages=3)
     try:
         core = ((_get(ws, "/rate_limit") or {}).get("resources") or {}).get("core") or {}
         rate = {"limit": core.get("limit"), "remaining": core.get("remaining"), "resets_at": core.get("reset")}
@@ -401,6 +443,9 @@ def overview(ws: int) -> dict:
         rate = None
     return {"user": {"login": _login(me), "name": _text(me.get("name"), 60) or None, "type": me.get("type")},
             "token": {"kind": token_kind(ws), "expires": hdr.get("github-authentication-token-expiration"), "classic_scopes": hdr.get("x-oauth-scopes") or None},
+            "installed_on": ([{"account": i["account"], "type": i["type"], "repositories": "all" if i["repository_selection"] == "all" else "selected",
+                               "repo_count": len(i["repos"]), "suspended": i["suspended"]} for i in insts] if insts is not None else None),
+            "install_link": (infra_github_app.install_link(ws) or None) if insts is not None else None,
             "default_owner": default_owner(ws) or None, "rate_limit": rate, "repo_count": len(rows), "repos": [_repo_row(r) for r in rows if isinstance(r, dict)][:100]}
 
 
@@ -694,6 +739,15 @@ def test(ws: int) -> dict:
     """The settings page's "test connection" button."""
     try:
         me, hdr = _get_page(ws, "/user")
+        if infra_github_app.app_signed_in(ws):
+            insts = installations(ws)
+            where = "; ".join(_install_line(i) for i in insts)
+            link = infra_github_app.install_link(ws)
+            detail = (f"signed in with the GitHub App as {_login(me) or 'unknown'}; installed on {len(insts)} account{'' if len(insts) == 1 else 's'}"
+                      + (f" ({where})" if where else ": none yet, so it can see nothing")
+                      + (f". To add an account or organisation, install the app there: {link}" if link else
+                         ". To add an account or organisation, install the app there from its page on GitHub"))
+            return {"ok": True, "detail": detail + ". What it may do is what both the app and you are allowed: a change it may not make is refused with a clear message."}
         rows = _all(ws, "/user/repos", {"affiliation": "owner,collaborator,organization_member"}, per_page=100, max_pages=2)
     except GithubError as exc:
         return {"ok": False, "detail": str(exc)}
@@ -711,7 +765,10 @@ def test(ws: int) -> dict:
 
 # ── registration ─────────────────────────────────────────────────────────
 infra.register_service(
-    SERVICE, "GitHub", FIELDS, test=test, validate=validate,
+    SERVICE, "GitHub", FIELDS, test=test, validate=validate, ready=infra_github_app.ready,
+    buttons=[{"key": "appstart", "label": "sign in with the GitHub App", "run": infra_github_app.app_start},
+             {"key": "appfinish", "label": "finish GitHub App sign-in", "run": infra_github_app.app_finish},
+             {"key": "appforget", "label": "sign out of the GitHub App", "run": infra_github_app.app_forget, "confirm": "Sign out of the GitHub App here?"}],
     help_text="The agent can look at your repositories, branches, commits, pull requests, issues, Actions runs and logs, files and searches; with a token that allows it, "
               "it can also open and comment on issues and pull requests, create and delete branches, commit file changes, merge, re-run workflows and (with your explicit "
               "approval each time) make any other change under a repository. Every change asks you first unless you allow that kind to run by itself. "
@@ -723,6 +780,15 @@ infra.register_service(
                  "Repository access: Only select repositories, and choose exactly the ones the agent may see. A token of its own means you can revoke the agent's access "
                  "without touching anything else. Start read-only. Repository permissions: Contents: Read-only, Issues: Read-only, Pull requests: Read-only, Actions: "
                  "Read-only, Commit statuses: Read-only, Checks: Read-only (Metadata: Read-only is added for you)."},
+        {"title": "Or: one sign-in for your account and every organisation (a GitHub App)",
+         "text": "A fine-grained token reaches one account. To reach your own repositories and your organisations' with one connection, use a GitHub App instead. "
+                 "Once, on GitHub: Settings > Developer settings > GitHub Apps > New GitHub App. Name it (say 'Nori for <you>'), any homepage address, untick Webhook "
+                 "Active, tick Enable Device Flow. Repository permissions: the same list as for a token (Contents, Issues, Pull requests, Actions, Commit statuses, "
+                 "Checks: Read-only to start, Read and write for what you want it to change). Where can it be installed: Any account (so your organisations can install "
+                 "it). Create it, then on the app's page press Install App and install it on your account and on each organisation, choosing all or only some "
+                 "repositories each time (an organisation owner may have to approve it). Here: paste the app's client ID (and its name from github.com/apps/<name>), "
+                 "save, press 'sign in with the GitHub App', enter the code GitHub shows, then 'finish GitHub App sign-in'. No secret is needed or stored. To reach "
+                 "another organisation later, install the app there; nothing changes here."},
         {"title": "2. Know what GitHub cannot do here",
          "text": "GitHub cannot lock a personal token to an IP address, so the limits are the repositories you choose, the permissions you tick and the expiry date. Keep "
                  "all three narrow. A classic token (ghp_...) cannot be limited to chosen repositories at all; use a fine-grained one."},

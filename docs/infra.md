@@ -159,6 +159,23 @@ The token's own permissions are the second lock: a read-only token cannot change
 Actions: Read and write) is how you let the agent do more. The address is fixed (`api.github.com`) and TLS is always verified. `scripts/infra_provision.py github-set`
 (token from `GITHUB_API_TOKEN` or `--secret-stdin`, `--owner`) and `github-test` do the same from the command line.
 
+**One connection for your account and every organisation: a GitHub App.** A fine-grained token reaches one account (yours, or one organisation's). To reach
+all of them with a single connection, the way hosted services connect to GitHub, sign in with a GitHub App instead (`infra_github_app.py`):
+
+1. Once, on GitHub: Settings → Developer settings → GitHub Apps → **New GitHub App**. Any name and homepage address; untick **Webhook → Active**; tick **Enable
+   Device Flow**; repository permissions as for a token (read-only to start, read and write for what it may change); *Where can this GitHub App be installed?*
+   **Any account**, so your organisations can install it. You do not need a client secret or a private key.
+2. On the app's page, **Install App** on your account and on each organisation, choosing all repositories or only some each time (an organisation may need an
+   owner to approve it). Adding an organisation later is just installing it there; nothing changes in Nori.
+3. In Nori: paste the app's **client ID** (and optionally its name from `github.com/apps/<name>`, for an install link), save, press **sign in with the GitHub App**,
+   enter the code at `github.com/login/device`, then press **finish GitHub App sign-in**. The test lists every account it is installed on.
+
+What the connection can reach is what both you and the app can reach, in the repositories each installation was given; the app's permissions are the second
+lock, as a token's are. The device flow needs no secret, for the sign-in or for renewing it: the token lasts 8 hours and Nori renews it under a lock (GitHub
+replaces the refresh token on every renewal, so two at once would sign Nori out); the renewal lasts six months, and a revoked or lapsed sign-in is dropped with
+a message to sign in again. When both a token and an app sign-in are saved, the app sign-in is used; **sign out of the GitHub App** goes back to the token. The
+only POSTs in the GitHub code are this module's, to GitHub's two sign-in addresses; `infra_github.py` stays GET-only.
+
 Reads (free once on; each logged; GET only; every result labelled as data, free text cut and stripped, anything shaped like a token or private key scrubbed, secret-looking
 keys dropped):
 

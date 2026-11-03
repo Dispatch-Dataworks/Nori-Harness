@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-02 — GitHub: one connection for your account and every organisation
+
+A fine-grained token reaches one account, so Iron could see either the operator's own repositories or an organisation's, not both. GitHub's settings now also offer a GitHub App sign-in: register an app once, install it on your account and each organisation (choosing the repositories each time), paste its client ID and sign in with a code at github.com/login/device. One connection then reaches every installation; adding an organisation later is just installing the app there. No secret is needed or kept. The 8-hour token is renewed by Nori, one renewal at a time, because GitHub replaces the refresh token on every renewal. A revoked sign-in is dropped with a plain message. Personal tokens work as before. See docs/infra.md.
+
 ## 2026-11-02 — fixed: a working assistant logged model errors on every call
 
 Some GitHub Copilot models (here gpt-5.6-luna) are served only through Copilot's `/responses` endpoint. Nori already fell back to it when `/chat/completions` refused the model, but never remembered that, so every call made the refused request first and logged it as an error (two lines per call) before answering normally. Now the first refusal is remembered for that model and later calls go straight to `/responses`; after a restart one refusal is logged, followed by a line saying it was expected. Any other error is unchanged.

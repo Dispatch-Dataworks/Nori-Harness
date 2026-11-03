@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 import unittest
+import time
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -35,6 +36,7 @@ import config  # noqa: E402
 import infra  # noqa: E402
 import infra_github as gh  # noqa: E402
 import infra_github_write as ghw  # noqa: E402
+import infra_github_app as gha  # noqa: E402
 import store  # noqa: E402
 
 WS, UID, SESS, call, names, web = base.WS, base.UID, base.SESS, base.call, base.names, base.web
@@ -141,6 +143,14 @@ def handle(method, url, headers, data):
             return page([r for r in S["repos"].values()], q)
         if path == "/rate_limit":
             return ok({"resources": {"core": {"limit": 5000, "remaining": 4990, "reset": 1790000000}}})
+        if path == "/user/installations":
+            return ok({"total_count": 2, "installations": [
+                {"id": 7, "account": {"login": "me", "type": "User"}, "repository_selection": "selected", "suspended_at": None},
+                {"id": 8, "account": {"login": "acme", "type": "Organization"}, "repository_selection": "all", "suspended_at": None}]})
+        if path == "/user/installations/7/repositories":
+            return ok({"total_count": 2, "repositories": [S["repos"]["me/app"], S["repos"]["me/pub"]]})
+        if path == "/user/installations/8/repositories":
+            return ok({"total_count": 1, "repositories": [{**S["repos"]["me/app"], "id": 50, "full_name": "acme/site"}]})
         if path.startswith("/search/"):
             kind = path.split("/")[2]
             if "repo:" not in q["q"] and "user:" not in q["q"]:
@@ -1140,6 +1150,166 @@ class MakingChanges(unittest.TestCase):
         self.assertEqual(status, "failed")
         self.assertIn("may or may not have happened", msg)
         self.assertEqual(len(writes()), 1)
+
+
+CLIENT_ID = "Iv23liTESTCLIENT0123"
+OAUTH: list[tuple[str, dict]] = []
+OAUTH_STATE: dict = {}
+
+
+def oauth_post(url, params):
+    OAUTH.append((url, dict(params)))
+    assert url in (gha.DEVICE_CODE_URL, gha.OAUTH_TOKEN_URL)
+    if url == gha.DEVICE_CODE_URL:
+        return 200, {"device_code": "dev-123", "user_code": "WDJB-MJHT", "verification_uri": gha.DEVICE_URL, "expires_in": 900, "interval": 5}
+    if params.get("grant_type") == "urn:ietf:params:oauth:grant-type:device_code":
+        if OAUTH_STATE.get("pending", 0) > 0:
+            OAUTH_STATE["pending"] -= 1
+            return 200, {"error": "authorization_pending"}
+        if OAUTH_STATE.get("denied"):
+            return 200, {"error": "access_denied"}
+        return 200, {"access_token": "ghu_FIRSTUSERTOKEN0123456789", "expires_in": 28800, "refresh_token": "ghr_REFRESH1", "refresh_token_expires_in": 15897600,
+                     "scope": "", "token_type": "bearer"}
+    if params.get("grant_type") == "refresh_token":
+        OAUTH_STATE["refreshes"] = OAUTH_STATE.get("refreshes", 0) + 1
+        time.sleep(OAUTH_STATE.get("delay", 0))
+        if OAUTH_STATE.get("revoked") or params.get("refresh_token") != OAUTH_STATE.get("current", "ghr_REFRESH1"):
+            return 400, {"error": "bad_refresh_token"}
+        n = OAUTH_STATE["refreshes"] + 1
+        OAUTH_STATE["current"] = f"ghr_REFRESH{n}"
+        return 200, {"access_token": f"ghu_RENEWEDTOKEN{n}abcdefghij", "expires_in": 28800, "refresh_token": f"ghr_REFRESH{n}", "refresh_token_expires_in": 15897600}
+    return 400, {"error": "unsupported_grant_type"}
+
+
+gha._oauth_post = oauth_post
+
+
+class GitHubAppSignIn(unittest.TestCase):
+    """One connection for the person's own account and every organisation the app is installed on (2026-11-02)."""
+
+    def setUp(self):
+        reset()
+        OAUTH.clear()
+        OAUTH_STATE.clear()
+        gha._PENDING.clear()
+        infra.clear_credentials(WS, "github", UID)
+
+    def sign_in(self, pending=0):
+        ok_, msg = infra.save_credentials(WS, "github", {"token": "", "owner": "", "app_client_id": CLIENT_ID, "app_slug": "nori-for-me"}, UID)
+        self.assertTrue(ok_, msg)
+        ok_, msg = gha.app_start(WS, UID)
+        self.assertTrue(ok_, msg)
+        self.assertIn("WDJB-MJHT", msg)
+        self.assertIn("github.com/login/device", msg)
+        OAUTH_STATE["pending"] = pending
+        gha._PENDING[WS]["last_poll"] = 0
+        return gha.app_finish(WS, UID)
+
+    def test_signing_in_needs_no_secret_and_keeps_only_the_session(self):
+        ok_, msg = self.sign_in()
+        self.assertTrue(ok_, msg)
+        self.assertIn("installed on 2 accounts", msg)
+        self.assertIn("acme: all repositories", msg)
+        self.assertIn("me: 2 chosen", msg)
+        for url, params in OAUTH:
+            self.assertNotIn("client_secret", params, "the device flow carries no secret")
+            self.assertEqual(params["client_id"], CLIENT_ID)
+        self.assertTrue(infra.configured(WS, "github"), "an app sign-in is enough; no personal token needed")
+        self.assertTrue(gha.app_signed_in(WS))
+        raw = store.read(lambda c: c.execute("SELECT data_enc FROM infra_credentials WHERE service='github'").fetchone())["data_enc"]
+        self.assertNotIn("ghu_", raw, "stored encrypted")
+
+    def test_every_request_then_uses_the_app_token(self):
+        self.sign_in()
+        turn = infra.set_enabled(WS, "github", True, UID)
+        self.assertTrue(turn[0], turn)
+        LOG.clear()
+        res = call("github_overview")
+        self.assertTrue(res["ok"], res)
+        out = res["data"]
+        self.assertEqual(out["token"]["kind"], "github-app")
+        self.assertEqual([i["account"] for i in out["installed_on"]], ["me", "acme"])
+        self.assertIn("acme/site", [r["full_name"] for r in out["repos"]], "an organisation's repositories through the same connection")
+        self.assertEqual(out["install_link"], "https://github.com/apps/nori-for-me/installations/new")
+        self.assertTrue(LOG and all(e["headers"]["Authorization"] == "Bearer ghu_FIRSTUSERTOKEN0123456789" for e in LOG))
+
+    def test_not_yet_entered_then_entered(self):
+        ok_, msg = self.sign_in(pending=1)
+        self.assertFalse(ok_)
+        self.assertIn("has not seen the code yet", msg)
+        ok_, msg = gha.app_finish(WS, UID)
+        self.assertFalse(ok_, "GitHub's interval between checks is respected")
+        self.assertIn("few seconds", msg)
+        gha._PENDING[WS]["last_poll"] = 0
+        ok_, msg = gha.app_finish(WS, UID)
+        self.assertTrue(ok_, msg)
+
+    def test_a_cancelled_sign_in(self):
+        OAUTH_STATE["denied"] = True
+        ok_, msg = self.sign_in()
+        self.assertFalse(ok_)
+        self.assertIn("cancelled", msg)
+        self.assertFalse(gha.app_signed_in(WS))
+
+    def test_no_client_id_no_start(self):
+        ok_, msg = gha.app_start(WS, UID)
+        self.assertFalse(ok_)
+        self.assertIn("client ID", msg)
+        self.assertEqual(OAUTH, [])
+
+    def test_a_bad_client_id_is_refused(self):
+        ok_, msg = infra.save_credentials(WS, "github", {"app_client_id": "not a client id"}, UID)
+        self.assertFalse(ok_)
+
+    def _expire(self):
+        s = gha._app_session(WS)
+        s["expires_at"] = time.time() - 5
+        gha._save_session(WS, s)
+
+    def test_an_expired_token_is_renewed_and_the_new_refresh_token_kept(self):
+        self.sign_in()
+        self._expire()
+        self.assertTrue(gha.app_token(WS).startswith("ghu_RENEWEDTOKEN"))
+        self.assertEqual(gha._app_session(WS)["refresh_token"], "ghr_REFRESH2")
+        self.assertNotIn("client_secret", OAUTH[-1][1])
+
+    def test_only_one_renewal_when_two_requests_need_it(self):
+        self.sign_in()
+        self._expire()
+        OAUTH_STATE["delay"] = 0.3
+        got = []
+        threads = [threading.Thread(target=lambda: got.append(gha.app_token(WS))) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(OAUTH_STATE["refreshes"], 1, "GitHub rotates the refresh token: a second renewal would have used a dead one")
+        self.assertEqual(len(set(got)), 1)
+
+    def test_a_revoked_sign_in_is_dropped_with_a_plain_message(self):
+        self.sign_in()
+        self._expire()
+        OAUTH_STATE["revoked"] = True
+        with self.assertRaises(gh.GithubError) as cm:
+            gha.app_token(WS)
+        self.assertIn("sign in again", str(cm.exception))
+        self.assertFalse(gha.app_signed_in(WS))
+
+    def test_signing_out_falls_back_to_the_personal_token(self):
+        self.sign_in()
+        infra.save_credentials(WS, "github", {"token": TOKEN}, UID)
+        self.assertEqual(gh._headers(WS)["Authorization"], "Bearer ghu_FIRSTUSERTOKEN0123456789", "the app sign-in wins while it exists")
+        ok_, msg = gha.app_forget(WS, UID)
+        self.assertTrue(ok_)
+        self.assertIn("personal access token is used again", msg)
+        self.assertEqual(gh._headers(WS)["Authorization"], f"Bearer {TOKEN}")
+
+    def test_saving_the_form_keeps_the_sign_in(self):
+        self.sign_in()
+        page_fields = {f["key"]: "" for f in gh.FIELDS}           # what the settings form posts: the generated field comes back blank
+        page_fields.update(app_client_id=CLIENT_ID, app_slug="nori-for-me")
+        self.assertTrue(infra.save_credentials(WS, "github", page_fields, UID)[0])
+        self.assertTrue(gha.app_signed_in(WS))
 
 
 class SeenAndProvisioned(unittest.TestCase):

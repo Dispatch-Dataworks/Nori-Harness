@@ -55,14 +55,15 @@ def switch_key(service: str) -> str:
 
 
 def register_service(key: str, label: str, fields: list[dict], test=None, help_text: str = "", validate=None, setup: list[dict] | None = None,
-                     info=None, buttons: list[dict] | None = None) -> None:
+                     info=None, buttons: list[dict] | None = None, ready=None) -> None:
     """fields: [{"key","label","secret":bool,"kind":"text"|"textarea","help":str,"required":bool}]. test(ws) -> {"ok": bool, "detail": str};
     validate(values) -> "" or a plain-English problem with what was submitted. setup: the steps shown on the settings page for getting the
     credentials, [{"title": str, "text": str, "code": str (optional, shown copyable)}]. info(ws) -> [{"label": str, "text": str}]: non-secret facts the page
     shows (a public key to authorise, the fingerprints that were pinned). buttons: [{"key", "label", "run": fn(ws, user_id) -> (ok, message), "confirm": str}], extra
-    actions the page offers beside save/test (posted to /admin/infra/<service>/do-<key>)."""
+    actions the page offers beside save/test (posted to /admin/infra/<service>/do-<key>). ready(ws) -> bool: what "configured" means when it is not simply
+    "every required field is set" (GitHub: a token OR a GitHub App sign-in)."""
     SERVICES[key] = {"key": key, "label": label, "fields": fields, "test": test, "help": help_text, "validate": validate, "setup": setup or [],
-                     "info": info, "buttons": buttons or []}
+                     "info": info, "buttons": buttons or [], "ready": ready}
     # Workspace-wide, off, readable by the agent's get_settings (so it can say whether it has the tools) but NOT writable by it.
     config._SPEC[switch_key(key)] = (False, bool, "workspace", False, f"{label} infrastructure tools are switched on")
 
@@ -91,6 +92,8 @@ def configured(ws: int, service: str) -> bool:
     spec = SERVICES.get(service)
     if spec is None:
         return False
+    if spec.get("ready"):
+        return bool(spec["ready"](ws))
     data = credentials(ws, service)
     return all(data.get(f["key"]) for f in spec["fields"] if f.get("required"))
 
