@@ -133,8 +133,9 @@ def handler(role="admin"):
     # settings_page's chatvoice/notify/household tabs and subagents_admin_form
     # all call directly -- added in the same design pass that split Pings
     # into three tabs, never added here.
+    # BACKGROUND_PATHS: _load_session (2026-11-07) leaves a session alone on the chat's timer requests.
     definitions("server.py", {"BASE_CSS", "APP_JS", "KEYBOARD_JS", "NOTIFY_STATUS_JS", "page_app", "info_tip",
-                                  "_instance_name", "_tab_title", "_TITLE_TAIL_RE", "_FEATURE_LINKS"}, env)
+                                  "_instance_name", "_tab_title", "_TITLE_TAIL_RE", "_FEATURE_LINKS", "BACKGROUND_PATHS"}, env)
     tree = ast.parse((ROOT / "server.py").read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Handler")
     cls.bases = []

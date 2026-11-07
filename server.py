@@ -295,6 +295,9 @@ PUBLIC_URL = os.environ.get("NORI_PUBLIC_URL", "").rstrip("/")
 BIND_HOST = os.environ.get("NORI_BIND_HOST", "127.0.0.1")
 PORT = int(os.environ.get("NORI_PORT", "8877"))
 SECURE_COOKIE = os.environ.get("NORI_ALLOW_INSECURE_COOKIE", "") not in ("1", "true", "yes")
+# Requests a page makes by itself on a timer (the chat's poll, the board refreshing after one) do not extend a session (2026-11-07): a tab left
+# open must not keep a session alive for ever. Everything a person does does. See Handler._load_session.
+BACKGROUND_PATHS = ("/poll", "/board/fragment")
 # Off by default (2026-09-26, pre-publication review finding): CF-Connecting-IP/
 # X-Forwarded-For are request headers, not connection facts -- anyone who can
 # reach this server directly can set them to anything, including someone else's
@@ -3017,14 +3020,23 @@ class Handler(BaseHTTPRequestHandler):
                         "style-src 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; "
                         "font-src 'none'; media-src 'self'; object-src 'none'; "
                         "worker-src 'self'; manifest-src 'self'")
-        for k, v in (extra or {}).items():
+        extra = dict(extra or {})
+        touch = getattr(self, "_session_touch", None)
+        self._session_touch = None
+        if touch and "Set-Cookie" not in extra:
+            # The session was used (_load_session): move its end forward and give the browser the new lifetime in the same response, so the cookie
+            # and the session end together.
+            max_age = accounts.touch_session(*touch[:2])
+            if max_age:
+                extra.update(self.cookie(touch[0], max_age))
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def cookie(self, token: str) -> dict:
-        a = f"ns={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={accounts.SESSION_TTL_S}"
+    def cookie(self, token: str, max_age: int | None = None) -> dict:
+        a = f"ns={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age or accounts.SESSION_TTL_S}"
         return {"Set-Cookie": a + ("; Secure" if SECURE_COOKIE else "")}
 
     def clear_cookie(self) -> dict:
@@ -3066,9 +3078,13 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(csrf if isinstance(csrf, str) else "", sess["csrf"])
 
     def _load_session(self):
-        """The session for this request, and whose timezone the page's timestamps are rendered in (usertime.vfmt)."""
-        sess = accounts.get_session(self.token())
+        """The session for this request, and whose timezone the page's timestamps are rendered in (usertime.vfmt). A session that is being used is
+        extended when the response goes out (send(), accounts.touch_session)."""
+        token = self.token()
+        sess = accounts.get_session(token)
         usertime.set_viewer(sess["user_id"] if sess else None)
+        if sess and str(getattr(self, "path", "")).partition("?")[0] not in BACKGROUND_PATHS:
+            self._session_touch = (token, sess)
         return sess
 
     def send_json(self, data: dict, code: int = 200):
@@ -3083,6 +3099,7 @@ class Handler(BaseHTTPRequestHandler):
     # -- GET --
     def do_GET(self):
         usertime.set_viewer(None)
+        self._session_touch = None      # one handler serves a whole connection: nothing carries over from the last request
         # Request-level timing (2026-09-13, config.debug_timing_enabled)
         # -- wraps the WHOLE request, from routing through whichever
         # handler runs through the response actually being written, as
@@ -3275,6 +3292,7 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST --
     def do_POST(self):
         usertime.set_viewer(None)
+        self._session_touch = None
         # Same request-level timing wrapper as do_GET -- see its own
         # comment.
         path = self.path.partition("?")[0]
@@ -3683,6 +3701,8 @@ class Handler(BaseHTTPRequestHandler):
             "<div class=field><input type=text name=display_name placeholder=name required autofocus></div>"
             "<div class=field><input type=password name=password placeholder=password required "
             "autocomplete=current-password></div>"
+            "<div class=field><label><input type=checkbox name=keep value=1> keep me signed in "
+            f"<span class=muted style='font-size:inherit'>(until you've been away for {accounts.KEEP_TTL_S // 86400} days)</span></label></div>"
             "<button class='btn btn-primary btn-block'>sign in</button></form>"
         ), back_href="/about"))
 
@@ -3695,7 +3715,8 @@ class Handler(BaseHTTPRequestHandler):
         password = form.get("password") if isinstance(form.get("password"), str) else ""
         user = accounts.authenticate(name or "", password or "")
         if user is not None:
-            return self.send(303, b"", {**self.cookie(accounts.new_session(user, ip)), "Location": "/"})
+            keep = bool(form.get("keep"))
+            return self.send(303, b"", {**self.cookie(accounts.new_session(user, ip, keep=keep), accounts.session_ttl(keep)), "Location": "/"})
         accounts.record_fail(ip)
         time.sleep(0.3)
         self.login_form("wrong name or password")

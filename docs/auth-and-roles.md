@@ -35,10 +35,43 @@ admin never sees or sets it on someone else's behalf.
 ## Sessions
 
 A session token is a random value, hashed before storage the same way
-an invite token is, with a 24-hour expiry from creation (not
-sliding — logging in again after expiry is a normal, expected event,
-not a bug). Every session also carries its own CSRF token, checked on
-every state-changing request.
+an invite token is. Every session also carries its own CSRF token,
+checked on every state-changing request.
+
+**How long it lasts (2026-11-07).** A session is an *idle window* that
+using it moves forward, not a fixed time from sign-in. Before this it
+ended 24 hours after sign-in however busy it was, so people signed in
+far too often.
+
+| | Idle window | Set by |
+|---|---|---|
+| Ordinary sign-in | 24 hours (`accounts.SESSION_TTL_S`) | the default |
+| **Keep me signed in** ticked on the login page | 30 days (`KEEP_TTL_S`) | `sessions.keep` |
+
+- **Using it extends it.** A page, a form or a chat message moves the
+  session's end to a full window from now, and the same response
+  re-sends the cookie with the new lifetime, so the cookie and the
+  session end together (`accounts.touch_session`, called from
+  `Handler.send`). The end moves only once a tenth of the window has
+  passed since it last did, so a busy session writes to the database a
+  few times a day and not on every request.
+- **A tab left open does not count.** The chat's timer requests
+  (`/poll` every 5 and 15 seconds, and the board refreshing after one,
+  `server.BACKGROUND_PATHS`) do not extend a session. Without that, an
+  open tab would keep any session alive for ever and the checkbox would
+  mean nothing.
+- **A hard ceiling.** No session lives more than 90 days
+  (`SESSION_MAX_S`) from sign-in however busy it is, so a cookie that
+  leaks stops working eventually. After that, signing in again is
+  expected.
+- **Other ways in** (first-run setup, accepting an invite) start an
+  ordinary 24-hour window. Sessions from before this change keep their
+  24-hour window and are extended from their next use. Deactivating a
+  person ends all their sessions, kept or not. The phone app and the
+  browser extension use their own paired tokens, not sessions, and are
+  not affected.
+
+Tests: `tests/test_nori_sessions.py`.
 
 ## Login throttling
 

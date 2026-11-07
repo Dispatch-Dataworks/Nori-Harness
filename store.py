@@ -184,7 +184,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_ts   REAL NOT NULL,
     expires_ts   REAL NOT NULL,
     csrf         TEXT NOT NULL,
-    client_ip    TEXT
+    client_ip    TEXT,
+    keep         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions(user_id);
 
@@ -2092,6 +2093,8 @@ _MIGRATIONS: list[str] = [
     # Which picture-reading prompt wrote work_files.vision_description (2026-11-03, workfiles.VISION_VERSION). NULL on every older row: those
     # hold a few-sentence description, not a transcription, so they are read again.
     "ALTER TABLE work_files ADD COLUMN vision_version INTEGER",
+    # "Keep me signed in" was ticked at login (2026-11-07, accounts.KEEP_TTL_S): the session's idle window is 30 days, not 24 hours. 0 on every older row.
+    "ALTER TABLE sessions ADD COLUMN keep INTEGER NOT NULL DEFAULT 0",
     # sub_agents.model_id is NOT here -- see init()'s own comment on why
     # (same models-rename FK-rewrite hazard as model_chain).
 ]

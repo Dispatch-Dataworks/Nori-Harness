@@ -2,6 +2,15 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-07 — added: stay signed in (the session extends while you use it; "keep me signed in")
+
+A session used to end 24 hours after sign-in however busy it was, so people signed in far too often. Now:
+- **Using Nori extends the session.** A page, a form or a chat message moves its end to a full window from now, and the cookie is re-sent with the new lifetime. A chat tab left open on its own timer does not count, or it would keep a session alive for ever.
+- **The login page has a "keep me signed in" checkbox.** Ticked, the window is 30 days instead of 24 hours. It is off unless you tick it.
+- **No session lives past 90 days,** however busy it is.
+
+See [Auth & roles](auth-and-roles.md#sessions).
+
 ## 2026-11-03 — fixed: sub-agents reading pictures got a short gist, not the values
 
 With vision working again, Nori's picture-by-picture reviews of eight MyChart screenshots still came back "incomplete: read as a gist only despite exact access being granted". There were three causes:

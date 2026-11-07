@@ -29,7 +29,12 @@ import time
 
 import store
 
+# How long a session survives with nobody using it (2026-11-07). Using it moves the end forward (touch_session), so this is an idle window, not a
+# fixed time from sign-in: SESSION_TTL_S for an ordinary sign-in, KEEP_TTL_S when "keep me signed in" was ticked. SESSION_MAX_S is the most any one
+# session lives however busy it is, so a cookie that leaks stops working eventually.
 SESSION_TTL_S = 24 * 3600
+KEEP_TTL_S = 30 * 24 * 3600
+SESSION_MAX_S = 90 * 24 * 3600
 INVITE_TTL_S = 7 * 24 * 3600
 # Interactive-login scrypt cost -- tune if this ever measurably lags; not a
 # security knob anyone should need to touch day to day.
@@ -234,17 +239,22 @@ def _token_hash(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def new_session(user: dict, ip: str) -> str:
+def session_ttl(keep: bool) -> int:
+    """The idle window of a session: seconds it lasts after the last time it was used."""
+    return KEEP_TTL_S if keep else SESSION_TTL_S
+
+
+def new_session(user: dict, ip: str, keep: bool = False) -> str:
     """Returns the raw token (goes in the cookie). Only its hash is stored —
     someone with read access to the DB can't replay a session directly from
-    what's at rest there."""
+    what's at rest there. keep: the person ticked "keep me signed in"."""
     raw = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
     now = time.time()
     store.write(lambda c: c.execute(
-        "INSERT INTO sessions(token_hash, user_id, workspace_id, role, created_ts, expires_ts, csrf, client_ip) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (_token_hash(raw), user["id"], user["workspace_id"], user["role"], now, now + SESSION_TTL_S, csrf, ip)))
+        "INSERT INTO sessions(token_hash, user_id, workspace_id, role, created_ts, expires_ts, csrf, client_ip, keep) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (_token_hash(raw), user["id"], user["workspace_id"], user["role"], now, now + session_ttl(keep), csrf, ip, 1 if keep else 0)))
     return raw
 
 
@@ -253,9 +263,24 @@ def get_session(raw_token: str) -> dict | None:
         return None
     r = store.read(lambda c: c.execute(
         "SELECT * FROM sessions WHERE token_hash=?", (_token_hash(raw_token),)).fetchone())
-    if not r or r["expires_ts"] < time.time():
+    now = time.time()
+    if not r or r["expires_ts"] < now or r["created_ts"] + SESSION_MAX_S < now:
         return None
     return dict(r)
+
+
+def touch_session(raw_token: str, sess: dict) -> int | None:
+    """Someone used this session: move its end to a full idle window from now (never past SESSION_MAX_S after sign-in). Returns the seconds the
+    cookie should now live, or None when nothing changed. The end only moves once a tenth of the window has passed since it last did, so a busy
+    session writes a few times a day, not on every request; and the cookie is only re-sent when the end moved, so the two never disagree."""
+    now = time.time()
+    ttl = session_ttl(bool(sess.get("keep")))
+    new_end = min(now + ttl, sess["created_ts"] + SESSION_MAX_S)
+    if new_end - sess["expires_ts"] < ttl / 10:
+        return None
+    store.write(lambda c: c.execute(
+        "UPDATE sessions SET expires_ts=? WHERE token_hash=? AND expires_ts<?", (new_end, _token_hash(raw_token), new_end)))
+    return int(new_end - now)
 
 
 def delete_session(raw_token: str) -> None:
