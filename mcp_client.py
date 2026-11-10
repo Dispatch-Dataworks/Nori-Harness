@@ -67,13 +67,26 @@ class MCPError(Exception):
     now," never a raw stack trace or a urllib exception repr."""
 
 
+def _user_agent() -> str:
+    """"Nori-Harness/<version>". urllib's default Python-urllib agent is
+    blocked outright by Cloudflare's bot rules in front of many MCP servers
+    (HTTP 403, error 1010); a real, named agent is not. Never raises: an
+    unreadable version just drops the suffix's number."""
+    try:
+        import updates  # lazy: keeps this module importable on its own
+        return f"Nori-Harness/{updates.current_version()}"
+    except Exception:  # noqa: BLE001
+        return "Nori-Harness"
+
+
 def _post(url: str, body: dict, *, session_id: str | None, headers: dict) -> tuple[dict | None, str | None]:
     """One HTTP POST carrying one JSON-RPC message. Returns
     (result_or_None, session_id_from_this_response). result is None for a
     notification (no "id" in body -- the server must not reply with a
     JSON-RPC response, so there is nothing to parse)."""
     req_headers = {"Content-Type": "application/json",
-                  "Accept": "application/json, text/event-stream"}
+                  "Accept": "application/json, text/event-stream",
+                  "User-Agent": _user_agent()}
     req_headers.update(headers)
     if session_id:
         req_headers["Mcp-Session-Id"] = session_id

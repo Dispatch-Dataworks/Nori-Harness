@@ -2,6 +2,10 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-10 — fixed: MCP servers behind Cloudflare refused Nori's requests
+
+Nori's MCP calls went out with Python's default `Python-urllib` user agent, which Cloudflare's bot rules block (HTTP 403, error 1010) in front of many MCP servers. Every MCP request now identifies itself as `Nori-Harness/<version>` (`mcp_client._post`). A header a server's own configuration sets still wins. Tests: `tests/test_nori_mcp_user_agent.py`.
+
 ## 2026-11-07 — added: stay signed in (the session extends while you use it; "keep me signed in")
 
 A session used to end 24 hours after sign-in however busy it was, so people signed in far too often. Now:
