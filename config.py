@@ -290,6 +290,7 @@ _SPEC: dict[str, tuple] = {
     "phone_notify_replies": (True, bool, "user", False, "also notify her chat replies (not just reminders/pings/approvals)"),
     "phone_health_enabled": (False, bool, "user", False, "accept Health Connect data from the phone into my trackers"),
     "phone_places_enabled": (False, bool, "user", False, "accept arrived/left events for my named places"),
+    "reach_enabled": (True, bool, "user", False, "tell my assistant when I'm driving (Android Auto) or talking by voice, so it answers in short spoken lines (reach.py)"),
     "phone_actions_enabled": (False, bool, "user", False, "let her open links/apps and set timers/alarms on my phone"),
     "phone_control_enabled": (False, bool, "user", False, "let her read and use my phone's screen (accessibility), in a window I open"),
     "phone_screen_enabled": (False, bool, "user", False, "let her look at my phone's screen (screenshots), in a window I open"),

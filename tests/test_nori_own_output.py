@@ -145,7 +145,8 @@ class SurfaceTriageTests(unittest.TestCase):
         "approvals.py": ("no prompt", "reads and updates an approval card's meta; shows no text to a model"),
         "debug_api.py": ("no prompt", "the debug endpoint: a developer reads messages over HTTP behind a token; nothing here is shown to a model"),
         "bridge.py": ("no prompt", "reads one message's meta only to update its approval card's status; nothing is put in a prompt"),
-        "onboarding.py": ("no prompt", "counts her replies since onboarding began (to end it) and checks that a user message exists after a persona draft; no text is read"),
+        "reach.py": ("no prompt", "reads only the meta 'source' of the user's own newest message (voice / car); no message text reaches a prompt"),
+        "onboarding.py": ("no prompt","counts her replies since onboarding began (to end it) and checks that a user message exists after a persona draft; no text is read"),
     }
 
     def readers(self):

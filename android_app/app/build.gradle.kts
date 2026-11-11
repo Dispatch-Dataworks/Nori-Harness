@@ -42,6 +42,8 @@ dependencies {
     implementation("androidx.health.connect:connect-client:1.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // Android Auto: only whether it is connected (CarConnection), so the server knows the owner is driving. No car screens are built.
+    implementation("androidx.car.app:app:1.4.0")
 
     testImplementation("junit:junit:4.13.2")
     // The Android SDK's org.json is only a stub in JVM tests; the real one makes the request/response tests meaningful.

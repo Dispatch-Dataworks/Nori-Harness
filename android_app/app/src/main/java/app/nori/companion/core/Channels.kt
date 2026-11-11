@@ -42,6 +42,22 @@ object Channels {
 
     fun titleFor(m: Message): String = m.title.ifBlank { "Assistant" }
 
+    // ── conversations (Android Auto, 2026-11-10) ─────────────────────
+    /** Messages shown as a conversation with Reply and Mark as read actions, which is what Android Auto reads aloud and answers. Approvals (they need the phone unlocked) and
+     *  other assistants' messages stay ordinary notifications. */
+    fun isConversation(m: Message): Boolean = m.approval == null && forCategory(m.category).let { it == CHAT || it == REMINDER || it == JOB }
+
+    /** Chat replies of one connection share ONE running conversation notification (its last few lines); a reminder or a finished job is its own. */
+    fun sharesConversation(m: Message): Boolean = forCategory(m.category) == CHAT
+
+    /** The id of a connection's running conversation notification. Server message ids start at 1, so id 0 is never a message's own. */
+    fun conversationId(slot: Int): Int = notificationId(0L, slot)
+
+    /** The share-sheet / conversation shortcut of a connection ("conv_0"), and back. */
+    const val SHARE_CATEGORY = "app.nori.companion.category.SHARE_TARGET"
+    fun shortcutId(slot: Int): String = "conv_$slot"
+    fun slotOfShortcut(id: String?): Int? = id?.removePrefix("conv_")?.takeIf { id.startsWith("conv_") }?.toIntOrNull()?.takeIf { it in 0 until Connections.MAX }
+
     /**
      * Stable notification id for a server message id (fits an Int, never collides with the app's fixed ids below 100). Two servers number their messages from 1 each, so the
      * connection is part of the id: slot 0 is exactly what it always was, slots above it get their own range.

@@ -64,6 +64,7 @@ class SyncService : Service() {
         Notifier.channels(this)
         PlaceManager.forget()
         WindowControl.resume(this)
+        CarWatcher.start(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -87,6 +88,7 @@ class SyncService : Service() {
     override fun onDestroy() {
         running = false
         instance = null
+        CarWatcher.stop()
         for (l in lines.values) l.stop()
         lines.clear()
         Api.cancelPoll()
@@ -103,6 +105,7 @@ class SyncService : Service() {
         val want = Prefs.slots(this).toSet()
         for (s in want) lines.computeIfAbsent(s) { Line(it).also { l -> l.start() } }
         for ((s, l) in lines.entries.toList()) if (s !in want) { l.stop(); lines.remove(s) }
+        Shortcuts.publish(this)                                   // the share-sheet entry and conversation of each usable connection
     }
 
     /** " (Iron)" when the phone has more than one connection, so the sent log says which server a line is about. */
@@ -222,6 +225,7 @@ class SyncService : Service() {
                 if (json != Prefs.serverSettingsRaw(c, slot)) {
                     Prefs.setServerSettings(c, slot, json)
                     workNow(c)                                              // fences, health schedule: pick up the change now
+                    Shortcuts.publish(c)                                    // the assistant's name may have changed
                 }
             }
             resp.app?.let { AppUpdater.noteFromPoll(c, slot, it) }
@@ -300,7 +304,7 @@ class SyncService : Service() {
         }
         val dnd = try { nm.currentInterruptionFilter.let { it != NotificationManager.INTERRUPTION_FILTER_ALL && it != NotificationManager.INTERRUPTION_FILTER_UNKNOWN } } catch (e: Exception) { false }
         val place = if (PlaceManager.wanted(this, slot)) Prefs.currentPlace(this, slot).ifEmpty { null } else null
-        return Snapshot(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).takeIf { it in 0..100 }, bm.isCharging, net, pm.isInteractive, km.isKeyguardLocked, dnd, place)
+        return Snapshot(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).takeIf { it in 0..100 }, bm.isCharging, net, pm.isInteractive, km.isKeyguardLocked, dnd, place, CarWatcher.connected)
     }
 
     // ── the quiet worker ─────────────────────────────────────────────

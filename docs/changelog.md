@@ -2,6 +2,15 @@
 
 A skim-able, chronological distillation of what shipped.
 
+## 2026-11-10 — added: Nori in the car (Android Auto), replies from notifications, and Nori in the Share sheet's top row
+
+Android app 0.4.0 and the server side, ported from the Claire companion's Android Auto work:
+- **Android Auto reads Nori's messages aloud and you answer by voice.** Chat replies, reminders and finished jobs are now conversation notifications with **Reply** and **Mark as read**, which is what Android Auto needs. A spoken (or typed) answer goes to the new `POST /device/reply` and is your next chat message, tagged as coming from the car or a notification (the history shows 🚗 / 🔔). Approvals stay phone-only because they need the phone unlocked. Android Auto only shows apps from outside the Play Store with its **Unknown sources** developer setting on (android_app/README.md).
+- **Nori knows when you're driving.** The phone reports whether Android Auto is connected. While it is, or when the message came from the car, every turn gets one late line saying you are driving, with how to answer (one or two short spoken sentences, nothing to look at or tap, anything that needs an approval or a screen waits), and at most 3 tool rounds. The chat's **voice conversation** gets the same treatment ("talking by voice", at most 4 rounds); before this the model was never told a message was spoken. A reminder while you drive gets it too. Chat replies reach the car even with chat replies off or in quiet hours. One switch per person: Settings → Devices → phone, *tell ⟦n⟧ when I'm driving or talking by voice* (on by default). See `reach.py`.
+- **Nori in the Share sheet's top row.** Sharing to Nori has been in the Share sheet since 0.2.0, listed among the apps as *Send to my assistant*. Each paired connection is now also a sharing shortcut under its assistant's name ("Nori", "Iron") in the top row, which goes straight to that connection. The send dialog names the assistant.
+
+Tests: `tests/test_nori_device_data.py` (`CarAndReplies`), Android `CarAndConversationTest`.
+
 ## 2026-11-10 — fixed: MCP servers behind Cloudflare refused Nori's requests
 
 Nori's MCP calls went out with Python's default `Python-urllib` user agent, which Cloudflare's bot rules block (HTTP 403, error 1010) in front of many MCP servers. Every MCP request now identifies itself as `Nori-Harness/<version>` (`mcp_client._post`). A header a server's own configuration sets still wins. Tests: `tests/test_nori_mcp_user_agent.py`.

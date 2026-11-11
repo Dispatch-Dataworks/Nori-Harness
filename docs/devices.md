@@ -52,8 +52,12 @@ Request:
 {"v":"0.1.0","paused":false,"app_visible":false,"ack":901,
  "caps":{"notifications":true,"share":true,"health":false,"places":false,"actions":true,"screen":false,"control":false},
  "interact_until":0,"share_until":0,
- "snapshot":{"battery":87,"charging":false,"network":"wifi","screen_on":true,"locked":false,"dnd":false,"place":"Home"}}
+ "snapshot":{"battery":87,"charging":false,"network":"wifi","screen_on":true,"locked":false,"dnd":false,"place":"Home","car":false}}
 ```
+- `snapshot.car` (app 0.4.0) = Android Auto is connected on this phone. The only thing the app learns about a car; a change
+  ends the current long poll so the server hears it at once. While it is true, chat replies reach this phone even when
+  "chat replies" is off or it is quiet hours (the car reads them aloud, and they are the conversation), and `reach.py`
+  tells the assistant the person is driving (below).
 - `ack` = highest notification-message id the app has *shown*; the server advances the cursor only on this (redelivery if lost).
   The app dedupes by `id`.
 - `interact_until` / `share_until` = epoch **ms** until which the *owner has opened* the control / screen-share window **on the
@@ -129,6 +133,13 @@ deduped by `(metric, ts|day, id)`, and logged with `created_by_type='device'`. U
 `{kind:"text"|"link"|"image", text?, url?, title?, jpeg_b64?, mime?, dest:"chat"|"note"|"task", note?}` -> `{ok, id}`.
 `chat` stores it as the user's message (and Nori replies like any message); `note`/`task` create the item. Text capped at 8000
 chars; an image is stored like a chat photo. Everything shared is the *owner's own deliberate action* (Share sheet).
+
+### `POST /device/reply`  (app 0.4.0, 16 KB)
+`{text, via:"car"|"notification"}` -> `{ok, id}`. An answer typed into one of the assistant's message notifications, or
+spoken to Android Auto (which reads the message aloud and sends the dictated answer back through the notification's Reply
+action). It becomes the owner's next chat message, tagged `meta.source` = `car` or `notification`, and starts a normal
+turn. The owner's own words: not screened, never treated as a command, text collapsed to one line and capped at 4000
+characters. Refused (403) while the phone is on hold.
 
 ### `GET /device/app.apk`  (Bearer) — the current APK; `app.latest` in the poll response carries its version.
 
@@ -297,6 +308,13 @@ tools below), `bridge.py` (commands now carry a `target` of browser or phone; th
 - Places: reminders fire as ordinary `reminder` messages (so they notify like any other).
 - Shares to the chat become the owner's own message (`📎 Sending you ...`) and start a normal turn. Text over 200 characters
   is screened first, and a flagged or un-screenable share says so in the message.
+- Driving and voice (`reach.py`, 2026-11-10): when the person's phone reports Android Auto connected (a report under 3
+  minutes old from a phone that is not paused or held), or the message being answered was spoken to the car, or came from
+  the chat's voice conversation, the turn gets one late system line saying so ("is IN THE CAR ... read aloud") with how to
+  answer (one or two short spoken sentences, nothing to look at or tap, approvals and screens wait until they've stopped),
+  and at most 3 tool rounds in the car, 4 by voice. Car outranks voice and also applies to a turn nobody asked for (a
+  reminder while driving); never to a peer-motivated turn. One switch per person, Settings -> Devices -> phone, "tell ⟦n⟧
+  when I'm driving or talking by voice" (`reach_enabled`, on by default).
 - Ask-about-this-page: the page text goes to **that turn only**, as an untrusted extra message; the chat history keeps just
   the question (tagged `source: side_panel`) and her answer.
 - The APK: `data/phone_app/nori-companion.apk` + `version.txt`. The server fetches them itself from the newest GitHub release that has an app attached

@@ -168,6 +168,7 @@ class MainActivity : Activity() {
         Prefs.setSelected(this, slot)
         for ((s, t) in tabs) t.web.visibility = if (s == slot) View.VISIBLE else View.GONE
         AppState.visibleSlot = slot
+        Notifier.markRead(this, slot)
         ensureLoaded(tabs[slot])
         renderBar()
         SyncService.pollNow(this)                                 // each server learns at once whether its chat is the one in front
@@ -207,6 +208,7 @@ class MainActivity : Activity() {
         AppState.appVisible = true
         syncTabs()
         SyncService.pollNow(this)                                // tell the server the chat is in front, so it holds notifications back
+        if (current in tabs) Notifier.markRead(this, current)    // the chat is on screen: its conversation notification has been read
         val slots = Prefs.slots(this)
         if (!Prefs.anyPaired(this)) {
             if (!Prefs.flag(this, "welcomed")) { Prefs.setFlag(this, "welcomed"); startActivity(Intent(this, SettingsActivity::class.java)) }

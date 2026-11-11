@@ -189,7 +189,7 @@ def _clean_snapshot(s) -> dict:
     out: dict = {}
     if isinstance(s.get("battery"), (int, float)):
         out["battery"] = max(0, min(100, int(s["battery"])))
-    for k in ("charging", "screen_on", "locked", "dnd"):
+    for k in ("charging", "screen_on", "locked", "dnd", "car"):
         if isinstance(s.get(k), bool):
             out[k] = s[k]
     for k, n in (("network", 16), ("place", 60)):
@@ -321,8 +321,11 @@ def pending_messages(token: dict, *, app_visible: bool = False, advance_empty: b
         if advance_empty:
             _set_cursor(device_id, newest)
         return []
-    quiet = in_quiet_hours(user_id)
-    replies_on = bool(config.get("user", user_id, "phone_notify_replies"))
+    # Android Auto connected on THIS phone (its own latest report): the car reads her messages aloud and the owner answers by
+    # voice, so chat replies come through even when replies or quiet hours would hold them back -- they are the conversation.
+    in_car = kind == "phone" and bool((device_state(get_device(device_id) or {}).get("snapshot") or {}).get("car"))
+    quiet = in_quiet_hours(user_id) and not in_car
+    replies_on = bool(config.get("user", user_id, "phone_notify_replies")) or in_car
     now = time.time()
     name = config.get("workspace", token["workspace_id"], "assistant_name")
     out: list[dict] = []

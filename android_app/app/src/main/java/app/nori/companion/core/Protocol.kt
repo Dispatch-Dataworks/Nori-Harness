@@ -104,12 +104,15 @@ class Snapshot(
     val battery: Int?, val charging: Boolean, val network: String, val screenOn: Boolean, val locked: Boolean, val dnd: Boolean,
     /** Only the NAME of the place the phone is in; never coordinates. Null/empty = not in a known place. */
     val place: String?,
+    /** Android Auto is connected (CarWatcher): the owner is driving. The one thing the app learns about a car. */
+    val car: Boolean = false,
 ) {
     fun toJson(): JSONObject {
         val j = JSONObject()
         if (battery != null && battery in 0..100) j.put("battery", battery)
         j.put("charging", charging).put("network", network).put("screen_on", screenOn).put("locked", locked).put("dnd", dnd)
         if (!place.isNullOrBlank()) j.put("place", place.take(60))
+        j.put("car", car)
         return j
     }
 }
@@ -121,6 +124,9 @@ object Protocol {
     fun pollRequest(version: String, paused: Boolean, appVisible: Boolean, ack: Long, caps: Caps, interactUntil: Long, shareUntil: Long, snapshot: Snapshot): JSONObject =
         JSONObject().put("v", version).put("paused", paused).put("app_visible", appVisible).put("ack", ack).put("caps", caps.toJson())
             .put("interact_until", interactUntil).put("share_until", shareUntil).put("snapshot", snapshot.toJson())
+
+    /** A reply typed into a message notification or spoken to Android Auto (/device/reply). `via` is "car" while Android Auto is connected, else "notification". */
+    fun reply(text: String, car: Boolean): JSONObject = JSONObject().put("text", text.trim().take(4000)).put("via", if (car) "car" else "notification")
 
     /** What a paused phone says: a heartbeat and nothing else (no snapshot, no windows). */
     fun pausedHeartbeat(version: String, ack: Long): JSONObject =

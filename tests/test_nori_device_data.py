@@ -31,10 +31,12 @@ os.environ["NORI_NO_LOGFILE"] = "1"
 
 import accounts  # noqa: E402
 import bridge  # noqa: E402
+import chat  # noqa: E402
 import config  # noqa: E402
 import conversation  # noqa: E402
 import device_data  # noqa: E402
 import devices  # noqa: E402
+import reach  # noqa: E402
 import server  # noqa: E402
 import store  # noqa: E402
 import trackers  # noqa: E402
@@ -68,7 +70,7 @@ def _reset():
         store.write(lambda c, t=tbl: c.execute(f"DELETE FROM {t}"))
     for uid in (UID, UID2):
         for k, spec in config._SPEC.items():
-            if k.startswith(("phone_", "browser_")) or k == "bridge_standing_look":
+            if k.startswith(("phone_", "browser_", "reach_")) or k == "bridge_standing_look":
                 config.set("user", uid, k, spec[0])
     device_data.set_turn_runner(None)
     accounts._LOGIN_FAILS.clear()
@@ -918,6 +920,159 @@ class DevicesPage(unittest.TestCase):
         self.assertIn('("devices", "Devices")', text)
         self.assertIn("get('prefill')", text)
         self.assertIn("get('talk')==='1'", text, "the app's Talk widget opens voice mode")
+
+
+class CarAndReplies(unittest.TestCase):
+    """App 0.4.0 (2026-11-10): replies from a notification or Android Auto (/device/reply), the phone's car state, chat
+    replies reaching the car, and reach.py telling her (in the turn) that the owner is driving or talking."""
+
+    def setUp(self):
+        _reset()
+        _calm(self)
+        self.token, self.raw = _pair()
+        self.turns = []
+        device_data.set_turn_runner(lambda uid, extra=None: self.turns.append(uid) or {"ok": True, "messages": []})
+        config.set("user", UID, "reach_enabled", True)
+
+    def tearDown(self):
+        device_data.set_turn_runner(None)
+
+    def _wait_turn(self):
+        deadline = time.time() + 3
+        while time.time() < deadline and not self.turns:
+            time.sleep(0.02)
+
+    def _car(self, on=True, token=None, seen=None):
+        devices.update_from_poll(token or self.token, {"snapshot": {"battery": 50, "car": on}})
+        if seen is not None:
+            d = devices.get_device((token or self.token)["id"])
+            st = devices.device_state(d)
+            st["seen_ts"] = seen
+            store.write(lambda c: c.execute("UPDATE bridge_tokens SET state=? WHERE id=?", (json.dumps(st), d["id"])))
+
+    # ── the reply ──
+    def test_a_reply_is_the_owners_next_message_tagged_with_where_it_came_from(self):
+        out, code = device_data.handle_reply(self.token, {"text": "  pick up   milk\n too ", "via": "car"})
+        self.assertEqual(code, 200, out)
+        m = next(x for x in _msgs() if x["id"] == out["id"])
+        self.assertEqual((m["role"], m["kind"], m["content"]), ("user", "chat", "pick up milk too"))
+        self.assertEqual(json.loads(m["meta"])["source"], "car")
+        self._wait_turn()
+        self.assertEqual(self.turns, [UID], "she answers it like anything typed")
+        out, _ = device_data.handle_reply(self.token, {"text": "ok", "via": "anything else"})
+        self.assertEqual(json.loads(next(x for x in _msgs() if x["id"] == out["id"])["meta"])["source"], "notification")
+
+    def test_an_empty_reply_is_refused_and_a_long_one_clipped(self):
+        for empty in ({}, {"text": ""}, {"text": "   "}, {"text": None}):
+            self.assertEqual(device_data.handle_reply(self.token, empty)[1], 400, empty)
+        out, _ = device_data.handle_reply(self.token, {"text": "x" * 9000})
+        self.assertEqual(len(next(x for x in _msgs() if x["id"] == out["id"])["content"]), device_data.MAX_REPLY_TEXT)
+
+    def test_a_reply_is_plain_text_never_a_command(self):
+        out, _ = device_data.handle_reply(self.token, {"text": "/reset everything"})
+        self.assertEqual(next(x for x in _msgs() if x["id"] == out["id"])["content"], "/reset everything")
+
+    def test_the_route_needs_the_phone_token_and_is_refused_while_held(self):
+        accounts._LOGIN_FAILS.clear()
+        self.assertEqual(_device("/device/reply", {"text": "hi"})[0], 401)
+        accounts._LOGIN_FAILS.clear()
+        _, browser_raw = _pair(kind="browser", name="Chrome")
+        self.assertEqual(_device("/device/reply", {"text": "hi"}, token=browser_raw)[0], 401)
+        accounts._LOGIN_FAILS.clear()
+        c, body = _device("/device/reply", {"text": "hi", "via": "car"}, token=self.raw)
+        self.assertEqual((c, body["ok"]), (200, True))
+        devices.set_hold(UID, self.token["id"], True)
+        self.assertEqual(_device("/device/reply", {"text": "hi"}, token=self.raw)[0], 403)
+        h = _H(b"", {"Content-Length": str(16 * 1024 + 1), "Authorization": "Bearer " + self.raw})
+        h.device_post("/device/reply")
+        self.assertEqual(h.reply()[0], 413)
+
+    # ── the car state ──
+    def test_the_snapshot_keeps_the_car_flag_only_as_a_bool(self):
+        self._car(True)
+        self.assertIs(devices.device_state(devices.get_device(self.token["id"]))["snapshot"]["car"], True)
+        devices.update_from_poll(self.token, {"snapshot": {"car": "yes"}})
+        self.assertNotIn("car", devices.device_state(devices.get_device(self.token["id"]))["snapshot"])
+
+    def test_chat_replies_reach_the_car_even_when_replies_and_quiet_hours_would_hold_them(self):
+        config.set("user", UID, "phone_notify_replies", False)
+        conversation.add_message(UID, "assistant", "the milk is on the list", kind="chat")
+        with patch.object(devices, "in_quiet_hours", return_value=True):
+            self.assertEqual(devices.pending_messages(self.token, advance_empty=False), [], "held back normally")
+            self._car(True)
+            got = devices.pending_messages(self.token, advance_empty=False)
+        self.assertEqual([m["text"] for m in got], ["the milk is on the list"])
+
+    def test_the_devices_page_says_a_phone_is_in_the_car(self):
+        self._car(True)
+        store.write(lambda c: c.execute("UPDATE bridge_tokens SET last_seen_ts=? WHERE id=?", (time.time(), self.token["id"])))
+        h = _H(b"", {})
+        h.devices_settings_form(SESS)
+        self.assertIn("in the car (Android Auto)", h.page)
+        self.assertIn("name=reach_enabled", h.page)
+
+    # ── reach.py ──
+    def test_reach_mode_from_the_message_and_the_phone(self):
+        self.assertIsNone(reach.mode(UID, answering=True), "nothing says voice or car")
+        device_data.handle_reply(self.token, {"text": "hi", "via": "car"})
+        self.assertEqual(reach.mode(UID, answering=True), "car")
+        self.assertIsNone(reach.mode(UID, answering=False), "a turn nobody asked for goes by the phone, not an old message")
+        conversation.add_message(UID, "user", "what is for dinner", meta={"source": "voice"})
+        self.assertEqual(reach.mode(UID, answering=True), "voice")
+        self._car(True)
+        self.assertEqual(reach.mode(UID, answering=True), "car", "driving outranks voice")
+        self.assertEqual(reach.mode(UID, answering=False), "car", "a reminder while driving is read aloud too")
+        self.assertIsNone(reach.mode(UID2, answering=False), "another person's car is not mine")
+        config.set("user", UID, "reach_enabled", False)
+        self.assertIsNone(reach.mode(UID, answering=True), "switched off")
+
+    def test_a_stale_paused_or_held_phone_does_not_say_car(self):
+        self._car(True, seen=time.time() - reach.CAR_STATE_S - 5)
+        self.assertFalse(reach.car_connected(UID), "stale")
+        self._car(True)
+        self.assertTrue(reach.car_connected(UID))
+        store.write(lambda c: c.execute("UPDATE bridge_tokens SET paused=1 WHERE id=?", (self.token["id"],)))
+        self.assertFalse(reach.car_connected(UID), "paused")
+        store.write(lambda c: c.execute("UPDATE bridge_tokens SET paused=0 WHERE id=?", (self.token["id"],)))
+        devices.set_hold(UID, self.token["id"], True)
+        self.assertFalse(reach.car_connected(UID), "held")
+
+    def test_the_note_and_the_round_cap(self):
+        self.assertIsNone(reach.note(None, "Ben"))
+        car = reach.note("car", "Ben")["content"]
+        self.assertIn("Ben is IN THE CAR", car)
+        self.assertIn("read aloud", car)
+        self.assertIn("Ben is TALKING", reach.note("voice", "Ben")["content"])
+        self.assertEqual(reach.capped_rounds("car", 12), reach.ROUNDS["car"])
+        self.assertEqual(reach.capped_rounds("voice", 2), 2)
+        self.assertEqual(reach.capped_rounds(None, 12), 12)
+
+    def _run(self, peer_pending, tool_calls=False):
+        seen = []
+
+        def fake(messages, workspace_id, **kw):
+            seen.append(list(messages))
+            if tool_calls:
+                return {"content": "", "usage": {}, "finish_reason": "tool_calls",
+                        "tool_calls": [{"id": f"c{len(seen)}", "type": "function", "function": {"name": "list_tasks", "arguments": "{}"}}]}
+            return {"content": "ok", "tool_calls": None, "usage": {}, "finish_reason": "stop"}
+        with patch.object(chat, "call_via_chain", fake):
+            try:
+                chat.run(SESS, UID, "Tester", peer_pending=peer_pending, max_rounds=8)
+            except Exception:
+                pass
+        return seen
+
+    def test_the_turn_hears_it_last_and_takes_fewer_rounds(self):
+        device_data.handle_reply(self.token, {"text": "add eggs", "via": "car"})
+        first = self._run("user")[0]
+        self.assertIn("IN THE CAR", first[-1]["content"], "the last message of the turn")
+        self.assertEqual(sum("IN THE CAR" in str(m.get("content")) for m in first), 1)
+        self.assertFalse(any("IN THE CAR" in str(m.get("content")) for m in self._run("peer")[0]), "never to a peer turn")
+        self.assertLessEqual(len(self._run("user", tool_calls=True)), reach.ROUNDS["car"] + 1)
+        conversation.add_message(UID, "user", "plain typing")
+        self.assertFalse(any("IN THE CAR" in str(m.get("content")) for m in self._run("user")[0]))
+        self.assertGreater(len(self._run("user", tool_calls=True)), reach.ROUNDS["car"] + 1, "no cap when nothing applies")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,9 @@ An existing pairing is the first connection and carries over with no steps (it k
 | Web view, microphone for the chat's push-to-talk (only the paired server's pages, audio only) | `MainActivity` |
 | Long poll `POST /device/poll` (25 s hold, 40 s timeout, backoff 2 s doubling to 60 s), ack-after-shown, dedupe by id, command ack/result, 22 s answer watchdog | `SyncService`, `core/Inbox.kt` |
 | Notification channels (chat, reminder, approval HIGH; job DEFAULT; peer, sync, windows LOW; updates), Approve/Deny that require device unlock | `Notifier`, `Approvals`, `core/Channels.kt` |
-| Share sheet "Send to Nori" (text, link, image; chat / note / task) | `ShareActivity`, `Share.kt` |
+| Share sheet "Send to Nori" (text, link, image; chat / note / task). Each paired connection is also in the Share sheet's top row under its assistant's name (a sharing shortcut), which goes straight to it | `ShareActivity`, `Share.kt`, `Shortcuts.kt`, `res/xml/shortcuts.xml` |
+| Android Auto (0.4.0): the assistant's replies, reminders and finished jobs are conversation notifications with **Reply** and **Mark as read**. Android Auto shows them, reads them aloud and sends your spoken answer back (`POST /device/reply`); on the phone they have a reply box. Opening the chat clears them. Approvals stay phone-only (they need the phone unlocked) | `Notifier`, `ReplyReceiver`, `core/Channels.kt` |
+| Whether Android Auto is connected, sent as `car` in the poll snapshot so the assistant knows you are driving. Nothing else about the car is read | `CarWatcher` |
 | Quick Settings tiles (Pause, "Nori may act", "Nori may look"), launcher shortcuts, home-screen widget | `Control.kt`, `Widget.kt`, `res/xml/shortcuts.xml` |
 | Health Connect (weight, blood pressure, steps, sleep, resting heart rate) every 15 min and on app open, never sent twice | `Health.kt`, `core/Health.kt` |
 | Places: on-device geofences, reports only `arrived`/`left` | `Places.kt`, `core/Geo.kt` |
@@ -80,6 +82,10 @@ An existing pairing is the first connection and carries over with no steps (it k
 | Updates via `GET /device/app.apk` (Bearer token) | `Updates.kt` |
 
 All decisions live in plain Kotlin under `app/src/main/java/app/nori/companion/core` (no Android types) and are covered by JVM tests in `app/src/test`.
+
+### Android Auto and an app that isn't from the Play Store
+
+Android Auto only shows notifications from apps installed from the Play Store unless you allow others. On the phone: open Android Auto's settings, tap **Version** about ten times to unlock developer settings, then in the ⋮ menu choose **Developer settings** and turn on **Unknown sources**. Reconnect to the car. Nori's messages then appear there, are read aloud, and you can answer by voice.
 
 ## The windows
 

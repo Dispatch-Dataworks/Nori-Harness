@@ -8,4 +8,10 @@
     <shortcut android:shortcutId="settings" android:enabled="true" android:shortcutShortLabel="@string/shortcut_settings" android:shortcutLongLabel="@string/shortcut_settings_long">
         <intent android:action="android.intent.action.VIEW" android:targetPackage="app.nori.companion" android:targetClass="app.nori.companion.SettingsActivity" />
     </shortcut>
+    <!-- The top row of the Share sheet: each paired connection's shortcut (Shortcuts.kt) carries this category, so picking it opens ShareActivity already pointed at that assistant. -->
+    <share-target android:targetClass="app.nori.companion.ShareActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="image/*" />
+        <category android:name="app.nori.companion.category.SHARE_TARGET" />
+    </share-target>
 </shortcuts>

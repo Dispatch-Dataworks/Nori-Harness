@@ -180,6 +180,10 @@
             </intent-filter>
         </service>
 
+        <!-- Android Auto (2026-11-10): it shows this app's message notifications, reads them aloud and sends the spoken answer back through the notification's Reply action
+             (ReplyReceiver -> /device/reply). Notifications only: no car screens, and nothing about the car is read except whether Android Auto is connected (CarWatcher). -->
+        <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <receiver android:name=".ReplyReceiver" android:exported="false" />
         <receiver android:name=".ControlReceiver" android:exported="false" />
         <receiver android:name=".ApprovalReceiver" android:exported="false" />
         <receiver android:name=".GeofenceReceiver" android:exported="false" />

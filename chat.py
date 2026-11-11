@@ -1936,6 +1936,18 @@ def run(session: dict, user_id: int, display_name: str, *, extra_message: dict |
         glance = phone_capture.digest_message(user_id, display_name, context.assistant_name(user_id))
         if glance:
             messages.append(glance)
+    # How the person is reaching her right now (reach.py, 2026-11-10): driving with Android Auto, or talking by voice. One
+    # late line saying so and how to answer, and fewer tool rounds. Never on a peer-motivated turn (that reply goes to a peer).
+    if peer_pending != "peer":
+        try:
+            import reach   # local: reads devices, which load after chat
+            how = reach.mode(user_id, answering=peer_pending == "user")
+            line = reach.note(how, display_name)
+            if line:
+                messages.append(line)
+                rounds = reach.capped_rounds(how, rounds)
+        except Exception as exc:  # noqa: BLE001 -- a missing hint must never cost the turn
+            print(f"chat: reach note skipped: {type(exc).__name__}: {exc}", flush=True)
     schemas = tools.active_schemas(session)
     leak_re = _leak_pattern({s["function"]["name"] for s in schemas}) if schemas else None
     model_slug, _reasoning_effort = _resolve_model(session["workspace_id"])

@@ -8867,11 +8867,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(resp, code)
 
     _DEVICE_PATHS = ("/device/register", "/device/poll", "/device/ack", "/device/result", "/device/approval",
-                     "/device/events", "/device/place", "/device/health", "/device/share", "/device/unregister", "/device/notifications")
+                     "/device/events", "/device/place", "/device/health", "/device/share", "/device/unregister", "/device/notifications",
+                     "/device/reply")
     _DEVICE_LIMITS = {"/device/poll": 16 * 1024, "/device/register": 4096, "/device/ack": 4096,
                       "/device/approval": 4096, "/device/unregister": 4096, "/device/events": 64 * 1024,
                       "/device/place": 8192, "/device/health": 512 * 1024, "/device/result": 12 * 1024 * 1024,
-                      "/device/notifications": 256 * 1024,
+                      "/device/notifications": 256 * 1024, "/device/reply": 16 * 1024,
                       "/device/share": 12 * 1024 * 1024}
     _BRIDGE_LIMITS = {"/bridge/poll": 16 * 1024, "/bridge/result": 8 * 1024 * 1024, "/bridge/register": 4096,
                       "/bridge/share": 12 * 1024 * 1024, "/bridge/ask": 256 * 1024, "/bridge/activity": 64 * 1024,
@@ -9037,6 +9038,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/device/share":
             out, code = device_data.handle_share(token, body)
             return self.send_json(out, code)
+        if path == "/device/reply":
+            out, code = device_data.handle_reply(token, body)
+            return self.send_json(out, code)
         if path == "/device/place":
             if not config.get("user", token["user_id"], "phone_places_enabled"):
                 return self.send_json({"ok": False, "error": "places are switched off in Settings → Devices"}, 403)
@@ -9176,6 +9180,8 @@ class Handler(BaseHTTPRequestHandler):
                 if caps:
                     bits.append("allowed there: " + ", ".join(k for k, v in caps.items() if v) if any(caps.values()) else "nothing allowed there yet")
                 bits += wins
+                if kind == "phone" and (st.get("snapshot") or {}).get("car") and d["status"] == "online":
+                    bits.append("in the car (Android Auto)")
                 rows.append(
                     f"<div class=list-row><div class=list-meta><b>{esc(d['label'])}</b><small>{esc(' · '.join(bits))}</small></div>"
                     "<div class=list-actions>"
@@ -9192,7 +9198,9 @@ class Handler(BaseHTTPRequestHandler):
             chk("phone_notifications_enabled", "send me notifications on my phone")
             + chk("phone_notify_replies", "…including ⟦n⟧'s chat replies", "Off: only reminders, pings, job results and approvals.")
             + chk("phone_health_enabled", "accept Health Connect data into my trackers", "Weight, blood pressure, steps, sleep, resting heart rate. The phone must also allow it.")
-            + chk("phone_places_enabled", "accept arrived/left events for my named places", "The phone checks the places itself and sends only 'arrived at / left'. No location trail is kept."))
+            + chk("phone_places_enabled", "accept arrived/left events for my named places", "The phone checks the places itself and sends only 'arrived at / left'. No location trail is kept.")
+            + chk("reach_enabled", "tell ⟦n⟧ when I'm driving or talking by voice",
+                  "With Android Auto connected (app 0.4.0+) or in the voice conversation, ⟦n⟧ answers in a few short spoken sentences and keeps the screen out of it."))
         if is_admin:
             phone_switches += (
                 chk("phone_actions_enabled", "let ⟦n⟧ open links/apps and set timers, alarms, navigation on my phone")
@@ -9404,7 +9412,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok = devices.revoke(uid, did)
             return self.devices_settings_form(sess, info="done" if ok else "", err="" if ok else "no such device")
         if act == "phone":
-            keys = ["phone_notifications_enabled", "phone_notify_replies", "phone_health_enabled", "phone_places_enabled"]
+            keys = ["phone_notifications_enabled", "phone_notify_replies", "phone_health_enabled", "phone_places_enabled", "reach_enabled"]
             if is_admin:
                 keys += ["phone_actions_enabled", "phone_control_enabled", "phone_screen_enabled"]
             for k in keys:
@@ -12258,6 +12266,10 @@ class Handler(BaseHTTPRequestHandler):
             badges.append("<span class='hist-badge hist-badge-hidden'>hidden from ⟦n⟧</span>")
         if meta.get("source") == "voice":
             badges.append("<span class=hist-badge>\U0001f399 voice</span>")
+        elif meta.get("source") == "car":
+            badges.append("<span class=hist-badge>\U0001f697 from the car</span>")
+        elif meta.get("source") == "notification":
+            badges.append("<span class=hist-badge>\U0001f514 from a notification</span>")
         if "cost_usd" in meta:
             cost_txt = "cost n/a" if meta.get("cost_unavailable") else f"${meta['cost_usd']:.4f}"
             badges.append(f"<span class=hist-badge>{esc(cost_txt)}</span>")

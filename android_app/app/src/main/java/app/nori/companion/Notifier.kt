@@ -12,6 +12,8 @@ import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import app.nori.companion.core.AgentName
 import app.nori.companion.core.Channels
@@ -19,6 +21,7 @@ import app.nori.companion.core.Deeplink
 import app.nori.companion.core.Message
 import app.nori.companion.core.ShowOutcome
 import app.nori.companion.core.Windows
+import java.util.concurrent.ConcurrentHashMap
 
 /** The notifications this app shows: Nori's messages (the category picks the channel), the small ongoing one with a Pause button, and the window countdowns. */
 object Notifier {
@@ -117,6 +120,7 @@ object Notifier {
     /** One server message as an Android notification. Returns FAILED when it could not be shown, so it is not acknowledged and comes again. */
     fun showMessage(c: Context, slot: Int, m: Message): ShowOutcome {
         if (!canNotify(c)) return ShowOutcome.FAILED
+        if (Channels.isConversation(m)) return showConversation(c, slot, m)
         val channel = Channels.forCategory(m.category)
         val notifId = Channels.notificationId(m.id, slot)
         val body = m.text.ifBlank { m.approval?.summary ?: "" }
@@ -159,6 +163,82 @@ object Notifier {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_HISTORY)
             NotificationCompat.Action.Builder(0, label, PendingIntent.getActivity(c, req, i, IMMUTABLE_UPDATE)).build()
         }
+    }
+
+    // ── the assistant's messages as a conversation (Android Auto, 2026-11-10) ─────────────────
+    // A MessagingStyle notification with a Reply action (typed or dictated text) and a Mark as read action is exactly what Android Auto needs to show a message on the car's screen,
+    // read it aloud and send the spoken answer back (ReplyReceiver -> /device/reply). On the phone it looks like any messaging app's notification with a reply box. Chat replies of a
+    // connection share one running notification carrying the last few lines; a reminder or a finished job is its own notification, with the same two actions.
+    const val KEY_REPLY = "nori_reply_text"
+    private const val CONVO_KEEP = 6
+    private class Line(val text: String, val ts: Long, val mine: Boolean)
+    private class Convo(val channel: String, val title: String) { val lines = ArrayList<Line>() }
+    private val convos = ConcurrentHashMap<Int, Convo>()          // by notification id
+
+    private fun showConversation(c: Context, slot: Int, m: Message): ShowOutcome {
+        val channel = Channels.forCategory(m.category)
+        val nid = if (Channels.sharesConversation(m)) Channels.conversationId(slot) else Channels.notificationId(m.id, slot)
+        val body = m.text.ifBlank { Channels.titleFor(m) }
+        val label = when (channel) { Channels.REMINDER -> "Reminder"; Channels.JOB -> "Finished job"; else -> "" }      // what Android Auto announces it as
+        val convo = convos.compute(nid) { _, old -> old ?: Convo(channel, label) }!!
+        synchronized(convo) { convo.lines.add(Line(body, if (m.ts > 0) m.ts else System.currentTimeMillis(), false)); while (convo.lines.size > CONVO_KEEP) convo.lines.removeAt(0) }
+        return if (post(c, slot, nid, convo, alert = true)) ShowOutcome.SHOWN else ShowOutcome.FAILED
+    }
+
+    /** What the owner answered from a notification or the car, added to the chat conversation (and a failure as a line of its own); a reminder that was answered goes away. */
+    fun showMine(c: Context, slot: Int, fromNotif: Int, text: String, failure: String?) {
+        val nid = Channels.conversationId(slot)
+        if (fromNotif != nid && fromNotif >= 0 && failure == null) { convos.remove(fromNotif); cancelMessage(c, fromNotif) }
+        val convo = convos.compute(nid) { _, old -> old ?: Convo(Channels.CHAT, "") }!!
+        val now = System.currentTimeMillis()
+        synchronized(convo) {
+            convo.lines.add(Line(text, now, true))
+            if (failure != null) convo.lines.add(Line("(not sent: $failure)", now, false))
+            while (convo.lines.size > CONVO_KEEP) convo.lines.removeAt(0)
+        }
+        post(c, slot, nid, convo, alert = failure != null)
+    }
+
+    /** Mark as read, or the chat was opened: the notification goes. */
+    fun markRead(c: Context, slot: Int, nid: Int = Channels.conversationId(slot)) {
+        convos.remove(nid)
+        cancelMessage(c, nid)
+    }
+
+    private fun post(c: Context, slot: Int, nid: Int, convo: Convo, alert: Boolean): Boolean {
+        if (!canNotify(c)) return false
+        val lines = synchronized(convo) { ArrayList(convo.lines) }
+        if (lines.isEmpty()) return true
+        val her = Shortcuts.person(c, slot)
+        val me = Person.Builder().setName("You").build()
+        val style = NotificationCompat.MessagingStyle(me)
+        if (convo.title.isNotBlank()) style.setConversationTitle(convo.title).setGroupConversation(false)
+        for (l in lines) style.addMessage(l.text, l.ts, if (l.mine) me else her)
+        val reply = Intent(c, ReplyReceiver::class.java).setAction(ReplyReceiver.REPLY).putExtra(ReplyReceiver.EXTRA_SLOT, slot).putExtra(ReplyReceiver.EXTRA_NOTIF, nid)
+        val read = Intent(c, ReplyReceiver::class.java).setAction(ReplyReceiver.READ).putExtra(ReplyReceiver.EXTRA_SLOT, slot).putExtra(ReplyReceiver.EXTRA_NOTIF, nid)
+        // The reply's PendingIntent must be MUTABLE: the system puts the typed or dictated text into it. Request codes are per notification so two never share one.
+        val replyPi = PendingIntent.getBroadcast(c, nid, reply, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+        val readPi = PendingIntent.getBroadcast(c, nid xor 0x40000000, read, IMMUTABLE_UPDATE)
+        val replyAction = NotificationCompat.Action.Builder(R.drawable.ic_stat, "Reply", replyPi)
+            .addRemoteInput(RemoteInput.Builder(KEY_REPLY).setLabel("Reply to ${Prefs.agent(c, slot)}").build())
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY).setShowsUserInterface(false).setAllowGeneratedReplies(false).build()
+        val readAction = NotificationCompat.Action.Builder(R.drawable.ic_stat, "Mark as read", readPi)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ).setShowsUserInterface(false).build()
+        val importance = Channels.importanceOf(convo.channel)
+        val b = NotificationCompat.Builder(c, convo.channel)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(if (convo.title.isBlank()) Prefs.agent(c, slot) else "${Prefs.agent(c, slot)}: ${convo.title}")
+            .setContentText(lines.last().text)
+            .setStyle(style)
+            .addAction(replyAction).addAction(readAction)
+            .setCategory(if (convo.channel == Channels.REMINDER) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(!alert)
+            .setWhen(lines.last().ts)
+            .setContentIntent(openChat(c, nid, slot))
+            .setPriority(if (importance >= Channels.IMPORTANCE_HIGH) NotificationCompat.PRIORITY_HIGH else if (importance == Channels.IMPORTANCE_DEFAULT) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_LOW)
+        if (Shortcuts.has(slot)) b.setShortcutId(Channels.shortcutId(slot))
+        return try { NotificationManagerCompat.from(c).notify(nid, b.build()); true } catch (e: SecurityException) { false }
     }
 
     fun cancelMessage(c: Context, notifId: Int) { try { NotificationManagerCompat.from(c).cancel(notifId) } catch (e: Exception) { /* nothing */ } }

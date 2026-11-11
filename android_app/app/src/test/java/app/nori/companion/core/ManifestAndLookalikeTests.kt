@@ -63,7 +63,7 @@ class ManifestTest {
     }
 
     @Test fun internalComponentsAreNotExported() {
-        for (c in listOf(".SyncService", ".ScreenShareService", ".ApprovalReceiver", ".GeofenceReceiver", ".ControlReceiver", ".QuickTaskActivity", ".ScreenShareRequestActivity", ".ApprovalActivity")) {
+        for (c in listOf(".SyncService", ".ScreenShareService", ".ApprovalReceiver", ".ReplyReceiver", ".GeofenceReceiver", ".ControlReceiver", ".QuickTaskActivity", ".ScreenShareRequestActivity", ".ApprovalActivity")) {
             val tag = manifest.substringAfter("android:name=\"$c\"").substringBefore(">")
             assertTrue("$c must not be exported", tag.contains("android:exported=\"false\""))
         }

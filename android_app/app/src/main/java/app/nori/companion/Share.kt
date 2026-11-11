@@ -23,6 +23,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.IntentCompat
 import androidx.exifinterface.media.ExifInterface
+import app.nori.companion.core.Channels
 import app.nori.companion.core.Connections
 import app.nori.companion.core.ShareBody
 import org.json.JSONObject
@@ -125,19 +126,22 @@ class ShareActivity : Activity() {
         dests.forEachIndexed { idx, d -> group.addView(RadioButton(this).apply { id = 1000 + idx; this.text = d.second; isChecked = idx == 0 }) }
         val note = EditText(this).apply { hint = "Add a note (optional)"; isSingleLine = false; maxLines = 3 }
         val preview = TextView(this).apply { this.text = if (isImage) "A photo" else (subject.ifBlank { text }).trim().take(140); setPadding(0, 0, 0, 12) }
-        val which = ShareTarget.picker(this, targets)
+        // Picked from the top row of the Share sheet (a connection's shortcut, see Shortcuts): that connection, no drop-down.
+        val direct = Channels.slotOfShortcut(i.getStringExtra(Intent.EXTRA_SHORTCUT_ID))?.takeIf { it in targets }
+        val which = if (direct != null) null else ShareTarget.picker(this, targets)
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(56, 24, 56, 0)
             if (which != null) addView(which)
             addView(preview); addView(group); addView(note, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
-        AlertDialog.Builder(this).setTitle("Send to my assistant").setView(col)
+        val titleName = if (direct != null) Prefs.agent(app, direct) else if (targets.size == 1) Prefs.agent(app, targets.first()) else "my assistant"
+        AlertDialog.Builder(this).setTitle("Send to $titleName").setView(col)
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .setPositiveButton("Send") { _, _ ->
                 val dest = dests[(group.checkedRadioButtonId - 1000).coerceIn(0, dests.size - 1)].first
                 val noteText = note.text.toString()
-                val slot = ShareTarget.chosen(which, targets, targets.first())
+                val slot = direct ?: ShareTarget.chosen(which, targets, targets.first())
                 val sentTo = if (which != null) " to ${Prefs.name(app, slot)}" else " to ${Prefs.agent(app, slot)}"
                 Thread {
                     val body = try {

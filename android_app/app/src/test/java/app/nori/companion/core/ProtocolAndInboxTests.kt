@@ -291,3 +291,39 @@ class PollPolicyTest {
         assertNotNull(PollAction.valueOf("RE_PAIR"))
     }
 }
+
+class CarAndConversationTest {
+    private fun msg(id: Long, category: String, approval: ApprovalReq? = null) = Message(id, category, "Nori", "hi", 0L, approval)
+
+    @Test fun snapshotReportsTheCar() {
+        assertTrue(Snapshot(50, true, "wifi", true, false, false, null, car = true).toJson().getBoolean("car"))
+        assertFalse(Snapshot(50, true, "wifi", true, false, false, null).toJson().getBoolean("car"))
+    }
+
+    @Test fun aReplySaysWhereItCameFrom() {
+        val car = Protocol.reply("  on my way  ", true)
+        assertEquals("on my way", car.getString("text")); assertEquals("car", car.getString("via"))
+        assertEquals("notification", Protocol.reply("ok", false).getString("via"))
+        assertEquals(4000, Protocol.reply("x".repeat(5000), false).getString("text").length)
+    }
+
+    @Test fun whichMessagesAreConversations() {
+        assertTrue(Channels.isConversation(msg(1, "chat"))); assertTrue(Channels.isConversation(msg(2, "ping")))
+        assertTrue(Channels.isConversation(msg(3, "reminder"))); assertTrue(Channels.isConversation(msg(4, "job")))
+        assertFalse(Channels.isConversation(msg(5, "peer")))
+        assertFalse(Channels.isConversation(msg(6, "approval", ApprovalReq(9, "click", ""))))
+        assertTrue(Channels.sharesConversation(msg(7, "chat"))); assertFalse(Channels.sharesConversation(msg(8, "reminder")))
+    }
+
+    @Test fun conversationIdsNeverCollideWithMessagesOrAcrossConnections() {
+        val ids = (0 until Connections.MAX).map { Channels.conversationId(it) }
+        assertEquals(ids.size, ids.toSet().size)
+        for (slot in 0 until Connections.MAX) for (id in listOf(1L, 2L, 999L)) assertFalse(Channels.notificationId(id, slot) in ids)
+        assertTrue(ids.all { it >= 100 })
+    }
+
+    @Test fun shortcutIdsRoundTrip() {
+        for (slot in 0 until Connections.MAX) assertEquals(slot, Channels.slotOfShortcut(Channels.shortcutId(slot)))
+        assertNull(Channels.slotOfShortcut(null)); assertNull(Channels.slotOfShortcut("talk")); assertNull(Channels.slotOfShortcut("conv_9")); assertNull(Channels.slotOfShortcut("conv_x"))
+    }
+}

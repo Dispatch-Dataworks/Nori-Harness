@@ -349,6 +349,28 @@ def _bg_turn(user_id: int) -> None:
         print(f"device_data: turn for a share failed: {type(exc).__name__}: {exc}", flush=True)
 
 
+MAX_REPLY_TEXT = 4000
+
+
+def handle_reply(token: dict, payload: dict) -> tuple[dict, int]:
+    """POST /device/reply (app 0.4.0, 2026-11-10): an answer to one of her message notifications, typed into the
+    notification or spoken to Android Auto, which reads her message aloud and sends the dictated answer back through the
+    notification's Reply action. It is the owner's next chat message, answered by the same turn as anything typed, and
+    tagged with where it came from (meta source "car" when the phone says Android Auto is connected, else
+    "notification"; reach.py reads "car"). The owner's own words, so not screened; plain text, never a command."""
+    user_id = token["user_id"]
+    text = " ".join(_clip_text(payload.get("text"), MAX_REPLY_TEXT).split())
+    if not text:
+        return {"ok": False, "error": "nothing to send"}, 400
+    if _session_for(user_id) is None:
+        return {"ok": False, "error": "no such account"}, 404
+    source = "car" if payload.get("via") == "car" else "notification"
+    mid = conversation.add_message(user_id, "user", text, meta={"source": source})
+    devices.log_activity(user_id, token["id"], "reply", "from the car" if source == "car" else "from a notification")
+    threading.Thread(target=_bg_turn, args=(user_id,), daemon=True).start()
+    return {"ok": True, "id": mid}, 200
+
+
 def handle_share(token: dict, payload: dict) -> tuple[dict, int]:
     """POST /device/share and /bridge/share. (json, http status)."""
     user_id = token["user_id"]
